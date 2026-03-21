@@ -8,6 +8,7 @@ type SuggestRequest struct {
 	Branch         string   `json:"branch"`
 	LastExitCode   int      `json:"last_exit_code"`
 	RecentCommands []string `json:"recent_commands,omitempty"`
+	Strategy       string   `json:"strategy,omitempty"`
 }
 
 type SuggestResponse struct {
@@ -44,4 +45,52 @@ type HealthResponse struct {
 	Status    string `json:"status"`
 	ModelName string `json:"model_name"`
 	Socket    string `json:"socket"`
+}
+
+type InspectRequest struct {
+	SessionID      string   `json:"session_id"`
+	Buffer         string   `json:"buffer"`
+	CWD            string   `json:"cwd"`
+	RepoRoot       string   `json:"repo_root"`
+	Branch         string   `json:"branch"`
+	LastExitCode   int      `json:"last_exit_code"`
+	RecentCommands []string `json:"recent_commands,omitempty"`
+	Limit          int      `json:"limit,omitempty"`
+	ModelName      string   `json:"model_name,omitempty"`
+	ModelBaseURL   string   `json:"model_base_url,omitempty"`
+	Strategy       string   `json:"strategy,omitempty"`
+}
+
+type InspectCandidateBreakdown struct {
+	History     int `json:"history"`
+	Model       int `json:"model"`
+	Feedback    int `json:"feedback"`
+	RecentUsage int `json:"recent_usage"`
+	LastContext int `json:"last_context"`
+	Total       int `json:"total"`
+}
+
+type InspectCandidate struct {
+	Command       string                    `json:"command"`
+	Source        string                    `json:"source"`
+	Score         int                       `json:"score"`
+	LatencyMS     int64                     `json:"latency_ms"`
+	HistoryScore  int                       `json:"history_score"`
+	AcceptedCount int                       `json:"accepted_count"`
+	RejectedCount int                       `json:"rejected_count"`
+	Breakdown     InspectCandidateBreakdown `json:"breakdown"`
+}
+
+type InspectResponse struct {
+	ModelName          string             `json:"model_name"`
+	HistoryTrusted     bool               `json:"history_trusted"`
+	Prompt             string             `json:"prompt"`
+	RawModelOutput     string             `json:"raw_model_output"`
+	CleanedModelOutput string             `json:"cleaned_model_output"`
+	RecentCommands     []string           `json:"recent_commands"`
+	LastCommand        string             `json:"last_command"`
+	LastStdoutExcerpt  string             `json:"last_stdout_excerpt"`
+	LastStderrExcerpt  string             `json:"last_stderr_excerpt"`
+	Winner             *InspectCandidate  `json:"winner"`
+	Candidates         []InspectCandidate `json:"candidates"`
 }

@@ -51,6 +51,7 @@ func (s *Server) Run(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/suggest", s.handleSuggest)
+	mux.HandleFunc("/inspect", s.handleInspect)
 	mux.HandleFunc("/feedback", s.handleFeedback)
 	mux.HandleFunc("/command", s.handleRecordCommand)
 
@@ -106,6 +107,27 @@ func (s *Server) handleSuggest(writer http.ResponseWriter, request *http.Request
 	}
 
 	response, err := s.engine.Suggest(request.Context(), payload)
+	if err != nil {
+		writeError(writer, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(writer, http.StatusOK, response)
+}
+
+func (s *Server) handleInspect(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		writeError(writer, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	var payload api.InspectRequest
+	if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+		writeError(writer, http.StatusBadRequest, "invalid inspect payload")
+		return
+	}
+
+	response, err := s.engine.Inspect(request.Context(), payload)
 	if err != nil {
 		writeError(writer, http.StatusInternalServerError, err.Error())
 		return

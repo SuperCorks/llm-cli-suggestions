@@ -4,13 +4,14 @@ Local LLM-powered terminal autosuggestions for macOS `zsh`.
 
 ## Current Status
 
-This repo currently contains the first implementation slice:
+This repo currently contains:
 
 - a Go daemon listening on a local Unix socket
 - SQLite-backed logging for commands, suggestions, and feedback
 - an Ollama model adapter
 - a small client binary for shell integration
 - a `zsh` plugin that fetches suggestions asynchronously and accepts them with `Tab`
+- a local Next.js control app in `apps/console` for analytics, daemon control, ranking inspection, and model testing
 
 ## Build
 
@@ -70,6 +71,8 @@ Start the daemon from the shell with:
 lac-start-daemon
 ```
 
+The shell startup path now also checks `~/Library/Application Support/cli-auto-complete/runtime.env` so settings saved from the control app persist into future `fancy` shells.
+
 ## Current Behavior
 
 - `Tab` accepts a suggestion if one is visible.
@@ -89,6 +92,47 @@ Use the client to inspect the local SQLite data:
 ./bin/autocomplete-client inspect recent-feedback --limit 20
 ```
 
+## Control App
+
+The local control app lives in `apps/console`.
+
+Use Node `24` for the console app. The repo now includes a root `.node-version` file, and `apps/console/package.json` declares a Node `24.x` engine range.
+
+Install dependencies:
+
+```bash
+cd apps/console
+npm install
+```
+
+Run the development server:
+
+```bash
+npm run dev
+```
+
+Open the local URL shown by Next.js to access:
+
+- overview metrics and recent activity
+- suggestion and command history explorers
+- ranking inspection against the daemon `/inspect` route
+- ad-hoc model testing and saved benchmark runs
+- daemon start, stop, restart, runtime settings, exports, and maintenance actions
+
+For a production build check:
+
+```bash
+npm run build
+```
+
+Run the console e2e smoke suite with:
+
+```bash
+npm run e2e
+```
+
+This suite boots the app against a seeded temporary SQLite fixture and checks the main happy paths across the dashboard, suggestions, commands, ranking inspector, model lab, and daemon screens.
+
 ## Benchmark And Smoke Tests
 
 Run the automated checks with:
@@ -97,6 +141,7 @@ Run the automated checks with:
 make test
 make smoke-shell
 make bench-models
+cd apps/console && npm run typecheck && npm run lint && npm run build && npm run e2e
 ```
 
 `make bench-models` uses `llama3.2:latest` by default. To benchmark a different installed model:
@@ -113,6 +158,6 @@ To compare multiple installed models:
 
 ## Notes
 
-- This is an early scaffold, not a finished autosuggestion engine.
+- This is still an early autosuggestion engine, but it now includes a usable local control plane for inspection and tuning.
 - Output capture is still intentionally limited in `v1` and currently works best through `lac-capture`.
-- The next major improvement area is deeper shell-side UX polish rather than basic plumbing.
+- The biggest remaining improvement areas are quality tuning, richer eval loops, and shell UX hardening.

@@ -24,12 +24,14 @@ func main() {
 	dbPath := flag.String("db", cfg.DBPath, "sqlite database path")
 	modelName := flag.String("model", cfg.ModelName, "local model name")
 	modelBaseURL := flag.String("model-url", cfg.ModelBaseURL, "local model base URL")
+	suggestStrategy := flag.String("strategy", cfg.SuggestStrategy, "suggestion strategy")
 	flag.Parse()
 
 	cfg.SocketPath = *socketPath
 	cfg.DBPath = *dbPath
 	cfg.ModelName = *modelName
 	cfg.ModelBaseURL = *modelBaseURL
+	cfg.SuggestStrategy = config.NormalizeSuggestStrategy(*suggestStrategy)
 
 	store, err := db.NewStore(cfg.DBPath)
 	if err != nil {
@@ -42,7 +44,7 @@ func main() {
 	}()
 
 	modelClient := ollama.New(cfg.ModelBaseURL, cfg.ModelName)
-	eng := engine.New(store, modelClient, cfg.ModelName, cfg.SuggestTimeout)
+	eng := engine.New(store, modelClient, cfg.ModelName, cfg.ModelBaseURL, cfg.SuggestStrategy, cfg.SuggestTimeout)
 	srv := server.New(&cfg, eng, store)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

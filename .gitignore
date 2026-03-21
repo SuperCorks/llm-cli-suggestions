@@ -1,6 +1,11 @@
 bin/
+node_modules/
+.next/
+playwright-report/
+test-results/
 .DS_Store
 *.sqlite
 *.sock
 *.log
+*.pid
 .tmp/

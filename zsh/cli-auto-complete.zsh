@@ -11,15 +11,41 @@ zmodload zsh/datetime 2>/dev/null || true
 typeset -g LAC_PLUGIN_PATH="${${(%):-%x}:A}"
 typeset -g LAC_ROOT_DIR="${LAC_PLUGIN_PATH:h:h}"
 typeset -g LAC_STATE_DIR="${LAC_STATE_DIR:-$HOME/Library/Application Support/cli-auto-complete}"
-typeset -g LAC_SOCKET_PATH="${LAC_SOCKET_PATH:-$LAC_STATE_DIR/daemon.sock}"
-typeset -g LAC_DB_PATH="${LAC_DB_PATH:-$LAC_STATE_DIR/autocomplete.sqlite}"
+typeset -g LAC_RUNTIME_ENV_PATH="$LAC_STATE_DIR/runtime.env"
 typeset -g LAC_ASYNC_DIR="${LAC_ASYNC_DIR:-$LAC_STATE_DIR/async}"
 typeset -g LAC_CLIENT_BIN="${LAC_CLIENT_BIN:-$LAC_ROOT_DIR/bin/autocomplete-client}"
 typeset -g LAC_DAEMON_BIN="${LAC_DAEMON_BIN:-$LAC_ROOT_DIR/bin/autocomplete-daemon}"
-typeset -g LAC_MODEL_NAME="${LAC_MODEL_NAME:-qwen2.5-coder:7b}"
+typeset -g LAC_DAEMON_PID_PATH="$LAC_STATE_DIR/daemon.pid"
 typeset -g LAC_DEBOUNCE_SECONDS="${LAC_DEBOUNCE_SECONDS:-0.08}"
 typeset -g LAC_HIGHLIGHT_STYLE="${LAC_HIGHLIGHT_STYLE:-fg=242}"
 typeset -gi LAC_CAPTURE_BYTES="${LAC_CAPTURE_BYTES:-600}"
+typeset -g LAC_MODEL_BASE_URL="${LAC_MODEL_BASE_URL:-}"
+typeset -g LAC_SUGGEST_STRATEGY="${LAC_SUGGEST_STRATEGY:-}"
+typeset -g LAC_SUGGEST_TIMEOUT_MS="${LAC_SUGGEST_TIMEOUT_MS:-}"
+
+_lac_runtime_value() {
+  local key="$1"
+  [[ -f "$LAC_RUNTIME_ENV_PATH" ]] || return 0
+  (
+    source "$LAC_RUNTIME_ENV_PATH" 2>/dev/null || exit 0
+    eval "print -r -- \${$key-}"
+  ) 2>/dev/null
+}
+
+typeset -gx LAC_SOCKET_PATH="${LAC_SOCKET_PATH:-$(_lac_runtime_value LAC_SOCKET_PATH)}"
+typeset -gx LAC_DB_PATH="${LAC_DB_PATH:-$(_lac_runtime_value LAC_DB_PATH)}"
+typeset -gx LAC_MODEL_NAME="${LAC_MODEL_NAME:-$(_lac_runtime_value LAC_MODEL_NAME)}"
+typeset -gx LAC_MODEL_BASE_URL="${LAC_MODEL_BASE_URL:-$(_lac_runtime_value LAC_MODEL_BASE_URL)}"
+typeset -gx LAC_SUGGEST_STRATEGY="${LAC_SUGGEST_STRATEGY:-$(_lac_runtime_value LAC_SUGGEST_STRATEGY)}"
+typeset -gx LAC_SUGGEST_TIMEOUT_MS="${LAC_SUGGEST_TIMEOUT_MS:-$(_lac_runtime_value LAC_SUGGEST_TIMEOUT_MS)}"
+typeset -gx LAC_STATE_DIR
+
+typeset -gx LAC_SOCKET_PATH="${LAC_SOCKET_PATH:-$LAC_STATE_DIR/daemon.sock}"
+typeset -gx LAC_DB_PATH="${LAC_DB_PATH:-$LAC_STATE_DIR/autocomplete.sqlite}"
+typeset -gx LAC_MODEL_NAME="${LAC_MODEL_NAME:-qwen2.5-coder:7b}"
+typeset -gx LAC_MODEL_BASE_URL="${LAC_MODEL_BASE_URL:-http://127.0.0.1:11434}"
+typeset -gx LAC_SUGGEST_STRATEGY="${LAC_SUGGEST_STRATEGY:-history+model}"
+typeset -gx LAC_SUGGEST_TIMEOUT_MS="${LAC_SUGGEST_TIMEOUT_MS:-1200}"
 
 mkdir -p -- "$LAC_STATE_DIR" "$LAC_ASYNC_DIR"
 
@@ -411,7 +437,7 @@ _lac_precmd() {
 }
 
 lac-start-daemon() {
-  local _ attempt
+  local _ attempt daemon_pid
 
   mkdir -p -- "$LAC_STATE_DIR" "$LAC_ASYNC_DIR"
   [[ -x "$LAC_CLIENT_BIN" && -x "$LAC_DAEMON_BIN" ]] || return 1
@@ -423,7 +449,10 @@ lac-start-daemon() {
   "$LAC_DAEMON_BIN" \
     --socket "$LAC_SOCKET_PATH" \
     --db "$LAC_DB_PATH" \
-    --model "$LAC_MODEL_NAME" >"$LAC_STATE_DIR/daemon.log" 2>&1 &!
+    --model "$LAC_MODEL_NAME" \
+    --strategy "$LAC_SUGGEST_STRATEGY" >"$LAC_STATE_DIR/daemon.log" 2>&1 &!
+  daemon_pid=$!
+  print -rn -- "$daemon_pid" >| "$LAC_DAEMON_PID_PATH"
 
   for attempt in {1..20}; do
     if "$LAC_CLIENT_BIN" health --socket "$LAC_SOCKET_PATH" >/dev/null 2>&1; then

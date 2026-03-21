@@ -7,14 +7,18 @@ import (
 	"time"
 
 	"github.com/SuperCorks/cli-auto-complete/internal/api"
+	"github.com/SuperCorks/cli-auto-complete/internal/config"
 	"github.com/SuperCorks/cli-auto-complete/internal/db"
 	"github.com/SuperCorks/cli-auto-complete/internal/model"
+	"github.com/SuperCorks/cli-auto-complete/internal/model/ollama"
 )
 
 type Engine struct {
 	store          *db.Store
 	modelClient    model.Client
 	modelName      string
+	modelBaseURL   string
+	suggestStrategy string
 	suggestTimeout time.Duration
 }
 
@@ -25,13 +29,19 @@ type rankedCandidate struct {
 	LatencyMS    int64
 	Feedback     db.CommandFeedbackStats
 	HistoryScore int
+	ModelScore   int
+	FeedbackAdj  int
+	RecentAdj    int
+	LastCtxAdj   int
 }
 
-func New(store *db.Store, modelClient model.Client, modelName string, suggestTimeout time.Duration) *Engine {
+func New(store *db.Store, modelClient model.Client, modelName, modelBaseURL, suggestStrategy string, suggestTimeout time.Duration) *Engine {
 	return &Engine{
 		store:          store,
 		modelClient:    modelClient,
 		modelName:      modelName,
+		modelBaseURL:   modelBaseURL,
+		suggestStrategy: config.NormalizeSuggestStrategy(suggestStrategy),
 		suggestTimeout: suggestTimeout,
 	}
 }
@@ -48,100 +58,250 @@ func (e *Engine) Suggest(ctx context.Context, request api.SuggestRequest) (api.S
 
 	recentCommands := request.RecentCommands
 	var err error
+	inspection, err := e.inspect(ctx, api.InspectRequest{
+		SessionID:      request.SessionID,
+		Buffer:         request.Buffer,
+		CWD:            request.CWD,
+		RepoRoot:       request.RepoRoot,
+		Branch:         request.Branch,
+		LastExitCode:   request.LastExitCode,
+		RecentCommands: recentCommands,
+		Strategy:       request.Strategy,
+		Limit:          8,
+	})
+	if err != nil {
+		return api.SuggestResponse{}, err
+	}
+
+	if len(inspection.Candidates) == 0 || inspection.Winner == nil {
+		return api.SuggestResponse{}, nil
+	}
+	winner := inspection.Winner
+	return e.recordSuggestion(ctx, request, rankedCandidate{
+		Command:      winner.Command,
+		Source:       winner.Source,
+		Score:        winner.Score,
+		LatencyMS:    winner.LatencyMS,
+		HistoryScore: winner.HistoryScore,
+		Feedback: db.CommandFeedbackStats{
+			AcceptedCount: winner.AcceptedCount,
+			RejectedCount: winner.RejectedCount,
+		},
+		ModelScore:  winner.Breakdown.Model,
+		FeedbackAdj: winner.Breakdown.Feedback,
+		RecentAdj:   winner.Breakdown.RecentUsage,
+		LastCtxAdj:  winner.Breakdown.LastContext,
+	})
+}
+
+func (e *Engine) Inspect(ctx context.Context, request api.InspectRequest) (api.InspectResponse, error) {
+	return e.inspect(ctx, request)
+}
+
+func (e *Engine) inspect(ctx context.Context, request api.InspectRequest) (api.InspectResponse, error) {
+	if err := e.store.EnsureSession(ctx, request.SessionID); err != nil {
+		return api.InspectResponse{}, err
+	}
+
+	buffer := strings.TrimSpace(request.Buffer)
+	if buffer == "" {
+		return api.InspectResponse{}, nil
+	}
+
+	limit := request.Limit
+	if limit <= 0 {
+		limit = 8
+	}
+
+	recentCommands := request.RecentCommands
+	var err error
 	if len(recentCommands) == 0 {
 		recentCommands, err = e.store.GetRecentCommands(ctx, request.SessionID, 12)
 		if err != nil {
-			return api.SuggestResponse{}, err
+			return api.InspectResponse{}, err
 		}
+	}
+	if recentCommands == nil {
+		recentCommands = []string{}
 	}
 
 	lastContext, err := e.store.GetLastCommandContext(ctx, request.SessionID)
 	if err != nil {
-		return api.SuggestResponse{}, err
-	}
-
-	historyCandidates, err := e.store.FindCommandCandidates(ctx, buffer, request.CWD, request.RepoRoot, request.Branch, 8)
-	if err != nil {
-		return api.SuggestResponse{}, err
+		return api.InspectResponse{}, err
 	}
 
 	candidateMap := map[string]*rankedCandidate{}
-	for _, historyCandidate := range historyCandidates {
-		command := CleanSuggestion(buffer, historyCandidate.Command)
-		if command == "" {
-			continue
+	strategy := config.NormalizeSuggestStrategy(request.Strategy)
+	if strategy == "" {
+		strategy = e.suggestStrategy
+	}
+	useHistory := strategy != config.SuggestStrategyModelOnly
+	useModel := strategy != config.SuggestStrategyHistoryOnly
+
+	if useHistory {
+		historyCandidates, err := e.store.FindCommandCandidates(ctx, buffer, request.CWD, request.RepoRoot, request.Branch, limit)
+		if err != nil {
+			return api.InspectResponse{}, err
 		}
 
-		candidate := candidateMap[command]
-		if candidate == nil {
-			candidate = &rankedCandidate{
-				Command:      command,
-				Source:       "history",
-				HistoryScore: historyCandidate.Score,
+		for _, historyCandidate := range historyCandidates {
+			command := CleanSuggestion(buffer, historyCandidate.Command)
+			if command == "" {
+				continue
 			}
-			candidateMap[command] = candidate
-		}
 
-		candidate.HistoryScore = max(candidate.HistoryScore, historyCandidate.Score)
-		candidate.Score = max(candidate.Score, historyCandidate.Score)
+			candidate := candidateMap[command]
+			if candidate == nil {
+				candidate = &rankedCandidate{
+					Command:      command,
+					Source:       "history",
+					HistoryScore: historyCandidate.Score,
+					Score:        historyCandidate.Score,
+				}
+				candidateMap[command] = candidate
+				continue
+			}
+
+			candidate.HistoryScore = max(candidate.HistoryScore, historyCandidate.Score)
+			candidate.Score = max(candidate.Score, historyCandidate.Score)
+		}
 	}
 
 	initialCandidates := sortedCandidates(candidateMap)
-	if len(initialCandidates) > 0 && shouldTrustHistory(initialCandidates) {
-		top := initialCandidates[0]
-		return e.recordSuggestion(ctx, request, *top)
-	}
+	historyTrusted := useHistory && len(initialCandidates) > 0 && shouldTrustHistory(initialCandidates)
+	prompt := BuildPrompt(api.SuggestRequest{
+		SessionID:      request.SessionID,
+		Buffer:         request.Buffer,
+		CWD:            request.CWD,
+		RepoRoot:       request.RepoRoot,
+		Branch:         request.Branch,
+		LastExitCode:   request.LastExitCode,
+		RecentCommands: recentCommands,
+		Strategy:       strategy,
+	}, recentCommands, lastContext)
 
-	if e.modelClient != nil {
-		prompt := BuildPrompt(request, recentCommands, lastContext)
-		modelCtx, cancel := context.WithTimeout(ctx, e.suggestTimeout)
-		startedAt := time.Now()
-		modelSuggestion, modelErr := e.modelClient.Suggest(modelCtx, prompt)
-		cancel()
+	rawModelOutput := ""
+	cleanedModelOutput := ""
+	activeModelName := e.modelName
 
-		if modelErr == nil {
-			command := CleanSuggestion(buffer, modelSuggestion)
-			if command != "" {
-				candidate := candidateMap[command]
-				if candidate == nil {
-					candidate = &rankedCandidate{
-						Command: command,
-						Source:  "model",
+	if useModel && (strategy == config.SuggestStrategyModelOnly || !historyTrusted) {
+		modelClient := e.modelClient
+		if request.ModelName != "" && request.ModelName != e.modelName {
+			baseURL := request.ModelBaseURL
+			if baseURL == "" {
+				baseURL = e.modelBaseURL
+			}
+			modelClient = ollama.New(baseURL, request.ModelName)
+			activeModelName = request.ModelName
+		}
+
+		if modelClient != nil {
+			modelCtx, cancel := context.WithTimeout(ctx, e.suggestTimeout)
+			startedAt := time.Now()
+			rawSuggestion, modelErr := modelClient.Suggest(modelCtx, prompt)
+			cancel()
+			if modelErr == nil {
+				rawModelOutput = rawSuggestion
+				cleanedModelOutput = CleanSuggestion(buffer, rawSuggestion)
+				if cleanedModelOutput != "" {
+					candidate := candidateMap[cleanedModelOutput]
+					if candidate == nil {
+						candidate = &rankedCandidate{
+							Command: cleanedModelOutput,
+							Source:  "model",
+						}
+						candidateMap[cleanedModelOutput] = candidate
+					} else if !strings.Contains(candidate.Source, "model") {
+						candidate.Source += "+model"
 					}
-					candidateMap[command] = candidate
-				} else if !strings.Contains(candidate.Source, "model") {
-					candidate.Source += "+model"
-				}
 
-				candidate.LatencyMS = time.Since(startedAt).Milliseconds()
-				candidate.Score = max(candidate.Score, scoreModelCandidate(command, request, recentCommands, lastContext))
+					candidate.LatencyMS = time.Since(startedAt).Milliseconds()
+					candidate.ModelScore = scoreModelCandidate(cleanedModelOutput, api.SuggestRequest{
+						SessionID:      request.SessionID,
+						Buffer:         request.Buffer,
+						CWD:            request.CWD,
+						RepoRoot:       request.RepoRoot,
+						Branch:         request.Branch,
+						LastExitCode:   request.LastExitCode,
+						RecentCommands: recentCommands,
+					}, recentCommands, lastContext)
+					candidate.Score = max(candidate.Score, candidate.ModelScore)
+				}
 			}
 		}
 	}
 
 	if len(candidateMap) == 0 {
-		return api.SuggestResponse{}, nil
+		return api.InspectResponse{
+			ModelName:          activeModelName,
+			HistoryTrusted:     historyTrusted,
+			Prompt:             prompt,
+			RawModelOutput:     rawModelOutput,
+			CleanedModelOutput: cleanedModelOutput,
+			RecentCommands:     recentCommands,
+			LastCommand:        lastContext.Command,
+			LastStdoutExcerpt:  lastContext.StdoutExcerpt,
+			LastStderrExcerpt:  lastContext.StderrExcerpt,
+			Candidates:         []api.InspectCandidate{},
+		}, nil
 	}
 
 	feedbackStats, err := e.store.GetCommandFeedbackStats(ctx, candidateCommands(candidateMap))
 	if err != nil {
-		return api.SuggestResponse{}, err
+		return api.InspectResponse{}, err
 	}
 
 	for command, candidate := range candidateMap {
 		stats := feedbackStats[command]
 		candidate.Feedback = stats
-		candidate.Score += scoreFeedback(stats)
-		candidate.Score += scoreRecentUsage(command, recentCommands)
-		candidate.Score += scoreLastContext(command, lastContext, request.LastExitCode)
+		candidate.FeedbackAdj = scoreFeedback(stats)
+		candidate.RecentAdj = scoreRecentUsage(command, recentCommands)
+		candidate.LastCtxAdj = scoreLastContext(command, lastContext, request.LastExitCode)
+		candidate.Score += candidate.FeedbackAdj + candidate.RecentAdj + candidate.LastCtxAdj
 	}
 
 	ranked := sortedCandidates(candidateMap)
-	if len(ranked) == 0 {
-		return api.SuggestResponse{}, nil
+	if len(ranked) > limit {
+		ranked = ranked[:limit]
 	}
 
-	return e.recordSuggestion(ctx, request, *ranked[0])
+	inspectCandidates := make([]api.InspectCandidate, 0, len(ranked))
+	for _, candidate := range ranked {
+		inspectCandidates = append(inspectCandidates, api.InspectCandidate{
+			Command:       candidate.Command,
+			Source:        candidate.Source,
+			Score:         candidate.Score,
+			LatencyMS:     candidate.LatencyMS,
+			HistoryScore:  candidate.HistoryScore,
+			AcceptedCount: candidate.Feedback.AcceptedCount,
+			RejectedCount: candidate.Feedback.RejectedCount,
+			Breakdown: api.InspectCandidateBreakdown{
+				History:     candidate.HistoryScore,
+				Model:       candidate.ModelScore,
+				Feedback:    candidate.FeedbackAdj,
+				RecentUsage: candidate.RecentAdj,
+				LastContext: candidate.LastCtxAdj,
+				Total:       candidate.Score,
+			},
+		})
+	}
+
+	response := api.InspectResponse{
+		ModelName:          activeModelName,
+		HistoryTrusted:     historyTrusted,
+		Prompt:             prompt,
+		RawModelOutput:     rawModelOutput,
+		CleanedModelOutput: cleanedModelOutput,
+		RecentCommands:     recentCommands,
+		LastCommand:        lastContext.Command,
+		LastStdoutExcerpt:  lastContext.StdoutExcerpt,
+		LastStderrExcerpt:  lastContext.StderrExcerpt,
+		Candidates:         inspectCandidates,
+	}
+	if len(inspectCandidates) > 0 {
+		response.Winner = &inspectCandidates[0]
+	}
+	return response, nil
 }
 
 func (e *Engine) recordSuggestion(ctx context.Context, request api.SuggestRequest, candidate rankedCandidate) (api.SuggestResponse, error) {
