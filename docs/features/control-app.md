@@ -56,6 +56,8 @@ Calls the daemon `/inspect` route to show:
 - the winning candidate
 - ranked alternatives
 - per-candidate score breakdowns
+- retrieval-aware score breakdowns that distinguish history, local retrieval, and model contribution
+- retrieved local context such as matching history commands, path candidates, git branches, and project tasks
 - prompt text
 - raw and cleaned model output
 - previous command context

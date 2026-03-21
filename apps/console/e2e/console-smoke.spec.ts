@@ -56,6 +56,13 @@ test("ranking inspector shows a mocked winner", async ({ page }) => {
         last_command: "git fetch",
         last_stdout_excerpt: "Already up to date.",
         last_stderr_excerpt: "",
+        retrieved_context: {
+          current_token: "st",
+          history_matches: ["git status", "git stash"],
+          path_matches: ["src/", "scripts/"],
+          git_branch_matches: ["stable"],
+          project_task_matches: [],
+        },
         winner: {
           command: "git status --short",
           source: "model",
@@ -66,6 +73,7 @@ test("ranking inspector shows a mocked winner", async ({ page }) => {
           rejected_count: 0,
           breakdown: {
             history: 24,
+            retrieval: 10,
             model: 50,
             feedback: 8,
             recent_usage: 5,
@@ -84,6 +92,7 @@ test("ranking inspector shows a mocked winner", async ({ page }) => {
             rejected_count: 0,
             breakdown: {
               history: 24,
+              retrieval: 10,
               model: 50,
               feedback: 8,
               recent_usage: 5,
@@ -101,6 +110,7 @@ test("ranking inspector shows a mocked winner", async ({ page }) => {
             rejected_count: 1,
             breakdown: {
               history: 40,
+              retrieval: 0,
               model: 0,
               feedback: 18,
               recent_usage: 12,
@@ -126,6 +136,9 @@ test("ranking inspector shows a mocked winner", async ({ page }) => {
   await expect(page.getByText("Winning candidate")).toBeVisible();
   await expect(page.getByText("git status --short").first()).toBeVisible();
   await expect(page.getByText("mock prompt")).toBeVisible();
+  await expect(page.getByText("Retrieved Context")).toBeVisible();
+  await expect(page.getByText("src/")).toBeVisible();
+  await expect(page.getByText("stable")).toBeVisible();
 });
 
 test("ranking inspector tolerates null prompt context fields", async ({ page }) => {

@@ -14,35 +14,36 @@ import (
 )
 
 type Engine struct {
-	store          *db.Store
-	modelClient    model.Client
-	modelName      string
-	modelBaseURL   string
+	store           *db.Store
+	modelClient     model.Client
+	modelName       string
+	modelBaseURL    string
 	suggestStrategy string
-	suggestTimeout time.Duration
+	suggestTimeout  time.Duration
 }
 
 type rankedCandidate struct {
-	Command      string
-	Source       string
-	Score        int
-	LatencyMS    int64
-	Feedback     db.CommandFeedbackStats
-	HistoryScore int
-	ModelScore   int
-	FeedbackAdj  int
-	RecentAdj    int
-	LastCtxAdj   int
+	Command        string
+	Source         string
+	Score          int
+	LatencyMS      int64
+	Feedback       db.CommandFeedbackStats
+	HistoryScore   int
+	RetrievalScore int
+	ModelScore     int
+	FeedbackAdj    int
+	RecentAdj      int
+	LastCtxAdj     int
 }
 
 func New(store *db.Store, modelClient model.Client, modelName, modelBaseURL, suggestStrategy string, suggestTimeout time.Duration) *Engine {
 	return &Engine{
-		store:          store,
-		modelClient:    modelClient,
-		modelName:      modelName,
-		modelBaseURL:   modelBaseURL,
+		store:           store,
+		modelClient:     modelClient,
+		modelName:       modelName,
+		modelBaseURL:    modelBaseURL,
 		suggestStrategy: config.NormalizeSuggestStrategy(suggestStrategy),
-		suggestTimeout: suggestTimeout,
+		suggestTimeout:  suggestTimeout,
 	}
 }
 
@@ -87,10 +88,11 @@ func (e *Engine) Suggest(ctx context.Context, request api.SuggestRequest) (api.S
 			AcceptedCount: winner.AcceptedCount,
 			RejectedCount: winner.RejectedCount,
 		},
-		ModelScore:  winner.Breakdown.Model,
-		FeedbackAdj: winner.Breakdown.Feedback,
-		RecentAdj:   winner.Breakdown.RecentUsage,
-		LastCtxAdj:  winner.Breakdown.LastContext,
+		RetrievalScore: winner.Breakdown.Retrieval,
+		ModelScore:     winner.Breakdown.Model,
+		FeedbackAdj:    winner.Breakdown.Feedback,
+		RecentAdj:      winner.Breakdown.RecentUsage,
+		LastCtxAdj:     winner.Breakdown.LastContext,
 	})
 }
 
@@ -131,6 +133,7 @@ func (e *Engine) inspect(ctx context.Context, request api.InspectRequest) (api.I
 	}
 
 	candidateMap := map[string]*rankedCandidate{}
+	historyCandidates := []db.CommandCandidate{}
 	strategy := config.NormalizeSuggestStrategy(request.Strategy)
 	if strategy == "" {
 		strategy = e.suggestStrategy
@@ -139,7 +142,7 @@ func (e *Engine) inspect(ctx context.Context, request api.InspectRequest) (api.I
 	useModel := strategy != config.SuggestStrategyHistoryOnly
 
 	if useHistory {
-		historyCandidates, err := e.store.FindCommandCandidates(ctx, buffer, request.CWD, request.RepoRoot, request.Branch, limit)
+		historyCandidates, err = e.store.FindCommandCandidates(ctx, buffer, request.CWD, request.RepoRoot, request.Branch, limit)
 		if err != nil {
 			return api.InspectResponse{}, err
 		}
@@ -167,9 +170,7 @@ func (e *Engine) inspect(ctx context.Context, request api.InspectRequest) (api.I
 		}
 	}
 
-	initialCandidates := sortedCandidates(candidateMap)
-	historyTrusted := useHistory && len(initialCandidates) > 0 && shouldTrustHistory(initialCandidates)
-	prompt := BuildPrompt(api.SuggestRequest{
+	suggestRequest := api.SuggestRequest{
 		SessionID:      request.SessionID,
 		Buffer:         request.Buffer,
 		CWD:            request.CWD,
@@ -178,7 +179,29 @@ func (e *Engine) inspect(ctx context.Context, request api.InspectRequest) (api.I
 		LastExitCode:   request.LastExitCode,
 		RecentCommands: recentCommands,
 		Strategy:       strategy,
-	}, recentCommands, lastContext)
+	}
+	retrievedContext, retrievalCandidates := buildRetrievedContext(ctx, suggestRequest, historyCandidates)
+	for _, retrievalCandidate := range retrievalCandidates {
+		candidate := candidateMap[retrievalCandidate.Command]
+		if candidate == nil {
+			candidate = &rankedCandidate{
+				Command:        retrievalCandidate.Command,
+				Source:         retrievalCandidate.Source,
+				RetrievalScore: retrievalCandidate.Score,
+				Score:          retrievalCandidate.Score,
+			}
+			candidateMap[retrievalCandidate.Command] = candidate
+			continue
+		}
+
+		candidate.Source = addSourceTag(candidate.Source, retrievalCandidate.Source)
+		candidate.RetrievalScore = max(candidate.RetrievalScore, retrievalCandidate.Score)
+		candidate.Score = max(candidate.Score, retrievalCandidate.Score)
+	}
+
+	initialCandidates := sortedCandidates(candidateMap)
+	historyTrusted := useHistory && len(initialCandidates) > 0 && shouldTrustHistory(initialCandidates)
+	prompt := BuildPrompt(suggestRequest, recentCommands, lastContext, retrievedContext)
 
 	rawModelOutput := ""
 	cleanedModelOutput := ""
@@ -212,19 +235,11 @@ func (e *Engine) inspect(ctx context.Context, request api.InspectRequest) (api.I
 						}
 						candidateMap[cleanedModelOutput] = candidate
 					} else if !strings.Contains(candidate.Source, "model") {
-						candidate.Source += "+model"
+						candidate.Source = addSourceTag(candidate.Source, "model")
 					}
 
 					candidate.LatencyMS = time.Since(startedAt).Milliseconds()
-					candidate.ModelScore = scoreModelCandidate(cleanedModelOutput, api.SuggestRequest{
-						SessionID:      request.SessionID,
-						Buffer:         request.Buffer,
-						CWD:            request.CWD,
-						RepoRoot:       request.RepoRoot,
-						Branch:         request.Branch,
-						LastExitCode:   request.LastExitCode,
-						RecentCommands: recentCommands,
-					}, recentCommands, lastContext)
+					candidate.ModelScore = scoreModelCandidate(cleanedModelOutput, suggestRequest, recentCommands, lastContext)
 					candidate.Score = max(candidate.Score, candidate.ModelScore)
 				}
 			}
@@ -242,6 +257,7 @@ func (e *Engine) inspect(ctx context.Context, request api.InspectRequest) (api.I
 			LastCommand:        lastContext.Command,
 			LastStdoutExcerpt:  lastContext.StdoutExcerpt,
 			LastStderrExcerpt:  lastContext.StderrExcerpt,
+			RetrievedContext:   retrievedContext,
 			Candidates:         []api.InspectCandidate{},
 		}, nil
 	}
@@ -277,6 +293,7 @@ func (e *Engine) inspect(ctx context.Context, request api.InspectRequest) (api.I
 			RejectedCount: candidate.Feedback.RejectedCount,
 			Breakdown: api.InspectCandidateBreakdown{
 				History:     candidate.HistoryScore,
+				Retrieval:   candidate.RetrievalScore,
 				Model:       candidate.ModelScore,
 				Feedback:    candidate.FeedbackAdj,
 				RecentUsage: candidate.RecentAdj,
@@ -296,6 +313,7 @@ func (e *Engine) inspect(ctx context.Context, request api.InspectRequest) (api.I
 		LastCommand:        lastContext.Command,
 		LastStdoutExcerpt:  lastContext.StdoutExcerpt,
 		LastStderrExcerpt:  lastContext.StderrExcerpt,
+		RetrievedContext:   retrievedContext,
 		Candidates:         inspectCandidates,
 	}
 	if len(inspectCandidates) > 0 {
@@ -329,13 +347,12 @@ func (e *Engine) recordSuggestion(ctx context.Context, request api.SuggestReques
 	}, nil
 }
 
-func BuildPrompt(request api.SuggestRequest, recentCommands []string, lastContext db.CommandContext) string {
+func BuildPrompt(request api.SuggestRequest, recentCommands []string, lastContext db.CommandContext, retrievedContext api.InspectRetrievedContext) string {
 	var builder strings.Builder
 	builder.WriteString("You are a shell autosuggestion engine.\n")
 	builder.WriteString("Complete the current shell command with the single most likely next command.\n")
 	builder.WriteString("Return exactly one shell command on one line.\n")
 	builder.WriteString("Do not include markdown, backticks, bullets, labels, colons, explanations, comments, cwd annotations, or placeholders.\n")
-	builder.WriteString("Prefer the shortest valid continuation that the user is likely to actually run.\n")
 	builder.WriteString("Never invent explanatory suffixes like paths, notes, or metadata.\n")
 	builder.WriteString("The returned command must begin exactly with the current buffer.\n\n")
 	builder.WriteString("examples:\n")
@@ -346,6 +363,7 @@ func BuildPrompt(request api.SuggestRequest, recentCommands []string, lastContex
 	builder.WriteString(fmt.Sprintf("repo_root: %s\n", request.RepoRoot))
 	builder.WriteString(fmt.Sprintf("branch: %s\n", request.Branch))
 	builder.WriteString(fmt.Sprintf("last_exit_code: %d\n", request.LastExitCode))
+	builder.WriteString(fmt.Sprintf("current_token: %s\n", retrievedContext.CurrentToken))
 	if lastContext.Command != "" {
 		builder.WriteString(fmt.Sprintf("last_command: %s\n", lastContext.Command))
 	}
@@ -365,6 +383,10 @@ func BuildPrompt(request api.SuggestRequest, recentCommands []string, lastContex
 		builder.WriteString(command)
 		builder.WriteString("\n")
 	}
+	appendPromptList(&builder, "matching_history", retrievedContext.HistoryMatches)
+	appendPromptList(&builder, "path_matches", retrievedContext.PathMatches)
+	appendPromptList(&builder, "git_branch_matches", retrievedContext.GitBranchMatches)
+	appendPromptList(&builder, "project_task_matches", retrievedContext.ProjectTaskMatches)
 	builder.WriteString("\ncurrent_buffer:\n")
 	builder.WriteString(request.Buffer)
 	builder.WriteString("\n")
@@ -539,6 +561,31 @@ func shouldSwapCandidates(left, right *rankedCandidate) bool {
 		return left.HistoryScore < right.HistoryScore
 	}
 	return len(left.Command) > len(right.Command)
+}
+
+func appendPromptList(builder *strings.Builder, label string, values []string) {
+	if len(values) == 0 {
+		return
+	}
+	builder.WriteString(label)
+	builder.WriteString(":\n")
+	for _, value := range values {
+		builder.WriteString("- ")
+		builder.WriteString(value)
+		builder.WriteString("\n")
+	}
+}
+
+func addSourceTag(source, tag string) string {
+	if source == "" {
+		return tag
+	}
+	for _, part := range strings.Split(source, "+") {
+		if part == tag {
+			return source
+		}
+	}
+	return source + "+" + tag
 }
 
 func max(left, right int) int {

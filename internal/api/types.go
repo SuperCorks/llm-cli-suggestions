@@ -63,6 +63,7 @@ type InspectRequest struct {
 
 type InspectCandidateBreakdown struct {
 	History     int `json:"history"`
+	Retrieval   int `json:"retrieval"`
 	Model       int `json:"model"`
 	Feedback    int `json:"feedback"`
 	RecentUsage int `json:"recent_usage"`
@@ -81,16 +82,25 @@ type InspectCandidate struct {
 	Breakdown     InspectCandidateBreakdown `json:"breakdown"`
 }
 
+type InspectRetrievedContext struct {
+	CurrentToken       string   `json:"current_token"`
+	HistoryMatches     []string `json:"history_matches"`
+	PathMatches        []string `json:"path_matches"`
+	GitBranchMatches   []string `json:"git_branch_matches"`
+	ProjectTaskMatches []string `json:"project_task_matches"`
+}
+
 type InspectResponse struct {
-	ModelName          string             `json:"model_name"`
-	HistoryTrusted     bool               `json:"history_trusted"`
-	Prompt             string             `json:"prompt"`
-	RawModelOutput     string             `json:"raw_model_output"`
-	CleanedModelOutput string             `json:"cleaned_model_output"`
-	RecentCommands     []string           `json:"recent_commands"`
-	LastCommand        string             `json:"last_command"`
-	LastStdoutExcerpt  string             `json:"last_stdout_excerpt"`
-	LastStderrExcerpt  string             `json:"last_stderr_excerpt"`
-	Winner             *InspectCandidate  `json:"winner"`
-	Candidates         []InspectCandidate `json:"candidates"`
+	ModelName          string                  `json:"model_name"`
+	HistoryTrusted     bool                    `json:"history_trusted"`
+	Prompt             string                  `json:"prompt"`
+	RawModelOutput     string                  `json:"raw_model_output"`
+	CleanedModelOutput string                  `json:"cleaned_model_output"`
+	RecentCommands     []string                `json:"recent_commands"`
+	LastCommand        string                  `json:"last_command"`
+	LastStdoutExcerpt  string                  `json:"last_stdout_excerpt"`
+	LastStderrExcerpt  string                  `json:"last_stderr_excerpt"`
+	RetrievedContext   InspectRetrievedContext `json:"retrieved_context"`
+	Winner             *InspectCandidate       `json:"winner"`
+	Candidates         []InspectCandidate      `json:"candidates"`
 }

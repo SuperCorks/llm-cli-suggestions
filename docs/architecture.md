@@ -94,7 +94,7 @@ The current HTTP routes are:
 - `POST /command`
 - `POST /inspect`
 
-`/inspect` is a local-only debug route used by the control app. It returns ranked candidates, score breakdowns, prompt context, and raw or cleaned model output for a supplied prompt state.
+`/inspect` is a local-only debug route used by the control app. It returns ranked candidates, score breakdowns, retrieved local context, prompt context, and raw or cleaned model output for a supplied prompt state.
 
 ## Suggestion Engine
 
@@ -102,6 +102,9 @@ The suggestion engine combines multiple local signals:
 
 - recent commands from the current session
 - historical command prefix matches
+- targeted filesystem matches for the current token
+- local and remote git branch matches when the buffer looks branch-oriented
+- project task and script matches from files like `package.json`, `Makefile`, and `justfile`
 - cwd, repo root, and branch affinity
 - acceptance and rejection feedback
 - previous command context
@@ -111,12 +114,13 @@ The suggestion engine combines multiple local signals:
 The current ranking shape is:
 
 1. gather prefix-matching history candidates
-2. trust history immediately when one candidate is clearly dominant
-3. otherwise ask the local model for one candidate
-4. blend history, model, recent usage, feedback, and last-command context
-5. store and return the top-ranked result
+2. gather targeted local retrieval candidates for paths, branches, and project tasks
+3. trust history immediately when one candidate is clearly dominant
+4. otherwise ask the local model for one candidate
+5. blend history, retrieval, model, recent usage, feedback, and last-command context
+6. store and return the top-ranked result
 
-This keeps the system fast when history is strong and still allows the model to help in more ambiguous cases.
+This keeps the system fast when local context is strong and still allows the model to help in more ambiguous cases.
 
 ## Storage Model
 

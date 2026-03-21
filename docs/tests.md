@@ -40,6 +40,7 @@ The Playwright suite currently covers a seeded local happy path for:
 - suggestions explorer filtering
 - commands and feedback rendering
 - ranking inspector interaction with a mocked ranking response
+- ranking inspector rendering of retrieved local context alongside candidate scores
 - ranking inspector resilience when the daemon returns `null` prompt-context fields
 - ranking inspector validation states, payload wiring, and API error handling
 - ranking inspector strategy override coverage for `history-only`, `history+model`, and `model-only`
@@ -69,7 +70,12 @@ This runs:
 go test ./...
 ```
 
-Today, this mainly verifies that all packages compile and link correctly. The repo does not yet contain many focused unit tests, so this is currently a build-integrity check more than a deep behavioral suite.
+This now verifies both package integrity and a first slice of focused engine behavior. The current Go tests cover:
+
+- project-task retrieval for commands like `npm run d`
+- filesystem retrieval for path-oriented buffers like `git add s`
+- git branch retrieval for branch-oriented buffers like `git switch fea`
+- prompt construction that includes retrieved local context
 
 ### Shell Smoke Test
 
@@ -148,7 +154,7 @@ These checks matter because terminal UX issues often do not show up in pure unit
 
 ## What The Current Tests Do Not Yet Cover Well
 
-- isolated unit tests for ranking behavior
+- broader unit tests for ranking behavior beyond the new retrieval-focused cases
 - unit tests for prompt construction and suggestion cleanup
 - dedicated database migration tests
 - failure-mode integration tests for missing daemon or missing Ollama

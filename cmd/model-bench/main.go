@@ -55,7 +55,7 @@ func main() {
 		client := ollama.New(*baseURL, modelName)
 		for _, testCase := range cases {
 			for run := 1; run <= *repeat; run++ {
-				prompt := engine.BuildPrompt(testCase.Request, testCase.Request.RecentCommands, db.CommandContext{})
+				prompt := engine.BuildPrompt(testCase.Request, testCase.Request.RecentCommands, db.CommandContext{}, api.InspectRetrievedContext{})
 				ctx, cancel := context.WithTimeout(context.Background(), time.Duration(*timeoutMS)*time.Millisecond)
 				startedAt := time.Now()
 				raw, err := client.Suggest(ctx, prompt)

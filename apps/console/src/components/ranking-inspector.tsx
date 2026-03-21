@@ -3,7 +3,10 @@
 import { useMemo, useState } from "react";
 
 import { formatDurationMs } from "@/lib/format";
-import { normalizeSuggestStrategy, type SuggestStrategy } from "@/lib/suggest-strategy";
+import {
+  normalizeSuggestStrategy,
+  type SuggestStrategy,
+} from "@/lib/suggest-strategy";
 import { SuggestStrategyField } from "@/components/suggest-strategy-field";
 
 type InspectCandidate = {
@@ -16,6 +19,7 @@ type InspectCandidate = {
   rejected_count: number;
   breakdown: {
     history: number;
+    retrieval: number;
     model: number;
     feedback: number;
     recent_usage: number;
@@ -34,25 +38,109 @@ type InspectResponse = {
   last_command: string;
   last_stdout_excerpt: string;
   last_stderr_excerpt: string;
+  retrieved_context: {
+    current_token: string;
+    history_matches: string[];
+    path_matches: string[];
+    git_branch_matches: string[];
+    project_task_matches: string[];
+  };
   winner: InspectCandidate | null;
   candidates: InspectCandidate[];
 };
 
 type InspectResponsePayload = Partial<InspectResponse> & { error?: string };
 
-function normalizeInspectResponse(input: InspectResponsePayload): InspectResponse {
+function normalizeCandidate(
+  input: Partial<InspectCandidate> | null | undefined,
+): InspectCandidate | null {
+  if (!input || !input.command || !input.source) {
+    return null;
+  }
+  return {
+    command: input.command,
+    source: input.source,
+    score: typeof input.score === "number" ? input.score : 0,
+    latency_ms: typeof input.latency_ms === "number" ? input.latency_ms : 0,
+    history_score:
+      typeof input.history_score === "number" ? input.history_score : 0,
+    accepted_count:
+      typeof input.accepted_count === "number" ? input.accepted_count : 0,
+    rejected_count:
+      typeof input.rejected_count === "number" ? input.rejected_count : 0,
+    breakdown: {
+      history:
+        typeof input.breakdown?.history === "number"
+          ? input.breakdown.history
+          : 0,
+      retrieval:
+        typeof input.breakdown?.retrieval === "number"
+          ? input.breakdown.retrieval
+          : 0,
+      model:
+        typeof input.breakdown?.model === "number" ? input.breakdown.model : 0,
+      feedback:
+        typeof input.breakdown?.feedback === "number"
+          ? input.breakdown.feedback
+          : 0,
+      recent_usage:
+        typeof input.breakdown?.recent_usage === "number"
+          ? input.breakdown.recent_usage
+          : 0,
+      last_context:
+        typeof input.breakdown?.last_context === "number"
+          ? input.breakdown.last_context
+          : 0,
+      total:
+        typeof input.breakdown?.total === "number" ? input.breakdown.total : 0,
+    },
+  };
+}
+
+function normalizeInspectResponse(
+  input: InspectResponsePayload,
+): InspectResponse {
+  const winner = normalizeCandidate(input.winner);
+  const candidates = Array.isArray(input.candidates)
+    ? input.candidates
+        .map((candidate) => normalizeCandidate(candidate))
+        .filter((candidate): candidate is InspectCandidate =>
+          Boolean(candidate),
+        )
+    : [];
   return {
     model_name: input.model_name || "",
     history_trusted: Boolean(input.history_trusted),
     prompt: input.prompt || "",
     raw_model_output: input.raw_model_output || "",
     cleaned_model_output: input.cleaned_model_output || "",
-    recent_commands: Array.isArray(input.recent_commands) ? input.recent_commands : [],
+    recent_commands: Array.isArray(input.recent_commands)
+      ? input.recent_commands
+      : [],
     last_command: input.last_command || "",
     last_stdout_excerpt: input.last_stdout_excerpt || "",
     last_stderr_excerpt: input.last_stderr_excerpt || "",
-    winner: input.winner || null,
-    candidates: Array.isArray(input.candidates) ? input.candidates : [],
+    retrieved_context: {
+      current_token: input.retrieved_context?.current_token || "",
+      history_matches: Array.isArray(input.retrieved_context?.history_matches)
+        ? input.retrieved_context?.history_matches
+        : [],
+      path_matches: Array.isArray(input.retrieved_context?.path_matches)
+        ? input.retrieved_context?.path_matches
+        : [],
+      git_branch_matches: Array.isArray(
+        input.retrieved_context?.git_branch_matches,
+      )
+        ? input.retrieved_context?.git_branch_matches
+        : [],
+      project_task_matches: Array.isArray(
+        input.retrieved_context?.project_task_matches,
+      )
+        ? input.retrieved_context?.project_task_matches
+        : [],
+    },
+    winner,
+    candidates,
   };
 }
 
@@ -122,7 +210,11 @@ export function RankingInspector({
       }
       setResponse(normalizeInspectResponse(data));
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "ranking request failed");
+      setError(
+        requestError instanceof Error
+          ? requestError.message
+          : "ranking request failed",
+      );
     } finally {
       setLoading(false);
     }
@@ -136,7 +228,12 @@ export function RankingInspector({
             Buffer
             <input
               value={form.buffer}
-              onChange={(event) => setForm((current) => ({ ...current, buffer: event.target.value }))}
+              onChange={(event) =>
+                setForm((current) => ({
+                  ...current,
+                  buffer: event.target.value,
+                }))
+              }
               placeholder="git st"
             />
           </label>
@@ -145,7 +242,10 @@ export function RankingInspector({
             <input
               value={form.sessionId}
               onChange={(event) =>
-                setForm((current) => ({ ...current, sessionId: event.target.value }))
+                setForm((current) => ({
+                  ...current,
+                  sessionId: event.target.value,
+                }))
               }
               placeholder="console-ranking"
             />
@@ -154,7 +254,9 @@ export function RankingInspector({
             CWD
             <input
               value={form.cwd}
-              onChange={(event) => setForm((current) => ({ ...current, cwd: event.target.value }))}
+              onChange={(event) =>
+                setForm((current) => ({ ...current, cwd: event.target.value }))
+              }
               placeholder="/Users/simon/project"
             />
           </label>
@@ -163,7 +265,10 @@ export function RankingInspector({
             <input
               value={form.repoRoot}
               onChange={(event) =>
-                setForm((current) => ({ ...current, repoRoot: event.target.value }))
+                setForm((current) => ({
+                  ...current,
+                  repoRoot: event.target.value,
+                }))
               }
               placeholder="/Users/simon/project"
             />
@@ -172,7 +277,12 @@ export function RankingInspector({
             Branch
             <input
               value={form.branch}
-              onChange={(event) => setForm((current) => ({ ...current, branch: event.target.value }))}
+              onChange={(event) =>
+                setForm((current) => ({
+                  ...current,
+                  branch: event.target.value,
+                }))
+              }
               placeholder="main"
             />
           </label>
@@ -181,7 +291,10 @@ export function RankingInspector({
             <input
               value={form.lastExitCode}
               onChange={(event) =>
-                setForm((current) => ({ ...current, lastExitCode: event.target.value }))
+                setForm((current) => ({
+                  ...current,
+                  lastExitCode: event.target.value,
+                }))
               }
               placeholder="0"
             />
@@ -191,7 +304,10 @@ export function RankingInspector({
             <input
               value={form.modelName}
               onChange={(event) =>
-                setForm((current) => ({ ...current, modelName: event.target.value }))
+                setForm((current) => ({
+                  ...current,
+                  modelName: event.target.value,
+                }))
               }
               placeholder={defaultModelName}
             />
@@ -207,7 +323,10 @@ export function RankingInspector({
             <input
               value={form.modelBaseUrl}
               onChange={(event) =>
-                setForm((current) => ({ ...current, modelBaseUrl: event.target.value }))
+                setForm((current) => ({
+                  ...current,
+                  modelBaseUrl: event.target.value,
+                }))
               }
               placeholder={defaultModelBaseUrl}
             />
@@ -218,7 +337,10 @@ export function RankingInspector({
           <textarea
             value={form.recentCommands}
             onChange={(event) =>
-              setForm((current) => ({ ...current, recentCommands: event.target.value }))
+              setForm((current) => ({
+                ...current,
+                recentCommands: event.target.value,
+              }))
             }
             placeholder={"git status\npnpm test\nnpm run dev"}
             rows={5}
@@ -228,7 +350,9 @@ export function RankingInspector({
           <button type="submit" disabled={!canInspect}>
             {loading ? "Inspecting..." : "Inspect Ranking"}
           </button>
-          {!canInspect ? <p className="helper-text">Buffer is required.</p> : null}
+          {!canInspect ? (
+            <p className="helper-text">Buffer is required.</p>
+          ) : null}
           {error ? <p className="error-text">{error}</p> : null}
         </div>
       </form>
@@ -254,6 +378,7 @@ export function RankingInspector({
                     <th>Source</th>
                     <th>Total</th>
                     <th>History</th>
+                    <th>Retrieval</th>
                     <th>Model</th>
                     <th>Feedback</th>
                     <th>Recent</th>
@@ -270,6 +395,7 @@ export function RankingInspector({
                       <td>{candidate.source}</td>
                       <td>{candidate.score}</td>
                       <td>{candidate.breakdown.history}</td>
+                      <td>{candidate.breakdown.retrieval}</td>
                       <td>{candidate.breakdown.model}</td>
                       <td>{candidate.breakdown.feedback}</td>
                       <td>{candidate.breakdown.recent_usage}</td>
@@ -295,6 +421,10 @@ export function RankingInspector({
                   <dd>{response.recent_commands.length || 0}</dd>
                 </div>
                 <div>
+                  <dt>Current token</dt>
+                  <dd>{response.retrieved_context.current_token || "n/a"}</dd>
+                </div>
+                <div>
                   <dt>Cleaned model output</dt>
                   <dd>{response.cleaned_model_output || "n/a"}</dd>
                 </div>
@@ -302,24 +432,81 @@ export function RankingInspector({
             </div>
             <div className="detail-block">
               <h3>Model Output</h3>
-              <pre className="code-block">{response.raw_model_output || "No raw model output."}</pre>
+              <pre className="code-block">
+                {response.raw_model_output || "No raw model output."}
+              </pre>
+            </div>
+          </div>
+
+          <div className="grid two-up">
+            <div className="detail-block">
+              <h3>Retrieved Context</h3>
+              <dl className="meta-list">
+                <div>
+                  <dt>History matches</dt>
+                  <dd>{response.retrieved_context.history_matches.length}</dd>
+                </div>
+                <div>
+                  <dt>Path matches</dt>
+                  <dd>{response.retrieved_context.path_matches.length}</dd>
+                </div>
+                <div>
+                  <dt>Git branch matches</dt>
+                  <dd>
+                    {response.retrieved_context.git_branch_matches.length}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Project task matches</dt>
+                  <dd>
+                    {response.retrieved_context.project_task_matches.length}
+                  </dd>
+                </div>
+              </dl>
+            </div>
+            <div className="detail-block">
+              <h3>Retrieved Values</h3>
+              <pre className="code-block">
+                {[
+                  response.retrieved_context.history_matches.length
+                    ? `history:\n- ${response.retrieved_context.history_matches.join("\n- ")}`
+                    : "",
+                  response.retrieved_context.path_matches.length
+                    ? `paths:\n- ${response.retrieved_context.path_matches.join("\n- ")}`
+                    : "",
+                  response.retrieved_context.git_branch_matches.length
+                    ? `branches:\n- ${response.retrieved_context.git_branch_matches.join("\n- ")}`
+                    : "",
+                  response.retrieved_context.project_task_matches.length
+                    ? `project tasks:\n- ${response.retrieved_context.project_task_matches.join("\n- ")}`
+                    : "",
+                ]
+                  .filter(Boolean)
+                  .join("\n\n") || "No retrieved context."}
+              </pre>
             </div>
           </div>
 
           <div className="detail-block">
             <h3>Prompt</h3>
-            <pre className="code-block code-block-tall">{response.prompt || "No prompt generated."}</pre>
+            <pre className="code-block code-block-tall">
+              {response.prompt || "No prompt generated."}
+            </pre>
           </div>
 
           {response.last_stdout_excerpt || response.last_stderr_excerpt ? (
             <div className="grid two-up">
               <div className="detail-block">
                 <h3>Last Stdout Excerpt</h3>
-                <pre className="code-block">{response.last_stdout_excerpt || "n/a"}</pre>
+                <pre className="code-block">
+                  {response.last_stdout_excerpt || "n/a"}
+                </pre>
               </div>
               <div className="detail-block">
                 <h3>Last Stderr Excerpt</h3>
-                <pre className="code-block">{response.last_stderr_excerpt || "n/a"}</pre>
+                <pre className="code-block">
+                  {response.last_stderr_excerpt || "n/a"}
+                </pre>
               </div>
             </div>
           ) : null}
