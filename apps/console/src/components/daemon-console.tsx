@@ -1,11 +1,13 @@
 "use client";
 
+import { Info } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 
 import { ModelPicker } from "@/components/model-picker";
 import { PathHoverActions } from "@/components/path-hover-actions";
 import { SuggestStrategyField } from "@/components/suggest-strategy-field";
+import { useJsonEventStream, type LiveStreamStatus } from "@/components/use-json-event-stream";
 import { formatTimestamp } from "@/lib/format";
 import type {
   ClearDataset,
@@ -26,6 +28,16 @@ const CONFIRMATIONS: Record<ClearDataset, string> = {
   benchmarks: "DELETE_BENCHMARKS",
 };
 
+function formatStreamStatus(status: LiveStreamStatus) {
+  if (status === "live") {
+    return "Live";
+  }
+  if (status === "reconnecting") {
+    return "Reconnecting";
+  }
+  return "Connecting";
+}
+
 export function DaemonConsole({
   initialStatus,
   initialLog,
@@ -42,6 +54,7 @@ export function DaemonConsole({
     LAC_SOCKET_PATH: initialStatus.settings.socketPath,
     LAC_DB_PATH: initialStatus.settings.dbPath,
     LAC_SUGGEST_TIMEOUT_MS: String(initialStatus.settings.suggestTimeoutMs),
+    LAC_PTY_CAPTURE_ALLOWLIST: initialStatus.settings.ptyCaptureAllowlist,
   });
   const [confirmations, setConfirmations] = useState<Record<ClearDataset, string>>({
     suggestions: "",
@@ -59,6 +72,7 @@ export function DaemonConsole({
     job: OllamaInstallJob;
     pendingSave: boolean;
   } | null>(null);
+  const [logStreamKey, setLogStreamKey] = useState(0);
   const pollTimerRef = useRef<number | null>(null);
   const pendingSaveAfterInstallRef = useRef(false);
   const pathRows = [
@@ -67,6 +81,12 @@ export function DaemonConsole({
     { label: "PID file", value: status.pidPath },
     { label: "Log file", value: status.logPath },
   ] as const;
+  const logStreamStatus = useJsonEventStream<{ log?: string }>(
+    `/api/runtime/log/stream?lines=160&streamKey=${logStreamKey}`,
+    (payload) => {
+      setLogText(payload.log || "");
+    },
+  );
 
   function findModelOption(modelName: string) {
     const normalized = modelName.trim();
@@ -108,6 +128,7 @@ export function DaemonConsole({
       LAC_SOCKET_PATH: data.settings.socketPath,
       LAC_DB_PATH: data.settings.dbPath,
       LAC_SUGGEST_TIMEOUT_MS: String(data.settings.suggestTimeoutMs),
+      LAC_PTY_CAPTURE_ALLOWLIST: data.settings.ptyCaptureAllowlist,
     });
     return data;
   }, []);
@@ -473,6 +494,27 @@ export function DaemonConsole({
                 }
               />
             </label>
+            <label>
+              <span className="label-with-info">
+                PTY Capture Allow List
+                <span
+                  className="info-bubble"
+                  title="Comma or space separated command names to wrap with the lightweight PTY capture path. This affects new shells after they reload the plugin; the daemon restart is harmless but not what makes the setting take effect."
+                >
+                  <Info aria-hidden="true" />
+                </span>
+              </span>
+              <input
+                value={settings.LAC_PTY_CAPTURE_ALLOWLIST}
+                onChange={(event) =>
+                  setSettings((current) => ({
+                    ...current,
+                    LAC_PTY_CAPTURE_ALLOWLIST: event.target.value,
+                  }))
+                }
+                placeholder="git,npm,python"
+              />
+            </label>
             <button type="submit" disabled={busy !== ""}>
               {busy === "settings" ? "Saving..." : "Save Settings"}
             </button>
@@ -507,11 +549,25 @@ export function DaemonConsole({
       <div className="detail-block">
         <div className="result-card-header">
           <h3>Recent Daemon Log</h3>
-          <button type="button" className="button-secondary" onClick={() => void refreshRuntime()}>
-            Refresh Log
-          </button>
+          <div className="stream-header-actions">
+            <span className={`stream-indicator stream-indicator-${logStreamStatus}`}>
+              {formatStreamStatus(logStreamStatus)}
+            </span>
+            <button
+              type="button"
+              className="button-secondary"
+              onClick={() => {
+                setLogStreamKey((current) => current + 1);
+                void refreshRuntime();
+              }}
+            >
+              Refresh Log
+            </button>
+          </div>
         </div>
-        <pre className="code-block code-block-tall">{logText || "No daemon log output yet."}</pre>
+        <pre className="code-block code-block-tall" aria-live="polite">
+          {logText || "No daemon log output yet."}
+        </pre>
       </div>
 
       <div className="detail-block">

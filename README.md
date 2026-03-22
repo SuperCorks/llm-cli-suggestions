@@ -1,90 +1,184 @@
 # cli-auto-complete
 
-Local LLM-powered terminal autosuggestions for macOS `zsh`.
+**Local-first, LLM-powered terminal autosuggestions for macOS `zsh`.**
 
-## Current Status
+Type a few characters and a ghost-text suggestion appears inline — press `Tab` to accept, keep typing to ignore. Everything runs on your machine: a Go daemon, a local Ollama model, and a SQLite learning loop. No cloud, no API keys, no telemetry.
 
-This repo currently contains:
+<p align="center">
+  <img src="docs/screenshots/console-dashboard-overview.png" width="100%" alt="Dashboard — live activity stream, top commands, acceptance rate, and model latency at a glance." />
+</p>
 
-- a Go daemon listening on a local Unix socket
-- SQLite-backed logging for commands, suggestions, and feedback
-- an Ollama model adapter
-- a small client binary for shell integration
-- a `zsh` plugin that fetches suggestions asynchronously and accepts them with `Tab`
-- a local Next.js control app in `apps/console` for analytics, daemon control, inspection, and model testing
+---
 
-## Build
+## Highlights
 
-```bash
-make tidy
-make build
-```
+- **Ghost-text suggestions in zsh** — async, debounced, and non-blocking. Feels like IDE autocomplete but for your terminal.
+- **Learns from you** — every command, acceptance, and rejection feeds back into ranking. The engine gets better the more you use it.
+- **Context-aware** — suggestions factor in your working directory, git branch, recent commands, last command output, error codes, and filesystem paths.
+- **Local model inference** — ships with Ollama integration. Runs models like `qwen2.5-coder:7b` entirely on-device.
+- **Full control app** — a local Next.js dashboard for analytics, inspection, benchmarking, model management, and daemon control.
+- **Benchmark suite** — compare models head-to-head on your real prompt contexts and see which one actually works best for your workflow.
 
-This creates:
+---
 
-- `bin/autocomplete-daemon`
-- `bin/autocomplete-client`
-- `bin/model-bench`
+## Screenshots
 
-## Start The Daemon
+### Suggestions in the terminal
 
-```bash
-./bin/autocomplete-daemon
-```
+Ghost-text completions appear inline as you type. Press Tab to accept.
 
-By default it uses:
+<p align="center">
+  <img src="docs/screenshots/zsh-ghost-text-terminal.png" width="100%" alt="Zsh ghost-text suggestions in the terminal" />
+</p>
 
-- socket: `~/Library/Application Support/cli-auto-complete/daemon.sock`
-- db: `~/Library/Application Support/cli-auto-complete/autocomplete.sqlite`
-- model: `qwen2.5-coder:7b`
-- model base url: `http://127.0.0.1:11434`
+### Inspector — see why the engine chose a suggestion
 
-You can override those with environment variables:
+Replay any prompt context, inspect candidate scores, retrieval signals, and raw model output.
 
-- `LAC_SOCKET_PATH`
-- `LAC_DB_PATH`
-- `LAC_MODEL_NAME`
-- `LAC_MODEL_BASE_URL`
-- `LAC_SUGGEST_TIMEOUT_MS`
+<p align="center">
+  <img src="docs/screenshots/console-inspector.png" width="100%" alt="Ranking inspector showing candidate scores and prompt context" />
+</p>
 
-## Zsh Integration
+### Suggestion history
 
-Clone the repo and source the plugin from your shell setup after the binaries are available:
+Browse every suggestion the engine has made, with timing, model, outcome, and full context snapshots.
+
+<p align="center">
+  <img src="docs/screenshots/console-suggestions-history.png" width="100%" alt="Suggestion history table with filtering" />
+</p>
+
+### Model lab — benchmark and compare
+
+Queue repeatable benchmark runs across multiple models, compare latency and acceptance, and drill into individual results.
+
+<p align="center">
+  <img src="docs/screenshots/console-model-lab-benchmarks.png" width="100%" alt="Model lab for benchmarking and ad-hoc model testing" />
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/console-benchmark-run-detail.png" width="100%" alt="Benchmark run detail showing per-model stats" />
+</p>
+
+### Models — download and manage Ollama models
+
+Browse the full Ollama library, download models, and switch the active daemon model without leaving the console.
+
+<p align="center">
+  <img src="docs/screenshots/console-models-inventory.png" width="100%" alt="Model inventory with installed and available models" />
+</p>
+
+### Commands & feedback signals
+
+See executed commands, feedback events, rejection pressure, and acceptance rates by path.
+
+<p align="center">
+  <img src="docs/screenshots/console-commands-and-feedback.png" width="100%" alt="Commands and feedback signals page" />
+</p>
+
+---
+
+## Quick Start
+
+### Prerequisites
+
+- macOS with `zsh`
+- [Go 1.21+](https://go.dev/dl/)
+- [Ollama](https://ollama.com/) running locally with at least one model pulled (e.g. `ollama pull qwen2.5-coder:7b`)
+- [Node 24+](https://nodejs.org/) (for the control app only)
+
+### Install and run
 
 ```bash
 git clone https://github.com/SuperCorks/cli-auto-complete.git
 cd cli-auto-complete
 make build
+```
+
+Start the daemon:
+
+```bash
+./bin/autocomplete-daemon
+```
+
+Load the zsh plugin (add to your `.zshrc` for persistence):
+
+```bash
 source "$PWD/zsh/cli-auto-complete.zsh"
-```
-
-If needed, point the plugin at the built binaries explicitly:
-
-```bash
-export LAC_CLIENT_BIN="$PWD/bin/autocomplete-client"
-export LAC_DAEMON_BIN="$PWD/bin/autocomplete-daemon"
-```
-
-Start the daemon from the shell with:
-
-```bash
 lac-start-daemon
 ```
 
-The shell startup path now also checks `~/Library/Application Support/cli-auto-complete/runtime.env` so settings saved from the control app persist into future `fancy` shells.
+That's it — start typing and suggestions will appear.
 
-## Current Behavior
+---
 
-- `Tab` accepts a suggestion if one is visible.
-- If no suggestion is visible, `Tab` falls back to normal completion.
-- Suggestions are requested asynchronously with a short debounce and stale responses are discarded.
-- The plugin records executed commands, accepted suggestions, and rejected suggestions.
-- Suggestions are ranked from history, context, feedback, and local model output.
-- `lac-capture <command ...>` can be used for bounded stdout/stderr capture on non-interactive commands.
+## How It Works
+
+```
+You type → zsh plugin schedules async request → Go daemon scores candidates → ghost-text renders
+                                                        │
+                                        ┌───────────────┼───────────────────┐
+                                        │               │                   │
+                                   History DB      Ollama model      Retrieval engine
+                                   (SQLite)        (local LLM)      (paths, branches,
+                                                                     tasks, output)
+                                        │               │                   │
+                                        └───────────────┼───────────────────┘
+                                                        │
+                                                  Ranked blend → top suggestion
+```
+
+The suggestion engine blends signals from:
+
+1. **Command history** — prefix matching with repo, branch, and cwd affinity scoring
+2. **Local model** — Ollama inference with bounded timeout, only called when history isn't confident enough
+3. **Retrieved context** — filesystem paths, git branches, project tasks (npm/make/just), and recent command output
+4. **Feedback loop** — accepted suggestions get boosted, rejected ones get penalized
+
+---
+
+## Configuration
+
+The daemon uses sensible defaults:
+
+| Setting | Default | Env var |
+|---|---|---|
+| Socket | `~/Library/Application Support/cli-auto-complete/daemon.sock` | `LAC_SOCKET_PATH` |
+| Database | `~/Library/Application Support/cli-auto-complete/autocomplete.sqlite` | `LAC_DB_PATH` |
+| Model | `qwen2.5-coder:7b` | `LAC_MODEL_NAME` |
+| Ollama URL | `http://127.0.0.1:11434` | `LAC_MODEL_BASE_URL` |
+| Suggest timeout | `1200ms` | `LAC_SUGGEST_TIMEOUT_MS` |
+
+Settings saved from the control app persist to `runtime.env` and are picked up by new shells automatically.
+
+---
+
+## Control App
+
+The local Next.js control app lives in `apps/console`:
+
+```bash
+cd apps/console
+npm install
+npm run dev
+```
+
+Open the local URL shown by Next.js to access the dashboard, suggestion explorer, inspector, model lab, and daemon controls.
+
+For a production build: `npm run build`. Run the e2e smoke suite with `npm run e2e`.
+
+---
+
+## Output Capture
+
+The engine can use previous command output to make smarter suggestions (e.g. run `git branch`, then `git checkout` suggests an actual branch name).
+
+- **PTY capture** — set `LAC_PTY_CAPTURE_ALLOWLIST=git,npm,python` to automatically capture output for specific commands
+- **Auto capture** — set `LAC_AUTO_CAPTURE_ENABLED=1` for safe non-interactive commands (may affect color output)
+- **Explicit** — `lac-capture <command>` or `lac-capture-pty <command>` for one-off capture
+
+---
 
 ## Inspect Logged Data
-
-Use the client to inspect the local SQLite data:
 
 ```bash
 ./bin/autocomplete-client inspect summary
@@ -92,72 +186,25 @@ Use the client to inspect the local SQLite data:
 ./bin/autocomplete-client inspect recent-feedback --limit 20
 ```
 
-## Control App
+---
 
-The local control app lives in `apps/console`.
-
-Use Node `24` for the console app. The repo now includes a root `.node-version` file, and `apps/console/package.json` declares a Node `24.x` engine range.
-
-Install dependencies:
+## Tests
 
 ```bash
-cd apps/console
-npm install
-```
-
-Run the development server:
-
-```bash
-npm run dev
-```
-
-Open the local URL shown by Next.js to access:
-
-- overview metrics and recent activity
-- suggestion and command history explorers
-- inspection against the daemon `/inspect` route
-- ad-hoc model testing and saved benchmark runs
-- daemon start, stop, restart, runtime settings, exports, and maintenance actions
-
-For a production build check:
-
-```bash
-npm run build
-```
-
-Run the console e2e smoke suite with:
-
-```bash
-npm run e2e
-```
-
-This suite boots the app against a seeded temporary SQLite fixture and checks the main happy paths across the dashboard, suggestions, commands, inspector, model lab, and daemon screens.
-
-## Benchmark And Smoke Tests
-
-Run the automated checks with:
-
-```bash
-make test
-make smoke-shell
-make bench-models
+make test               # Go unit tests
+make smoke-shell        # Zsh integration smoke test
+make bench-models       # Model benchmark suite
 cd apps/console && npm run typecheck && npm run lint && npm run build && npm run e2e
 ```
 
-`make bench-models` uses `llama3.2:latest` by default. To benchmark a different installed model:
+Compare multiple models:
 
 ```bash
-./bin/model-bench -models qwen2.5-coder:7b
+./bin/model-bench -models qwen2.5-coder:7b,gemma3:12b-it-qat,mistral-small
 ```
 
-To compare multiple installed models:
+---
 
-```bash
-./bin/model-bench -models llama3.2:latest,qwen2.5-coder:7b,mistral-small
-```
+## Current Status
 
-## Notes
-
-- This is still an early autosuggestion engine, but it now includes a usable local control plane for inspection and tuning.
-- Output capture is still intentionally limited in `v1` and currently works best through `lac-capture`.
-- The biggest remaining improvement areas are quality tuning, richer eval loops, and shell UX hardening.
+This is an actively developed personal project. The engine, control app, and shell integration are functional and used daily. The biggest remaining areas are quality tuning, richer eval loops, and shell UX hardening.
