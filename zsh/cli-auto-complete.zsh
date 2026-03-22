@@ -15,9 +15,11 @@ typeset -g LAC_RUNTIME_ENV_PATH="$LAC_STATE_DIR/runtime.env"
 typeset -g LAC_ASYNC_DIR="${LAC_ASYNC_DIR:-$LAC_STATE_DIR/async}"
 typeset -g LAC_CLIENT_BIN="${LAC_CLIENT_BIN:-$LAC_ROOT_DIR/bin/autocomplete-client}"
 typeset -g LAC_DAEMON_BIN="${LAC_DAEMON_BIN:-$LAC_ROOT_DIR/bin/autocomplete-daemon}"
+typeset -g LAC_ASYNC_HELPER_BIN="${LAC_ASYNC_HELPER_BIN:-$LAC_ROOT_DIR/scripts/async_suggest.sh}"
 typeset -g LAC_DAEMON_PID_PATH="$LAC_STATE_DIR/daemon.pid"
 typeset -g LAC_DEBOUNCE_SECONDS="${LAC_DEBOUNCE_SECONDS:-0.08}"
 typeset -g LAC_HIGHLIGHT_STYLE="${LAC_HIGHLIGHT_STYLE:-fg=242}"
+typeset -g LAC_SNAPSHOT_PATH="${LAC_SNAPSHOT_PATH:-}"
 typeset -gi LAC_CAPTURE_BYTES="${LAC_CAPTURE_BYTES:-600}"
 typeset -g LAC_MODEL_BASE_URL="${LAC_MODEL_BASE_URL:-}"
 typeset -g LAC_SUGGEST_STRATEGY="${LAC_SUGGEST_STRATEGY:-}"
@@ -50,11 +52,14 @@ typeset -gx LAC_SUGGEST_TIMEOUT_MS="${LAC_SUGGEST_TIMEOUT_MS:-1200}"
 mkdir -p -- "$LAC_STATE_DIR" "$LAC_ASYNC_DIR"
 
 typeset -g LAC_SESSION_ID="${LAC_SESSION_ID:-lac-$$-${EPOCHSECONDS}-${RANDOM}}"
+typeset -g LAC_ASYNC_SESSION_DIR="${LAC_ASYNC_SESSION_DIR:-$LAC_ASYNC_DIR/$LAC_SESSION_ID}"
+typeset -g LAC_NOTIFY_PIPE_PATH="${LAC_NOTIFY_PIPE_PATH:-$LAC_ASYNC_SESSION_DIR/notify.pipe}"
 typeset -g LAC_SUGGESTION=""
 typeset -g LAC_SUGGESTION_SOURCE=""
 typeset -gi LAC_SUGGESTION_ID=0
 typeset -gi LAC_REQUEST_SEQ=0
 typeset -gi LAC_ASYNC_READY=0
+typeset -gi LAC_NOTIFY_FD=-1
 typeset -gi LAC_LAST_EXIT_CODE=0
 typeset -g LAC_ACTIVE_COMMAND=""
 typeset -g LAC_COMMAND_CWD=""
@@ -63,6 +68,8 @@ typeset -g LAC_COMMAND_BRANCH=""
 typeset -gi LAC_COMMAND_STARTED_AT_MS=0
 typeset -g LAC_CAPTURED_STDOUT=""
 typeset -g LAC_CAPTURED_STDERR=""
+
+mkdir -p -- "$LAC_ASYNC_SESSION_DIR"
 
 _lac_now_ms() {
   printf '%d\n' "$(( EPOCHREALTIME * 1000 ))"
@@ -104,6 +111,30 @@ _lac_clear_highlight() {
   region_highlight=("${filtered[@]}")
 }
 
+_lac_snapshot_field() {
+  local value="$1"
+  value="${value//$'\t'/ }"
+  value="${value//$'\n'/ }"
+  value="${value//$'\r'/ }"
+  print -rn -- "$value"
+}
+
+_lac_write_snapshot() {
+  local event="$1"
+
+  [[ -n "$LAC_SNAPSHOT_PATH" ]] || return 0
+
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$event" \
+    "$(_lac_snapshot_field "$BUFFER")" \
+    "$(_lac_snapshot_field "${POSTDISPLAY-}")" \
+    "$(_lac_snapshot_field "$LAC_SUGGESTION")" \
+    "$(_lac_snapshot_field "$LAC_SUGGESTION_SOURCE")" \
+    "${CURSOR:-0}" \
+    "${LAC_ASYNC_READY:-0}" \
+    "${LAC_REQUEST_SEQ:-0}" >>| "$LAC_SNAPSHOT_PATH"
+}
+
 _lac_render_suggestion() {
   if [[ -z "$LAC_SUGGESTION" ]]; then
     POSTDISPLAY=""
@@ -139,7 +170,7 @@ _lac_render_suggestion() {
 }
 
 _lac_write_latest_seq() {
-  print -rn -- "$LAC_REQUEST_SEQ" >| "$LAC_ASYNC_DIR/latest.seq"
+  print -rn -- "$LAC_REQUEST_SEQ" >| "$LAC_ASYNC_SESSION_DIR/latest.seq"
 }
 
 _lac_invalidate_pending() {
@@ -202,11 +233,12 @@ _lac_refresh_suggestion_sync() {
   typeset -g LAC_SUGGESTION="$suggestion"
   typeset -g LAC_SUGGESTION_SOURCE="$source"
   _lac_render_suggestion
+  _lac_write_snapshot "async-applied"
 }
 
 _lac_apply_async_result() {
   local file seq line suggestion_id suggestion source
-  local files=("$LAC_ASYNC_DIR"/*.tsv(N))
+  local files=("$LAC_ASYNC_SESSION_DIR"/*.tsv(N))
 
   for file in $files; do
     seq="${${file:t}%.tsv}"
@@ -219,7 +251,7 @@ _lac_apply_async_result() {
     fi
   done
 
-  file="$LAC_ASYNC_DIR/$LAC_REQUEST_SEQ.tsv"
+  file="$LAC_ASYNC_SESSION_DIR/$LAC_REQUEST_SEQ.tsv"
   [[ -f "$file" ]] || return 0
 
   IFS= read -r line < "$file"
@@ -244,8 +276,47 @@ _lac_apply_async_result() {
   _lac_render_suggestion
 }
 
+_lac_flush_async_result() {
+  if (( ! LAC_ASYNC_READY )); then
+    return 0
+  fi
+
+  typeset -gi LAC_ASYNC_READY=0
+  _lac_apply_async_result
+}
+
+_lac_async_notify_handler() {
+  local fd="$1"
+  local notice=""
+
+  IFS= read -r -u "$fd" notice || return 0
+  typeset -gi LAC_ASYNC_READY=1
+  _lac_write_snapshot "notify:${notice}"
+  _lac_flush_async_result
+  _lac_render_suggestion
+  _lac_write_snapshot "notify-applied:${notice}"
+  zle -R 2>/dev/null || true
+}
+
+_lac_ensure_async_notifier() {
+  if (( LAC_NOTIFY_FD >= 0 )); then
+    return 0
+  fi
+
+  mkdir -p -- "$LAC_ASYNC_SESSION_DIR"
+  rm -f -- "$LAC_NOTIFY_PIPE_PATH"
+  mkfifo "$LAC_NOTIFY_PIPE_PATH" || return 1
+  exec {LAC_NOTIFY_FD}<>"$LAC_NOTIFY_PIPE_PATH" || return 1
+  zle -F -w "$LAC_NOTIFY_FD" lac-async-notify 2>/dev/null || return 1
+  return 0
+}
+
+_lac_zle_line_init() {
+  _lac_ensure_async_notifier || true
+}
+
 _lac_schedule_suggestion() {
-  local buffer cwd repo_root branch seq latest_file result_file shell_pid
+  local buffer cwd repo_root branch seq latest_file notify_pipe result_file shell_pid
 
   if [[ -z "$BUFFER" || $CURSOR -ne ${#BUFFER} ]]; then
     _lac_invalidate_pending
@@ -259,9 +330,10 @@ _lac_schedule_suggestion() {
   branch="$(_lac_git_branch)"
   (( LAC_REQUEST_SEQ += 1 ))
   seq=$LAC_REQUEST_SEQ
-  latest_file="$LAC_ASYNC_DIR/latest.seq"
-  result_file="$LAC_ASYNC_DIR/$seq.tsv"
+  latest_file="$LAC_ASYNC_SESSION_DIR/latest.seq"
+  result_file="$LAC_ASYNC_SESSION_DIR/$seq.tsv"
   shell_pid=$$
+  notify_pipe=""
 
   _lac_write_latest_seq
 
@@ -271,58 +343,44 @@ _lac_schedule_suggestion() {
     _lac_render_suggestion
   fi
 
-  (
-    local latest line
-    sleep "$LAC_DEBOUNCE_SECONDS"
-    if [[ -f "$latest_file" ]]; then
-      IFS= read -r latest < "$latest_file"
-    fi
-    [[ "$latest" == "$seq" ]] || exit 0
+  _lac_write_snapshot "scheduled:${shell_pid}:${seq}"
 
-    line="$("$LAC_CLIENT_BIN" suggest \
-      --socket "$LAC_SOCKET_PATH" \
-      --session "$LAC_SESSION_ID" \
-      --buffer "$buffer" \
-      --cwd "$cwd" \
-      --repo-root "$repo_root" \
-      --branch "$branch" \
-      --last-exit "$LAC_LAST_EXIT_CODE" 2>/dev/null)"
+  [[ -x "$LAC_ASYNC_HELPER_BIN" ]] || return 0
 
-    if [[ -f "$latest_file" ]]; then
-      IFS= read -r latest < "$latest_file"
-    fi
-    [[ "$latest" == "$seq" ]] || exit 0
-
-    print -r -- "$line" >| "$result_file"
-    kill -USR1 "$shell_pid" 2>/dev/null || true
-  ) &!
-}
-
-TRAPUSR1() {
-  typeset -gi LAC_ASYNC_READY=1
-  if [[ -n "${ZLE_STATE:-}" ]]; then
-    zle -R 2>/dev/null
+  if _lac_ensure_async_notifier; then
+    notify_pipe="$LAC_NOTIFY_PIPE_PATH"
   fi
-  return 0
+
+  "$LAC_ASYNC_HELPER_BIN" \
+    "$LAC_DEBOUNCE_SECONDS" \
+    "$latest_file" \
+    "$seq" \
+    "$result_file" \
+    "$LAC_CLIENT_BIN" \
+    "$LAC_SOCKET_PATH" \
+    "$LAC_SESSION_ID" \
+    "$buffer" \
+    "$cwd" \
+    "$repo_root" \
+    "$branch" \
+    "$LAC_LAST_EXIT_CODE" \
+    "$notify_pipe" \
+    "$LAC_SNAPSHOT_PATH" </dev/null &!
 }
 
 _lac_zle_line_pre_redraw() {
-  if (( LAC_ASYNC_READY )); then
-    typeset -gi LAC_ASYNC_READY=0
-    _lac_apply_async_result
-  fi
+  _lac_flush_async_result
   _lac_render_suggestion
+  _lac_write_snapshot "pre-redraw"
 }
 
 _lac_after_buffer_change() {
-  if (( LAC_ASYNC_READY )); then
-    typeset -gi LAC_ASYNC_READY=0
-    _lac_apply_async_result
-  fi
+  _lac_flush_async_result
 
   if [[ -z "$BUFFER" || $CURSOR -ne ${#BUFFER} ]]; then
     _lac_invalidate_pending
     _lac_clear_suggestion
+    _lac_write_snapshot "buffer-cleared"
     return 0
   fi
 
@@ -332,6 +390,7 @@ _lac_after_buffer_change() {
     _lac_clear_suggestion
   fi
 
+  _lac_write_snapshot "buffer-change"
   _lac_schedule_suggestion
 }
 
@@ -521,6 +580,8 @@ function $wrapper_function() {
 }
 
 zle -N lac-accept-or-complete
+zle -N lac-async-notify _lac_async_notify_handler
+zle -N zle-line-init _lac_zle_line_init
 zle -N zle-line-pre-redraw _lac_zle_line_pre_redraw
 
 for widget in \

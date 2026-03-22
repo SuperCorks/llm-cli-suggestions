@@ -38,7 +38,7 @@ The suite runs against a seeded temporary SQLite state and currently covers:
 
 - overview dashboard rendering
 - suggestion and command explorer rendering
-- ranking inspector interaction
+- inspector interaction
 - model lab benchmark details
 - daemon settings and log display
 

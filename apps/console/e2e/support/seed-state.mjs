@@ -50,6 +50,8 @@ db.exec(`
     last_exit_code INTEGER NOT NULL,
     latency_ms INTEGER NOT NULL,
     model_name TEXT NOT NULL,
+    prompt_text TEXT NOT NULL DEFAULT '',
+    structured_context_json TEXT NOT NULL DEFAULT '',
     created_at_ms INTEGER NOT NULL
   );
 
@@ -63,6 +65,12 @@ db.exec(`
     accepted_command TEXT NOT NULL,
     actual_command TEXT NOT NULL,
     created_at_ms INTEGER NOT NULL
+  );
+
+  CREATE TABLE suggestion_reviews (
+    suggestion_id INTEGER PRIMARY KEY,
+    review_label TEXT NOT NULL,
+    updated_at_ms INTEGER NOT NULL
   );
 
   CREATE TABLE benchmark_runs (
@@ -235,6 +243,59 @@ insertFeedback.run(
   "npm run test",
   now - 88_000,
 );
+
+db.prepare(
+  "INSERT INTO suggestion_reviews(suggestion_id, review_label, updated_at_ms) VALUES (?, ?, ?)",
+).run(Number(acceptedSuggestion.lastInsertRowid), "good", now - 107_000);
+db.prepare(
+  "INSERT INTO suggestion_reviews(suggestion_id, review_label, updated_at_ms) VALUES (?, ?, ?)",
+).run(Number(rejectedSuggestion.lastInsertRowid), "bad", now - 87_000);
+
+for (let index = 0; index < 32; index += 1) {
+  const id = insertSuggestion.run(
+    sessionId,
+    index % 2 === 0 ? `git log --oneline -${index}` : `npm run t${index}`,
+    index % 2 === 0 ? `git log --oneline -${index + 1}` : `npm run test:${index}`,
+    index % 3 === 0 ? "history" : index % 3 === 1 ? "model" : "history+model",
+    cwd,
+    repoRoot,
+    index % 4 === 0 ? "main" : "feature/suggestions",
+    index % 5,
+    40 + index * 9,
+    index % 2 === 0 ? "qwen2.5-coder:7b" : "llama3.2:latest",
+    now - 60_000 + index * 900,
+  );
+
+  if (index % 6 === 0) {
+    insertFeedback.run(
+      Number(id.lastInsertRowid),
+      sessionId,
+      "accepted",
+      index % 2 === 0 ? `git log --oneline -${index}` : `npm run t${index}`,
+      index % 2 === 0 ? `git log --oneline -${index + 1}` : `npm run test:${index}`,
+      index % 2 === 0 ? `git log --oneline -${index + 1}` : `npm run test:${index}`,
+      "",
+      now - 59_000 + index * 900,
+    );
+  } else if (index % 7 === 0) {
+    insertFeedback.run(
+      Number(id.lastInsertRowid),
+      sessionId,
+      "rejected",
+      index % 2 === 0 ? `git log --oneline -${index}` : `npm run t${index}`,
+      index % 2 === 0 ? `git log --oneline -${index + 1}` : `npm run test:${index}`,
+      "",
+      index % 2 === 0 ? "git status" : "npm run lint",
+      now - 59_000 + index * 900,
+    );
+  }
+
+  if (index % 8 === 0) {
+    db.prepare(
+      "INSERT INTO suggestion_reviews(suggestion_id, review_label, updated_at_ms) VALUES (?, ?, ?)",
+    ).run(Number(id.lastInsertRowid), index % 16 === 0 ? "good" : "bad", now - 58_000 + index * 900);
+  }
+}
 
 const summaryJson = JSON.stringify({
   "qwen2.5-coder:7b": {

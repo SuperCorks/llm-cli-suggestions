@@ -1,11 +1,15 @@
+import { unstable_noStore as noStore } from "next/cache";
+
 import { DaemonConsole } from "@/components/daemon-console";
 import { Panel } from "@/components/panel";
 import { listAvailableOllamaModels } from "@/lib/server/ollama";
 import { getRuntimeStatusWithHealth, tailDaemonLog } from "@/lib/server/runtime";
 
 export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 export default async function DaemonPage() {
+  noStore();
   const status = await getRuntimeStatusWithHealth();
   const recentLog = tailDaemonLog(160);
   const inventory = await listAvailableOllamaModels(status.settings.modelBaseUrl);
@@ -15,8 +19,8 @@ export default async function DaemonPage() {
       <div className="page-heading">
         <div>
           <span className="eyebrow">Control</span>
-          <h1>Daemon & Data Ops</h1>
-          <p>Manage runtime settings, start or restart the daemon, export datasets, and safely clear selected data.</p>
+          <h1>Daemon</h1>
+          <p>Manage runtime settings, start or restart the daemon, inspect logs, and safely clear selected local datasets.</p>
         </div>
       </div>
 

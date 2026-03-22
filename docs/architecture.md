@@ -14,8 +14,8 @@ The current implementation is built from five main pieces:
 ## High-Level Flow
 
 1. The user types in `zsh`.
-2. The plugin watches buffer changes and schedules a debounced background request.
-3. The background worker calls `autocomplete-client suggest`.
+2. The plugin watches buffer changes and schedules a debounced helper process.
+3. The helper process calls `autocomplete-client suggest`.
 4. The client sends an HTTP request over a local Unix socket to the daemon.
 5. The daemon builds a suggestion using local history, feedback, context, and optional model output.
 6. The daemon stores the suggestion in SQLite.
@@ -64,9 +64,10 @@ The current app sections are:
 - overview
 - suggestions
 - commands and feedback
-- ranking inspector
+- inspector
+- models
 - model lab
-- daemon and data ops
+- daemon
 
 This keeps the browser simple while preserving a clean boundary between:
 
@@ -96,6 +97,14 @@ The current HTTP routes are:
 
 `/inspect` is a local-only debug route used by the control app. It returns ranked candidates, score breakdowns, retrieved local context, prompt context, and raw or cleaned model output for a supplied prompt state.
 
+For inspect requests, the daemon now resolves missing context before scoring:
+
+- if a `session_id` is present, it pulls the latest recorded command context and recent commands for that session
+- if a `cwd` is present, it can pull the most recent command context seen in that working directory
+- if database context is incomplete but `cwd` is available, it falls back to lightweight local git inspection to infer repo root and branch
+
+That lets the control app keep ranking and ad-hoc test forms simple while still exercising the same context-aware engine behavior as the live shell flow.
+
 ## Suggestion Engine
 
 The suggestion engine combines multiple local signals:
@@ -114,13 +123,15 @@ The suggestion engine combines multiple local signals:
 The current ranking shape is:
 
 1. gather prefix-matching history candidates
-2. gather targeted local retrieval candidates for paths, branches, and project tasks
+2. gather targeted local retrieval candidates for paths, branches, and project tasks while also loading broader local project task context for the prompt when available
 3. trust history immediately when one candidate is clearly dominant
 4. otherwise ask the local model for one candidate
 5. blend history, retrieval, model, recent usage, feedback, and last-command context
 6. store and return the top-ranked result
 
 This keeps the system fast when local context is strong and still allows the model to help in more ambiguous cases.
+
+For control-app inspection and ad-hoc model tests, the ranking entrypoint can also hydrate prompt context from the recorded command database before step 1, using session- or cwd-scoped history when possible.
 
 ## Storage Model
 
@@ -134,6 +145,8 @@ SQLite is used as the single local state store. The main tables are:
 - `benchmark_results`
 
 This database supports both runtime behavior and future learning work. It already stores enough information to build offline eval sets and personalized reranking later.
+
+Suggestion rows now also persist the exact prompt text and a structured context snapshot used at decision time, so the control app can inspect and replay historical suggestions more faithfully.
 
 ## Runtime Settings
 
@@ -160,7 +173,7 @@ The current strategy modes are:
 - `history+model`
 - `model-only`
 
-The daemon uses the persisted runtime strategy for live shell suggestions, while the ranking inspector can override it per inspect request for debugging and comparison.
+The daemon uses the persisted runtime strategy for live shell suggestions, while the inspector can override it per inspect request for debugging and comparison.
 
 ## Local Model Layer
 
@@ -179,11 +192,12 @@ The backend boundary is intentionally narrow so other local providers can be add
 The shell integration is asynchronous by design:
 
 - each buffer change increments a request sequence
-- the plugin writes the newest sequence to local state
+- each shell session gets its own async state directory under `LAC_ASYNC_DIR`
+- the plugin writes the newest sequence to per-session local state
 - a background worker checks whether its request is still current before and after calling the client
 - completed results are written to a per-request file
-- the worker signals the shell
-- the shell applies the newest result during redraw
+- the worker writes to a per-session notify pipe
+- a `zle -F` widget handler wakes the editor and applies the newest result during redraw
 
 This avoids blocking on model latency and prevents old results from overriding newer typing state.
 

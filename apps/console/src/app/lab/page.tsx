@@ -1,3 +1,5 @@
+import { unstable_noStore as noStore } from "next/cache";
+
 import { LabConsole } from "@/components/lab-console";
 import { Panel } from "@/components/panel";
 import { listAvailableOllamaModels } from "@/lib/server/ollama";
@@ -5,8 +7,10 @@ import { listBenchmarkRuns } from "@/lib/server/queries";
 import { getRuntimeStatusWithHealth } from "@/lib/server/runtime";
 
 export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 export default async function LabPage() {
+  noStore();
   const runtime = await getRuntimeStatusWithHealth();
   const activeModel = runtime.health.ok ? runtime.health.modelName : runtime.settings.modelName;
   const runs = listBenchmarkRuns(20);
@@ -29,7 +33,7 @@ export default async function LabPage() {
         <LabConsole
           initialRuns={runs}
           defaultModel={activeModel}
-          defaultModelBaseUrl={runtime.settings.modelBaseUrl}
+          defaultSuggestStrategy={runtime.settings.suggestStrategy}
           availableModels={modelInventory.models}
           inventorySummary={modelInventory}
         />

@@ -1,9 +1,7 @@
 import type { Metadata } from "next";
-import { TerminalSquare } from "lucide-react";
 import { Inter, Roboto_Mono, Space_Grotesk } from "next/font/google";
-import Link from "next/link";
 import "./globals.css";
-import { AppNav } from "@/components/nav";
+import { AppChrome } from "@/components/app-chrome";
 import { getRuntimeStatusWithHealth } from "@/lib/server/runtime";
 
 const inter = Inter({
@@ -36,38 +34,7 @@ export default async function RootLayout({
   return (
     <html lang="en" className={`${inter.variable} ${spaceGrotesk.variable} ${robotoMono.variable}`}>
       <body>
-        <div className="app-shell">
-          <aside className="sidebar">
-            <div className="sidebar-brand">
-              <div className="sidebar-brand-mark">
-                <TerminalSquare aria-hidden="true" />
-              </div>
-              <h1>cli-auto-complete</h1>
-              <p>Terminal engine</p>
-            </div>
-            <AppNav />
-            <div className="sidebar-cta">
-              <Link href="/daemon" className="button-link sidebar-sync">
-                Sync Config
-              </Link>
-            </div>
-          </aside>
-          <div className="app-main">
-            <header className="topbar">
-              <div className="topbar-left">
-                <h2>cli-auto-complete Console</h2>
-                <div className="topbar-statuses">
-                  <span className={runtime.health.ok ? "status-chip status-chip-live" : "status-chip"}>
-                    <span className="status-dot" aria-hidden="true" />
-                    {runtime.health.ok ? "Healthy" : "Offline"}
-                  </span>
-                  <span className="model-chip">Model: {runtime.health.modelName}</span>
-                </div>
-              </div>
-            </header>
-            <main className="main-shell">{children}</main>
-          </div>
-        </div>
+        <AppChrome runtime={runtime}>{children}</AppChrome>
       </body>
     </html>
   );

@@ -2,6 +2,7 @@
 
 import type { LucideIcon } from "lucide-react";
 import {
+  Boxes,
   ChartColumnBig,
   FlaskConical,
   LayoutDashboard,
@@ -16,12 +17,13 @@ const NAV_ITEMS = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
   { href: "/suggestions", label: "Suggestions", icon: SearchCode },
   { href: "/commands", label: "Signals", icon: Sparkles },
-  { href: "/ranking", label: "Ranking", icon: ChartColumnBig },
-  { href: "/lab", label: "Model Lab", icon: FlaskConical },
-  { href: "/daemon", label: "Ops", icon: ServerCog },
+  { href: "/inspector", label: "Inspector", icon: ChartColumnBig },
+  { href: "/lab", label: "Benchmarks", icon: FlaskConical },
+  { href: "/models", label: "Models", icon: Boxes },
+  { href: "/daemon", label: "Daemon", icon: ServerCog },
 ] satisfies Array<{ href: string; label: string; icon: LucideIcon }>;
 
-export function AppNav() {
+export function AppNav({ collapsed = false }: { collapsed?: boolean }) {
   const pathname = usePathname();
 
   return (
@@ -35,9 +37,13 @@ export function AppNav() {
             key={item.href}
             href={item.href}
             className={active ? "nav-link nav-link-active" : "nav-link"}
+            aria-label={item.label}
+            title={item.label}
           >
             <Icon className="nav-link-icon" aria-hidden="true" />
-            {item.label}
+            <span className={collapsed ? "nav-link-label visually-hidden" : "nav-link-label"}>
+              {item.label}
+            </span>
           </Link>
         );
       })}

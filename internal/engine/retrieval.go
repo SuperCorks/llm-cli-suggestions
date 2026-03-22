@@ -42,7 +42,10 @@ func buildRetrievedContext(ctx context.Context, request api.SuggestRequest, hist
 	branchMatches, branchCandidates := retrieveGitBranchMatches(ctx, request)
 	result.GitBranchMatches = branchMatches
 
-	taskMatches, taskCandidates := retrieveProjectTaskMatches(request)
+	projectTasks := loadProjectTasks(request.CWD, request.RepoRoot)
+	result.ProjectTasks = projectTasks
+
+	taskMatches, taskCandidates := retrieveProjectTaskMatches(request.Buffer, projectTasks)
 	result.ProjectTaskMatches = taskMatches
 
 	candidates := make([]retrievalCandidate, 0, len(pathCandidates)+len(branchCandidates)+len(taskCandidates))
@@ -173,28 +176,9 @@ func retrieveGitBranchMatches(ctx context.Context, request api.SuggestRequest) (
 	return matches, candidates
 }
 
-func retrieveProjectTaskMatches(request api.SuggestRequest) ([]string, []retrievalCandidate) {
-	runner, token, ok := detectProjectTaskContext(request.Buffer)
-	if !ok || token == "" {
-		return nil, nil
-	}
-
-	searchRoot := firstNonEmpty(request.CWD, request.RepoRoot)
-	if searchRoot == "" {
-		return nil, nil
-	}
-
-	var tasks []string
-	switch runner {
-	case "npm run", "pnpm run", "yarn run":
-		tasks = loadPackageScripts(searchRoot, request.RepoRoot)
-	case "make":
-		tasks = loadMakeTargets(searchRoot, request.RepoRoot)
-	case "just":
-		tasks = loadJustTargets(searchRoot, request.RepoRoot)
-	}
-
-	if len(tasks) == 0 {
+func retrieveProjectTaskMatches(buffer string, tasks []string) ([]string, []retrievalCandidate) {
+	_, token, ok := detectProjectTaskContext(buffer)
+	if !ok || token == "" || len(tasks) == 0 {
 		return nil, nil
 	}
 
@@ -206,7 +190,7 @@ func retrieveProjectTaskMatches(request api.SuggestRequest) ([]string, []retriev
 		}
 		matches = append(matches, task)
 		candidates = append(candidates, retrievalCandidate{
-			Command: replaceCurrentToken(request.Buffer, task),
+			Command: replaceCurrentToken(buffer, task),
 			Source:  "project-task",
 			Score:   28,
 		})
@@ -318,6 +302,38 @@ func detectProjectTaskContext(buffer string) (string, string, bool) {
 	default:
 		return "", "", false
 	}
+}
+
+func loadProjectTasks(cwd, repoRoot string) []string {
+	result := make([]string, 0, 24)
+	seen := map[string]struct{}{}
+	appendUnique := func(values []string) {
+		for _, value := range values {
+			if value == "" {
+				continue
+			}
+			if _, exists := seen[value]; exists {
+				continue
+			}
+			seen[value] = struct{}{}
+			result = append(result, value)
+			if len(result) >= 24 {
+				return
+			}
+		}
+	}
+
+	appendUnique(loadPackageScripts(cwd, repoRoot))
+	if len(result) < 24 {
+		appendUnique(loadMakeTargets(cwd, repoRoot))
+	}
+	if len(result) < 24 {
+		appendUnique(loadJustTargets(cwd, repoRoot))
+	}
+	if len(result) > 24 {
+		return result[:24]
+	}
+	return result
 }
 
 func loadPackageScripts(cwd, repoRoot string) []string {

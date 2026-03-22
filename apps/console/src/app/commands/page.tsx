@@ -1,3 +1,4 @@
+import { PathHoverActions } from "@/components/path-hover-actions";
 import { Panel } from "@/components/panel";
 import { formatDurationMs, formatPercent, formatTimestamp } from "@/lib/format";
 import { getFeedbackSummaryFiltered, listCommands } from "@/lib/server/queries";
@@ -53,11 +54,15 @@ export default async function CommandsPage({
             </label>
             <label>
               CWD
-              <input name="cwd" defaultValue={getString(params.cwd)} />
+              <PathHoverActions pathValue={getString(params.cwd)} label="Commands filter cwd" variant="input">
+                <input name="cwd" defaultValue={getString(params.cwd)} />
+              </PathHoverActions>
             </label>
             <label>
               Repo
-              <input name="repo" defaultValue={getString(params.repo)} />
+              <PathHoverActions pathValue={getString(params.repo)} label="Commands filter repo" variant="input">
+                <input name="repo" defaultValue={getString(params.repo)} />
+              </PathHoverActions>
             </label>
           </div>
           <div className="inline-actions">
@@ -86,7 +91,13 @@ export default async function CommandsPage({
           <ul className="metric-list">
             {feedback.acceptanceByPath.map((row) => (
               <li key={row.path}>
-                <span>{row.path}</span>
+                {row.path === "(no path)" ? (
+                  <span>{row.path}</span>
+                ) : (
+                  <PathHoverActions pathValue={row.path} label="Feedback path" variant="inline">
+                    <span>{row.path}</span>
+                  </PathHoverActions>
+                )}
                 <strong>{formatPercent(row.acceptanceRate)}</strong>
               </li>
             ))}
@@ -168,8 +179,20 @@ export default async function CommandsPage({
                   <td>{row.exitCode}</td>
                   <td>{formatDurationMs(row.durationMs)}</td>
                   <td className="context-cell">
-                    <div>{row.cwd || "n/a"}</div>
-                    <div>{row.repoRoot || "n/a"}</div>
+                    {row.cwd ? (
+                      <PathHoverActions pathValue={row.cwd} label="Command cwd">
+                        <div>{row.cwd}</div>
+                      </PathHoverActions>
+                    ) : (
+                      <div>n/a</div>
+                    )}
+                    {row.repoRoot ? (
+                      <PathHoverActions pathValue={row.repoRoot} label="Command repo root">
+                        <div>{row.repoRoot}</div>
+                      </PathHoverActions>
+                    ) : (
+                      <div>n/a</div>
+                    )}
                     <div>{row.branch || "n/a"}</div>
                   </td>
                   <td>

@@ -31,6 +31,8 @@ Each generated suggestion records:
 - latency
 - model name
 - context metadata
+- the exact prompt snapshot used for the decision
+- structured context JSON including request fields, recent commands, last-command context, and retrieved values such as local project tasks
 
 ### Feedback Events
 

@@ -1,6 +1,6 @@
 BIN_DIR := bin
 
-.PHONY: build tidy test bench-models smoke-shell
+.PHONY: build tidy test bench-models smoke-shell ghost-shell
 
 build:
 	mkdir -p $(BIN_DIR)
@@ -19,3 +19,6 @@ bench-models:
 
 smoke-shell:
 	bash ./scripts/smoke_zsh.sh
+
+ghost-shell:
+	bash ./scripts/test_ghost_text.sh

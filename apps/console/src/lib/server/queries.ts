@@ -10,7 +10,10 @@ import type {
   OverviewData,
   PagedResult,
   SuggestionOutcome,
+  SuggestionQuality,
+  SuggestionQualityFilter,
   SuggestionRow,
+  SuggestionSort,
 } from "@/lib/types";
 
 type QueryValue = string | number;
@@ -36,6 +39,8 @@ export function listSuggestions(input: {
   repo?: string;
   query?: string;
   outcome?: SuggestionOutcome;
+  quality?: SuggestionQualityFilter;
+  sort?: SuggestionSort;
 }): PagedResult<SuggestionRow> {
   const db = getDb();
   const page = Math.max(1, input.page || 1);
@@ -75,8 +80,15 @@ export function listSuggestions(input: {
   } else if (input.outcome === "unreviewed") {
     clauses.push("COALESCE(f.accepted, 0) = 0 AND COALESCE(f.rejected, 0) = 0");
   }
+  if (input.quality === "good" || input.quality === "bad") {
+    clauses.push("COALESCE(r.review_label, '') = ?");
+    params.push(input.quality);
+  } else if (input.quality === "unlabeled") {
+    clauses.push("COALESCE(r.review_label, '') = ''");
+  }
 
   const where = buildWhere(clauses);
+  const orderBy = getSuggestionOrderBy(input.sort);
   const fromClause = `
     FROM suggestions s
     LEFT JOIN (
@@ -89,6 +101,7 @@ export function listSuggestions(input: {
       FROM feedback_events
       GROUP BY suggestion_id
     ) f ON f.suggestion_id = s.id
+    LEFT JOIN suggestion_reviews r ON r.suggestion_id = s.id
   `;
 
   const total = Number(
@@ -106,21 +119,91 @@ export function listSuggestions(input: {
          s.cwd,
          s.repo_root AS repoRoot,
          s.branch,
+         s.last_exit_code AS lastExitCode,
          s.model_name AS modelName,
          s.latency_ms AS latencyMs,
          s.created_at_ms AS createdAtMs,
          COALESCE(f.accepted, 0) AS accepted,
          COALESCE(f.rejected, 0) AS rejected,
          COALESCE(f.accepted_command, '') AS acceptedCommand,
-         COALESCE(f.actual_command, '') AS actualCommand
+         COALESCE(f.actual_command, '') AS actualCommand,
+         COALESCE(s.prompt_text, '') AS promptText,
+         COALESCE(s.structured_context_json, '') AS structuredContextJson,
+         NULLIF(COALESCE(r.review_label, ''), '') AS qualityLabel,
+         COALESCE(r.updated_at_ms, 0) AS qualityUpdatedAtMs
        ${fromClause}
        ${where}
-       ORDER BY s.created_at_ms DESC
+       ORDER BY ${orderBy}
        LIMIT ? OFFSET ?`,
     )
     .all(...params, pageSize, offset) as SuggestionRow[];
 
   return { total, page, pageSize, rows };
+}
+
+export function listSuggestionSources() {
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT source
+       FROM suggestions
+       WHERE TRIM(source) <> ''
+       ORDER BY source ASC`,
+    )
+    .all() as Array<{ source: string }>;
+
+  return rows.map((row) => row.source).filter(Boolean);
+}
+
+function getSuggestionOrderBy(sort?: SuggestionSort) {
+  switch (sort) {
+    case "oldest":
+      return "s.created_at_ms ASC, s.id ASC";
+    case "latency-desc":
+      return "s.latency_ms DESC, s.created_at_ms DESC";
+    case "latency-asc":
+      return "s.latency_ms ASC, s.created_at_ms DESC";
+    case "buffer-asc":
+      return "s.buffer ASC, s.created_at_ms DESC";
+    case "model-asc":
+      return "CASE WHEN s.model_name = '' THEN 1 ELSE 0 END, s.model_name ASC, s.created_at_ms DESC";
+    case "quality-desc":
+      return "CASE COALESCE(r.review_label, '') WHEN 'good' THEN 0 WHEN 'bad' THEN 1 ELSE 2 END, s.created_at_ms DESC";
+    case "newest":
+    default:
+      return "s.created_at_ms DESC";
+  }
+}
+
+export function setSuggestionReview(suggestionId: number, label: SuggestionQuality | null) {
+  const db = getDb();
+  if (!Number.isInteger(suggestionId) || suggestionId <= 0) {
+    throw new Error("invalid suggestion id");
+  }
+
+  const exists = db
+    .prepare("SELECT 1 FROM suggestions WHERE id = ?")
+    .pluck()
+    .get(suggestionId);
+  if (!exists) {
+    throw new Error("suggestion not found");
+  }
+
+  if (!label) {
+    db.prepare("DELETE FROM suggestion_reviews WHERE suggestion_id = ?").run(suggestionId);
+    return { suggestionId, qualityLabel: null, qualityUpdatedAtMs: 0 };
+  }
+
+  const updatedAtMs = Date.now();
+  db.prepare(
+    `INSERT INTO suggestion_reviews(suggestion_id, review_label, updated_at_ms)
+     VALUES(?, ?, ?)
+     ON CONFLICT(suggestion_id) DO UPDATE SET
+       review_label = excluded.review_label,
+       updated_at_ms = excluded.updated_at_ms`,
+  ).run(suggestionId, label, updatedAtMs);
+
+  return { suggestionId, qualityLabel: label, qualityUpdatedAtMs: updatedAtMs };
 }
 
 export function listCommands(input: {

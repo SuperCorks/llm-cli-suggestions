@@ -6,6 +6,36 @@ import { ensureStateDirs, getResolvedRuntimeSettings } from "@/lib/server/config
 
 let database: Database.Database | null = null;
 
+function hasTable(db: Database.Database, tableName: string) {
+  return Boolean(
+    db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
+      .pluck()
+      .get(tableName),
+  );
+}
+
+function ensureSuggestionColumns(db: Database.Database) {
+  if (!hasTable(db, "suggestions")) {
+    return;
+  }
+
+  const columns = new Set(
+    (db.prepare("PRAGMA table_info(suggestions)").all() as Array<{ name: string }>).map((row) =>
+      String(row.name),
+    ),
+  );
+
+  if (!columns.has("prompt_text")) {
+    db.exec("ALTER TABLE suggestions ADD COLUMN prompt_text TEXT NOT NULL DEFAULT ''");
+  }
+  if (!columns.has("structured_context_json")) {
+    db.exec(
+      "ALTER TABLE suggestions ADD COLUMN structured_context_json TEXT NOT NULL DEFAULT ''",
+    );
+  }
+}
+
 function ensureConsoleTables(db: Database.Database) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS benchmark_runs (
@@ -38,7 +68,18 @@ function ensureConsoleTables(db: Database.Database) {
 
     CREATE INDEX IF NOT EXISTS idx_benchmark_results_run_id
       ON benchmark_results(run_id);
+
+    CREATE TABLE IF NOT EXISTS suggestion_reviews (
+      suggestion_id INTEGER PRIMARY KEY,
+      review_label TEXT NOT NULL,
+      updated_at_ms INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_suggestion_reviews_label
+      ON suggestion_reviews(review_label, updated_at_ms DESC);
   `);
+
+  ensureSuggestionColumns(db);
 }
 
 export function getDb() {

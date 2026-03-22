@@ -53,7 +53,7 @@ type InspectRequest struct {
 	CWD            string   `json:"cwd"`
 	RepoRoot       string   `json:"repo_root"`
 	Branch         string   `json:"branch"`
-	LastExitCode   int      `json:"last_exit_code"`
+	LastExitCode   *int     `json:"last_exit_code,omitempty"`
 	RecentCommands []string `json:"recent_commands,omitempty"`
 	Limit          int      `json:"limit,omitempty"`
 	ModelName      string   `json:"model_name,omitempty"`
@@ -87,6 +87,7 @@ type InspectRetrievedContext struct {
 	HistoryMatches     []string `json:"history_matches"`
 	PathMatches        []string `json:"path_matches"`
 	GitBranchMatches   []string `json:"git_branch_matches"`
+	ProjectTasks       []string `json:"project_tasks"`
 	ProjectTaskMatches []string `json:"project_task_matches"`
 }
 

@@ -76,6 +76,13 @@ function summarize(results) {
   );
 }
 
+function updateRunSummary(db, runId, summary) {
+  db.prepare("UPDATE benchmark_runs SET summary_json = ? WHERE id = ?").run(
+    JSON.stringify(summary),
+    runId,
+  );
+}
+
 async function main() {
   const dbPath = argValue("--db");
   const runId = Number(argValue("--run-id"));
@@ -87,10 +94,20 @@ async function main() {
 
   const db = new Database(dbPath);
   ensureTables(db);
+  let progress = {
+    completed: 0,
+    total: 0,
+    percent: 0,
+    status: "running",
+    currentModel: "",
+    currentCase: "",
+    currentRun: 0,
+  };
 
-  db.prepare("UPDATE benchmark_runs SET status = ?, started_at_ms = ? WHERE id = ?").run(
+  db.prepare("UPDATE benchmark_runs SET status = ?, started_at_ms = ?, summary_json = ? WHERE id = ?").run(
     "running",
     Date.now(),
+    JSON.stringify({ progress, models: {} }),
     runId,
   );
 
@@ -110,11 +127,50 @@ async function main() {
         ],
         {
           cwd: root,
-          stdio: ["ignore", "ignore", "pipe"],
+          stdio: ["ignore", "pipe", "pipe"],
         },
       );
 
+      let stdout = "";
       let stderr = "";
+      child.stdout.on("data", (chunk) => {
+        stdout += chunk.toString("utf8");
+        const lines = stdout.split(/\r?\n/);
+        stdout = lines.pop() || "";
+        for (const line of lines) {
+          const introMatch = line.match(/Benchmarking (\d+) model\(s\) across (\d+) case\(s\), repeat=(\d+)/);
+          if (introMatch) {
+            const modelCount = Number(introMatch[1] || 0);
+            const caseCount = Number(introMatch[2] || 0);
+            const repeatCount = Number(introMatch[3] || 0);
+            progress = {
+              ...progress,
+              total: modelCount * caseCount * repeatCount,
+              percent: 0,
+            };
+            updateRunSummary(db, runId, { progress, models: {} });
+            continue;
+          }
+
+          const runMatch = line.match(/\[(?:ok|error)\] model=(.+?) case=(.+?) run=(\d+)/);
+          if (!runMatch) {
+            continue;
+          }
+
+          progress = {
+            ...progress,
+            completed: progress.completed + 1,
+            percent:
+              progress.total > 0
+                ? Math.round(((progress.completed + 1) / progress.total) * 100)
+                : progress.percent,
+            currentModel: runMatch[1] || "",
+            currentCase: runMatch[2] || "",
+            currentRun: Number(runMatch[3] || 0),
+          };
+          updateRunSummary(db, runId, { progress, models: {} });
+        }
+      });
       child.stderr.on("data", (chunk) => {
         stderr += chunk.toString("utf8");
       });
@@ -156,20 +212,38 @@ async function main() {
     });
     transaction(results);
 
+    progress = {
+      ...progress,
+      completed: results.length,
+      total: results.length,
+      percent: 100,
+      status: "completed",
+    };
+
     db.prepare(
       `UPDATE benchmark_runs
        SET status = ?, summary_json = ?, finished_at_ms = ?, error_text = ''
        WHERE id = ?`,
-    ).run("completed", JSON.stringify(summarize(results)), Date.now(), runId);
+    ).run(
+      "completed",
+      JSON.stringify({ progress, models: summarize(results) }),
+      Date.now(),
+      runId,
+    );
   } catch (error) {
+    progress = {
+      ...progress,
+      status: "failed",
+    };
     db.prepare(
       `UPDATE benchmark_runs
-       SET status = ?, error_text = ?, finished_at_ms = ?
+       SET status = ?, error_text = ?, finished_at_ms = ?, summary_json = ?
        WHERE id = ?`,
     ).run(
       "failed",
       error instanceof Error ? error.message : "benchmark failed",
       Date.now(),
+      JSON.stringify({ progress, models: {} }),
       runId,
     );
   } finally {

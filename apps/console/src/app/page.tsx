@@ -1,3 +1,4 @@
+import { PathHoverActions } from "@/components/path-hover-actions";
 import { Panel } from "@/components/panel";
 import {
   formatCompactNumber,
@@ -185,7 +186,15 @@ export default async function Home() {
             <tbody>
               {overview.acceptanceByPath.map((row) => (
                 <tr key={row.path}>
-                  <td>{row.path}</td>
+                  <td>
+                    {row.path === "(no path)" ? (
+                      row.path
+                    ) : (
+                      <PathHoverActions pathValue={row.path} label="Acceptance path" variant="inline">
+                        <span>{row.path}</span>
+                      </PathHoverActions>
+                    )}
+                  </td>
                   <td>{row.accepted}</td>
                   <td>{row.rejected}</td>
                   <td>{formatPercent(row.acceptanceRate)}</td>

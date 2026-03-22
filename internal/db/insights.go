@@ -13,6 +13,10 @@ type CommandFeedbackStats struct {
 }
 
 type CommandContext struct {
+	CWD           string
+	RepoRoot      string
+	Branch        string
+	ExitCode      int
 	Command       string
 	StdoutExcerpt string
 	StderrExcerpt string
@@ -109,18 +113,43 @@ func (s *Store) GetLastCommandContext(ctx context.Context, sessionID string) (Co
 	var result CommandContext
 	err := s.db.QueryRowContext(
 		ctx,
-		`SELECT command_text, stdout_excerpt, stderr_excerpt
+		`SELECT cwd, repo_root, branch, exit_code, command_text, stdout_excerpt, stderr_excerpt
 		 FROM commands
 		 WHERE session_id = ?
 		 ORDER BY finished_at_ms DESC
 		 LIMIT 1`,
 		sessionID,
-	).Scan(&result.Command, &result.StdoutExcerpt, &result.StderrExcerpt)
+	).Scan(&result.CWD, &result.RepoRoot, &result.Branch, &result.ExitCode, &result.Command, &result.StdoutExcerpt, &result.StderrExcerpt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return CommandContext{}, nil
 		}
 		return CommandContext{}, fmt.Errorf("query last command context: %w", err)
+	}
+
+	return result, nil
+}
+
+func (s *Store) GetLastCommandContextByCWD(ctx context.Context, cwd string) (CommandContext, error) {
+	if strings.TrimSpace(cwd) == "" {
+		return CommandContext{}, nil
+	}
+
+	var result CommandContext
+	err := s.db.QueryRowContext(
+		ctx,
+		`SELECT cwd, repo_root, branch, exit_code, command_text, stdout_excerpt, stderr_excerpt
+		 FROM commands
+		 WHERE cwd = ?
+		 ORDER BY finished_at_ms DESC
+		 LIMIT 1`,
+		cwd,
+	).Scan(&result.CWD, &result.RepoRoot, &result.Branch, &result.ExitCode, &result.Command, &result.StdoutExcerpt, &result.StderrExcerpt)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return CommandContext{}, nil
+		}
+		return CommandContext{}, fmt.Errorf("query last command context by cwd: %w", err)
 	}
 
 	return result, nil

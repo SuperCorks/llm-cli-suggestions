@@ -73,6 +73,31 @@ func TestInspectIncludesPathRetrievedContext(t *testing.T) {
 	}
 }
 
+func TestInspectIncludesProjectTasksInPromptWithoutTaskSpecificBuffer(t *testing.T) {
+	t.Parallel()
+
+	cwd := t.TempDir()
+	writeFile(t, filepath.Join(cwd, "package.json"), `{"scripts":{"dev":"next dev","build":"next build"}}`)
+
+	engine := newTestEngine(t)
+	response, err := engine.Inspect(context.Background(), api.InspectRequest{
+		SessionID: "test-session",
+		Buffer:    "npm",
+		CWD:       cwd,
+		RepoRoot:  cwd,
+	})
+	if err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+
+	if !containsString(response.RetrievedContext.ProjectTasks, "dev") {
+		t.Fatalf("expected dev in project tasks, got %#v", response.RetrievedContext.ProjectTasks)
+	}
+	if !strings.Contains(response.Prompt, "project_tasks:") {
+		t.Fatalf("expected prompt to include project tasks, got %q", response.Prompt)
+	}
+}
+
 func TestSuggestUsesGitBranchRetrieval(t *testing.T) {
 	t.Parallel()
 

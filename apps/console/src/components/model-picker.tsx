@@ -1,6 +1,7 @@
 "use client";
 
 import { X } from "lucide-react";
+import type { ReactNode } from "react";
 import { useId, useMemo, useRef, useState } from "react";
 
 import type { OllamaModelOption } from "@/lib/types";
@@ -9,7 +10,9 @@ interface BaseModelPickerProps {
   label: string;
   options: OllamaModelOption[];
   placeholder: string;
-  helperText?: string;
+  helperText?: ReactNode;
+  installedOnly?: boolean;
+  emptyMessage?: ReactNode;
 }
 
 interface MultiModelPickerProps extends BaseModelPickerProps {
@@ -21,6 +24,7 @@ interface MultiModelPickerProps extends BaseModelPickerProps {
   onRemove: (value: string) => void;
   onClearAll: () => void;
   actionLabel?: string;
+  requireKnownOption?: boolean;
 }
 
 interface SingleModelPickerProps extends BaseModelPickerProps {
@@ -34,42 +38,55 @@ type ModelPickerProps = MultiModelPickerProps | SingleModelPickerProps;
 
 export function ModelPicker(props: ModelPickerProps) {
   const [isOpen, setIsOpen] = useState(false);
-  const [isEditing, setIsEditing] = useState(false);
+  const [validationMessage, setValidationMessage] = useState("");
   const inputRef = useRef<HTMLInputElement | null>(null);
   const inputId = useId();
-
+  const selectableOptions = useMemo(
+    () => (props.installedOnly ? props.options.filter((option) => option.installed) : props.options),
+    [props.installedOnly, props.options],
+  );
   const filteredOptions = useMemo(() => {
-    const selectedNames =
+    const normalizedSelected =
       props.mode === "multi"
-        ? props.selected
+        ? props.selected.map((value) => value.trim().toLowerCase())
         : props.value.trim()
-          ? [props.value.trim()]
+          ? [props.value.trim().toLowerCase()]
           : [];
     const normalizedInput =
       props.mode === "multi"
         ? props.inputValue.trim().toLowerCase()
         : props.value.trim().toLowerCase();
 
-    return props.options
-      .filter((option) => !selectedNames.includes(option.name))
+    return [...selectableOptions]
+      .sort((left, right) => {
+        if (left.installed !== right.installed) {
+          return left.installed ? -1 : 1;
+        }
+        return left.name.localeCompare(right.name);
+      })
+      .filter((option) => !normalizedSelected.includes(option.name.toLowerCase()))
       .filter((option) =>
         normalizedInput === "" ? true : option.name.toLowerCase().includes(normalizedInput),
       );
-  }, [props]);
+  }, [props, selectableOptions]);
 
-  const multiSelectionSummary =
-    props.mode === "multi"
-      ? props.selected.length <= 1
-        ? props.selected[0] || ""
-        : `${props.selected[0]} +${props.selected.length - 1} more`
-      : "";
+  const inputValue = props.mode === "multi" ? props.inputValue : props.value;
 
-  const inputValue =
+  function resolveKnownOption(value: string) {
+    const normalized = value.trim().toLowerCase();
+    if (!normalized) {
+      return null;
+    }
+    return selectableOptions.find((option) => option.name.toLowerCase() === normalized) || null;
+  }
+
+  const canCommitMultiValue =
     props.mode === "multi"
-      ? isEditing
-        ? props.inputValue
-        : props.inputValue || multiSelectionSummary
-      : props.value;
+      ? Boolean(
+          props.inputValue.trim() &&
+            (props.requireKnownOption ? resolveKnownOption(props.inputValue) : true),
+        )
+      : false;
 
   function commitValue(explicitValue?: string) {
     const rawValue =
@@ -82,13 +99,22 @@ export function ModelPicker(props: ModelPickerProps) {
     }
 
     if (props.mode === "multi") {
-      props.onAdd(normalized);
-      setIsEditing(false);
+      const knownOption = resolveKnownOption(normalized);
+      if (props.requireKnownOption && !knownOption) {
+        setValidationMessage("Choose an exact model from the list before adding it.");
+        setIsOpen(true);
+        return;
+      }
+
+      props.onAdd(knownOption?.name || normalized);
+      props.onInputChange("");
+      setValidationMessage("");
       return;
     }
 
     props.onValueChange(normalized);
     props.onSelect?.(normalized);
+    setValidationMessage("");
   }
 
   function clearSelection() {
@@ -97,19 +123,20 @@ export function ModelPicker(props: ModelPickerProps) {
     }
 
     props.onClearAll();
-    setIsEditing(false);
     setIsOpen(false);
+    setValidationMessage("");
   }
 
   function selectOption(optionName: string) {
     if (props.mode === "multi") {
       props.onAdd(optionName);
+      props.onInputChange("");
     } else {
       props.onValueChange(optionName);
       props.onSelect?.(optionName);
     }
     setIsOpen(false);
-    setIsEditing(false);
+    setValidationMessage("");
   }
 
   return (
@@ -120,7 +147,6 @@ export function ModelPicker(props: ModelPickerProps) {
         onBlur={() => {
           window.setTimeout(() => {
             setIsOpen(false);
-            setIsEditing(false);
           }, 120);
         }}
       >
@@ -135,9 +161,6 @@ export function ModelPicker(props: ModelPickerProps) {
             value={inputValue}
             onFocus={() => {
               setIsOpen(true);
-              if (props.mode === "multi") {
-                setIsEditing(true);
-              }
             }}
             onChange={(event) => {
               const nextValue = event.target.value;
@@ -146,6 +169,7 @@ export function ModelPicker(props: ModelPickerProps) {
               } else {
                 props.onValueChange(nextValue);
               }
+              setValidationMessage("");
               setIsOpen(true);
             }}
             onKeyDown={(event) => {
@@ -156,7 +180,6 @@ export function ModelPicker(props: ModelPickerProps) {
               }
               if (event.key === "Escape") {
                 setIsOpen(false);
-                setIsEditing(false);
               }
             }}
             placeholder={props.placeholder}
@@ -184,6 +207,7 @@ export function ModelPicker(props: ModelPickerProps) {
               <button
                 type="button"
                 className="button-secondary"
+                disabled={!canCommitMultiValue}
                 onMouseDown={(event) => {
                   event.preventDefault();
                   commitValue();
@@ -235,10 +259,17 @@ export function ModelPicker(props: ModelPickerProps) {
               </button>
             ))}
           </div>
+        ) : isOpen ? (
+          <div className="model-picker-menu model-picker-menu-empty" role="status">
+            {props.emptyMessage || "No matching models. Keep typing or pick from the Ollama inventory."}
+          </div>
         ) : null}
       </div>
       {props.helperText ? <p className="helper-text">{props.helperText}</p> : null}
-      {props.mode === "multi" && props.selected.length > 1 ? (
+      {props.mode === "multi" && validationMessage ? (
+        <p className="error-text">{validationMessage}</p>
+      ) : null}
+      {props.mode === "multi" && props.selected.length > 0 ? (
         <div className="chip-list">
           {props.selected.map((modelName) => {
             const option = props.options.find((candidate) => candidate.name === modelName);

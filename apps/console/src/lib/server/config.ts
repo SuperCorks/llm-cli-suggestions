@@ -90,39 +90,26 @@ export function readPersistedRuntimeSettings() {
   return values;
 }
 
-export function getResolvedRuntimeSettings(): RuntimeSettings {
+export function getResolvedRuntimeSettings(options?: { useProcessEnvOverrides?: boolean }): RuntimeSettings {
+  const useProcessEnvOverrides = options?.useProcessEnvOverrides ?? false;
   const persisted = readPersistedRuntimeSettings();
   const stateDir = getStateDir();
   const runtimeEnvPath = getRuntimeEnvPath();
+  const runtimeValue = (key: keyof typeof DEFAULTS) =>
+    (useProcessEnvOverrides ? process.env[key] : undefined) || persisted[key];
 
   return {
     stateDir,
     runtimeEnvPath,
-    socketPath:
-      process.env.LAC_SOCKET_PATH ||
-      persisted.LAC_SOCKET_PATH ||
-      path.join(stateDir, DEFAULTS.LAC_SOCKET_PATH),
-    dbPath:
-      process.env.LAC_DB_PATH ||
-      persisted.LAC_DB_PATH ||
-      path.join(stateDir, DEFAULTS.LAC_DB_PATH),
-    modelName:
-      process.env.LAC_MODEL_NAME ||
-      persisted.LAC_MODEL_NAME ||
-      DEFAULTS.LAC_MODEL_NAME,
-    modelBaseUrl:
-      process.env.LAC_MODEL_BASE_URL ||
-      persisted.LAC_MODEL_BASE_URL ||
-      DEFAULTS.LAC_MODEL_BASE_URL,
+    socketPath: runtimeValue("LAC_SOCKET_PATH") || path.join(stateDir, DEFAULTS.LAC_SOCKET_PATH),
+    dbPath: runtimeValue("LAC_DB_PATH") || path.join(stateDir, DEFAULTS.LAC_DB_PATH),
+    modelName: runtimeValue("LAC_MODEL_NAME") || DEFAULTS.LAC_MODEL_NAME,
+    modelBaseUrl: runtimeValue("LAC_MODEL_BASE_URL") || DEFAULTS.LAC_MODEL_BASE_URL,
     suggestStrategy: normalizeSuggestStrategy(
-      process.env.LAC_SUGGEST_STRATEGY ||
-        persisted.LAC_SUGGEST_STRATEGY ||
-        DEFAULTS.LAC_SUGGEST_STRATEGY,
+      runtimeValue("LAC_SUGGEST_STRATEGY") || DEFAULTS.LAC_SUGGEST_STRATEGY,
     ),
     suggestTimeoutMs: Number.parseInt(
-      process.env.LAC_SUGGEST_TIMEOUT_MS ||
-        persisted.LAC_SUGGEST_TIMEOUT_MS ||
-        DEFAULTS.LAC_SUGGEST_TIMEOUT_MS,
+      runtimeValue("LAC_SUGGEST_TIMEOUT_MS") || DEFAULTS.LAC_SUGGEST_TIMEOUT_MS,
       10,
     ),
   };

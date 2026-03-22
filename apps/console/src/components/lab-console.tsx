@@ -1,10 +1,18 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import Link from "next/link";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { ModelPicker } from "@/components/model-picker";
+import { PathHoverActions } from "@/components/path-hover-actions";
+import { SuggestStrategyField } from "@/components/suggest-strategy-field";
 import { formatDurationMs, formatTimestamp } from "@/lib/format";
-import type { BenchmarkResultRow, BenchmarkRunRow, OllamaModelOption } from "@/lib/types";
+import type {
+  BenchmarkResultRow,
+  BenchmarkRunRow,
+  OllamaModelOption,
+  SuggestStrategy,
+} from "@/lib/types";
 
 type RankingResponse = {
   model_name: string;
@@ -17,7 +25,7 @@ type RankingResponse = {
 interface LabConsoleProps {
   initialRuns: BenchmarkRunRow[];
   defaultModel: string;
-  defaultModelBaseUrl: string;
+  defaultSuggestStrategy: SuggestStrategy;
   availableModels: OllamaModelOption[];
   inventorySummary: {
     installedCount: number;
@@ -30,10 +38,14 @@ interface LabConsoleProps {
 export function LabConsole({
   initialRuns,
   defaultModel,
-  defaultModelBaseUrl,
+  defaultSuggestStrategy,
   availableModels,
   inventorySummary,
 }: LabConsoleProps) {
+  const [runtimeDefaults, setRuntimeDefaults] = useState({
+    model: defaultModel,
+    suggestStrategy: defaultSuggestStrategy,
+  });
   const [runs, setRuns] = useState(initialRuns);
   const [selectedRun, setSelectedRun] = useState<{
     run: BenchmarkRunRow;
@@ -47,13 +59,12 @@ export function LabConsole({
   });
   const [testForm, setTestForm] = useState({
     models: [defaultModel],
+    sessionId: "",
     buffer: "git st",
     cwd: "",
-    repoRoot: "",
-    branch: "",
     recentCommands: "",
-    lastExitCode: "0",
-    modelBaseUrl: defaultModelBaseUrl,
+    lastExitCode: "",
+    suggestStrategy: defaultSuggestStrategy,
   });
   const [runModelInput, setRunModelInput] = useState("");
   const [testModelInput, setTestModelInput] = useState("");
@@ -74,6 +85,134 @@ export function LabConsole({
   const canQueueBenchmark = normalizedRunModels.length > 0 && !loadingRun;
   const canRunAdHoc =
     normalizedTestModels.length > 0 && testForm.buffer.trim().length > 0 && !loadingTest;
+  const activeRuns = useMemo(
+    () => runs.filter((run) => run.status === "queued" || run.status === "running"),
+    [runs],
+  );
+
+  const selectedRunMeta =
+    (selectedRunId !== null ? runs.find((run) => run.id === selectedRunId) : null) ||
+    selectedRun?.run ||
+    null;
+
+  function parseRunSummary(summary: Record<string, unknown> | null) {
+    if (!summary) {
+      return {
+        progress: null as null | {
+          completed: number;
+          total: number;
+          percent: number;
+          status: string;
+          currentModel: string;
+          currentCase: string;
+          currentRun: number;
+        },
+        models: [] as Array<{
+          modelName: string;
+          total: number;
+          validPrefixRate: number;
+          acceptedRate: number;
+          avgLatencyMs: number;
+        }>,
+      };
+    }
+
+    const progressSource =
+      "progress" in summary && summary.progress && typeof summary.progress === "object"
+        ? (summary.progress as Record<string, unknown>)
+        : null;
+
+    const modelsSource =
+      "models" in summary && summary.models && typeof summary.models === "object"
+        ? (summary.models as Record<string, unknown>)
+        : summary;
+
+    const models = Object.entries(modelsSource)
+      .filter((entry) => entry[0] !== "progress")
+      .map(([modelName, value]) => {
+        const parsed = value as Record<string, unknown>;
+        return {
+          modelName,
+          total: Number(parsed.total || 0),
+          validPrefixRate: Number(parsed.validPrefixRate || 0),
+          acceptedRate: Number(parsed.acceptedRate || 0),
+          avgLatencyMs: Number(parsed.avgLatencyMs || 0),
+        };
+      })
+      .filter((entry) => entry.total > 0)
+      .sort((left, right) => left.modelName.localeCompare(right.modelName));
+
+    return {
+      progress: progressSource
+        ? {
+            completed: Number(progressSource.completed || 0),
+            total: Number(progressSource.total || 0),
+            percent: Number(progressSource.percent || 0),
+            status: String(progressSource.status || ""),
+            currentModel: String(progressSource.currentModel || ""),
+            currentCase: String(progressSource.currentCase || ""),
+            currentRun: Number(progressSource.currentRun || 0),
+          }
+        : null,
+      models,
+    };
+  }
+
+  const selectedRunSummary = useMemo(
+    () => parseRunSummary(selectedRun?.run.summary || selectedRunMeta?.summary || null),
+    [selectedRun, selectedRunMeta],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function syncRuntimeDefaults() {
+      try {
+        const response = await fetch("/api/runtime");
+        if (!response.ok) {
+          return;
+        }
+        const data = (await response.json()) as {
+          health: { ok: boolean; modelName: string };
+          settings: { modelName: string; modelBaseUrl: string; suggestStrategy: SuggestStrategy };
+        };
+        const nextModel = data.health.ok ? data.health.modelName : data.settings.modelName;
+        const nextDefaults = {
+          model: nextModel,
+          suggestStrategy: data.settings.suggestStrategy,
+        };
+        if (cancelled) {
+          return;
+        }
+        setRuntimeDefaults(nextDefaults);
+        setRunForm((current) => ({
+          ...current,
+          models:
+            current.models.length === 1 && current.models[0] === defaultModel
+              ? [nextDefaults.model]
+              : current.models,
+        }));
+        setTestForm((current) => ({
+          ...current,
+          models:
+            current.models.length === 1 && current.models[0] === defaultModel
+              ? [nextDefaults.model]
+              : current.models,
+          suggestStrategy:
+            current.suggestStrategy === defaultSuggestStrategy
+              ? nextDefaults.suggestStrategy
+              : current.suggestStrategy,
+        }));
+      } catch {
+        // Keep the server-provided defaults when the runtime refresh is unavailable.
+      }
+    }
+
+    void syncRuntimeDefaults();
+    return () => {
+      cancelled = true;
+    };
+  }, [defaultModel, defaultSuggestStrategy]);
 
   function addModel(
     target: "run" | "test",
@@ -115,11 +254,34 @@ export function LabConsole({
     }));
   }
 
-  async function refreshRuns() {
+  const refreshRuns = useCallback(async () => {
     const response = await fetch("/api/benchmarks");
     const data = (await response.json()) as { runs: BenchmarkRunRow[] };
     setRuns(data.runs);
-  }
+    if (selectedRunId !== null) {
+      const nextSelected = data.runs.find((run) => run.id === selectedRunId) || null;
+      if (nextSelected && selectedRun) {
+        setSelectedRun((current) => (current ? { ...current, run: nextSelected } : current));
+      }
+      if (
+        nextSelected &&
+        nextSelected.status === "completed" &&
+        (!selectedRun || selectedRun.run.finishedAtMs !== nextSelected.finishedAtMs)
+      ) {
+        void loadRun(selectedRunId);
+      }
+    }
+  }, [selectedRun, selectedRunId]);
+
+  useEffect(() => {
+    if (activeRuns.length === 0) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      void refreshRuns();
+    }, 1500);
+    return () => window.clearInterval(timer);
+  }, [activeRuns.length, refreshRuns]);
 
   async function loadRun(runId: number) {
     setLoadingRunId(runId);
@@ -145,7 +307,7 @@ export function LabConsole({
 
   function resetBenchmarkForm() {
     setRunForm({
-      models: [defaultModel],
+      models: [runtimeDefaults.model],
       repeatCount: "2",
       timeoutMs: "5000",
     });
@@ -154,14 +316,13 @@ export function LabConsole({
 
   function resetAdHocForm() {
     setTestForm({
-      models: [defaultModel],
+      models: [runtimeDefaults.model],
+      sessionId: "",
       buffer: "git st",
       cwd: "",
-      repoRoot: "",
-      branch: "",
       recentCommands: "",
-      lastExitCode: "0",
-      modelBaseUrl: defaultModelBaseUrl,
+      lastExitCode: "",
+      suggestStrategy: runtimeDefaults.suggestStrategy,
     });
     setTestModelInput("");
     setTestResults([]);
@@ -218,20 +379,23 @@ export function LabConsole({
     setError("");
     setMessage("");
     try {
+      const parsedLastExitCode = testForm.lastExitCode.trim()
+        ? Number.parseInt(testForm.lastExitCode, 10)
+        : null;
       const responses = await Promise.all(
         normalizedTestModels.map(async (modelName) => {
           const response = await fetch("/api/ranking", {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
-              session_id: "console-lab",
+              session_id: testForm.sessionId.trim(),
               buffer: testForm.buffer,
-              cwd: testForm.cwd,
-              repo_root: testForm.repoRoot,
-              branch: testForm.branch,
-              last_exit_code: Number.parseInt(testForm.lastExitCode || "0", 10) || 0,
+              cwd: testForm.cwd.trim(),
+              ...(Number.isFinite(parsedLastExitCode)
+                ? { last_exit_code: parsedLastExitCode }
+                : {}),
               model_name: modelName,
-              model_base_url: testForm.modelBaseUrl,
+              strategy: testForm.suggestStrategy,
               recent_commands: testForm.recentCommands
                 .split("\n")
                 .map((value) => value.trim())
@@ -261,15 +425,11 @@ export function LabConsole({
           <ul className="metric-list compact-metrics">
             <li>
               <span>Current runtime model</span>
-              <strong>{defaultModel}</strong>
+              <strong>{runtimeDefaults.model}</strong>
             </li>
             <li>
-              <span>Installed locally</span>
-              <strong>{inventorySummary.installedCount}</strong>
-            </li>
-            <li>
-              <span>Available to Download</span>
-              <strong>{inventorySummary.libraryCount}</strong>
+              <span>Saved strategy</span>
+              <strong>{runtimeDefaults.suggestStrategy}</strong>
             </li>
           </ul>
         </div>
@@ -295,6 +455,7 @@ export function LabConsole({
               selected={runForm.models}
               inputValue={runModelInput}
               options={availableModels}
+              installedOnly
               onInputChange={setRunModelInput}
               onAdd={(value) => addModel("run", value)}
               onRemove={(value) => removeModel("run", value)}
@@ -304,9 +465,19 @@ export function LabConsole({
                   models: [],
                 }))
               }
-              placeholder="Pick or type a model"
-              helperText={`${inventorySummary.installedCount} installed · ${inventorySummary.libraryCount} available from Ollama`}
+              requireKnownOption
+              placeholder="Pick an installed model"
+              helperText={`${inventorySummary.installedCount} installed locally · ${inventorySummary.libraryCount} available to download`}
+              emptyMessage={
+                <>
+                  No matching installed models. Download additional models from the{" "}
+                  <Link href="/models">Models</Link> page.
+                </>
+              }
             />
+            <p className="helper-text">
+              Saved benchmarks compare raw model completions against the benchmark suite. Use the ad-hoc form below to compare suggestion strategies.
+            </p>
             <div className="form-grid compact">
               <label>
                 Repeat Count
@@ -350,7 +521,9 @@ export function LabConsole({
             <div>
               <h3>Ad-Hoc Model Test</h3>
               <p className="helper-text">
-                Only the buffer is required. Add context fields when you want to simulate a real shell situation more closely.
+                Buffer is the only required field. Add a session or a working
+                directory when you want the engine to infer repo context and
+                pull recent command history automatically.
               </p>
             </div>
             <div className="inline-actions">
@@ -377,6 +550,7 @@ export function LabConsole({
               selected={testForm.models}
               inputValue={testModelInput}
               options={availableModels}
+              installedOnly
               onInputChange={setTestModelInput}
               onAdd={(value) => addModel("test", value)}
               onRemove={(value) => removeModel("test", value)}
@@ -386,15 +560,38 @@ export function LabConsole({
                   models: [],
                 }))
               }
+              requireKnownOption
               placeholder="Pick or type a model"
               helperText={
                 inventorySummary.installedError || inventorySummary.libraryError
                   ? [inventorySummary.installedError, inventorySummary.libraryError]
                       .filter(Boolean)
                       .join(" · ")
-                  : "Use installed models or type any Ollama library model manually."
+                  : "Pick one or more installed Ollama models. The saved runtime strategy is used by default, but you can override it here for this test."
+              }
+              emptyMessage={
+                <>
+                  No matching installed models. Download additional models from the{" "}
+                  <Link href="/models">Models</Link> page.
+                </>
               }
             />
+            <SuggestStrategyField
+              value={testForm.suggestStrategy}
+              onChange={(value) =>
+                setTestForm((current) => ({ ...current, suggestStrategy: value }))
+              }
+            />
+            <label>
+              Session ID
+              <input
+                placeholder="Optional session id"
+                value={testForm.sessionId}
+                onChange={(event) =>
+                  setTestForm((current) => ({ ...current, sessionId: event.target.value }))
+                }
+              />
+            </label>
             <label>
               Buffer
               <input
@@ -408,33 +605,15 @@ export function LabConsole({
             <div className="form-grid compact">
               <label>
                 CWD
-                <input
-                  placeholder="/Users/simon/projects/gleamery"
-                  value={testForm.cwd}
-                  onChange={(event) =>
-                    setTestForm((current) => ({ ...current, cwd: event.target.value }))
-                  }
-                />
-              </label>
-              <label>
-                Repo Root
-                <input
-                  placeholder="/Users/simon/projects/gleamery"
-                  value={testForm.repoRoot}
-                  onChange={(event) =>
-                    setTestForm((current) => ({ ...current, repoRoot: event.target.value }))
-                  }
-                />
-              </label>
-              <label>
-                Branch
-                <input
-                  placeholder="main"
-                  value={testForm.branch}
-                  onChange={(event) =>
-                    setTestForm((current) => ({ ...current, branch: event.target.value }))
-                  }
-                />
+                <PathHoverActions pathValue={testForm.cwd} label="Ad-hoc test cwd" variant="input">
+                  <input
+                    placeholder="/Users/simon/projects/gleamery"
+                    value={testForm.cwd}
+                    onChange={(event) =>
+                      setTestForm((current) => ({ ...current, cwd: event.target.value }))
+                    }
+                  />
+                </PathHoverActions>
               </label>
               <label>
                 Last Exit Code
@@ -459,16 +638,6 @@ export function LabConsole({
                 }
               />
             </label>
-            <label>
-              Model Base URL
-              <input
-                placeholder="http://127.0.0.1:11434"
-                value={testForm.modelBaseUrl}
-                onChange={(event) =>
-                  setTestForm((current) => ({ ...current, modelBaseUrl: event.target.value }))
-                }
-              />
-            </label>
             <button type="submit" disabled={!canRunAdHoc}>
               {loadingTest ? "Testing..." : "Run Ad-Hoc Test"}
             </button>
@@ -488,6 +657,34 @@ export function LabConsole({
                 Compared {testResults.length} model{testResults.length === 1 ? "" : "s"} for the current prompt context.
               </p>
             </div>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Model</th>
+                  <th>Best Suggestion</th>
+                  <th>Source</th>
+                  <th>Top Score</th>
+                  <th>Candidates</th>
+                  <th>Raw Output</th>
+                </tr>
+              </thead>
+              <tbody>
+                {testResults.map((result) => (
+                  <tr key={`${result.model_name}-summary`}>
+                    <td>{result.model_name}</td>
+                    <td>
+                      <code>{result.winner?.command || result.cleaned_model_output || "No suggestion"}</code>
+                    </td>
+                    <td>{result.winner?.source || "n/a"}</td>
+                    <td>{result.candidates[0]?.score ?? "n/a"}</td>
+                    <td>{result.candidates.length}</td>
+                    <td>{result.raw_model_output ? "yes" : "no"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
           <div className="stack-md">
             {testResults.map((result) => (
@@ -526,12 +723,21 @@ export function LabConsole({
             </p>
           </div>
         </div>
+        {activeRuns.length > 0 ? (
+          <div className="run-status-strip">
+            <strong>
+              {activeRuns.length} benchmark run{activeRuns.length === 1 ? "" : "s"} active
+            </strong>
+            <span>Auto-refreshing while queued or running.</span>
+          </div>
+        ) : null}
         <div className="table-wrap">
           <table>
             <thead>
               <tr>
                 <th>Run</th>
                 <th>Status</th>
+                <th>Progress</th>
                 <th>Models</th>
                 <th>Repeat</th>
                 <th>Timeout</th>
@@ -546,7 +752,33 @@ export function LabConsole({
                   className={selectedRunId === run.id ? "table-row-active" : undefined}
                 >
                   <td>#{run.id}</td>
-                  <td>{run.status}</td>
+                  <td>
+                    <span className={`status-pill status-pill-${run.status}`}>{run.status}</span>
+                  </td>
+                  <td>
+                    {(() => {
+                      const summary = parseRunSummary(run.summary);
+                      const progress = summary.progress;
+                      if (!progress) {
+                        return <span className="muted-text">{run.status === "completed" ? "Done" : "Waiting"}</span>;
+                      }
+                      return (
+                        <div className="run-progress-cell">
+                          <div className="progress-bar">
+                            <div
+                              className="progress-bar-fill"
+                              style={{ width: `${Math.max(6, progress.percent)}%` }}
+                            />
+                          </div>
+                          <span>
+                            {progress.total > 0
+                              ? `${progress.completed}/${progress.total}`
+                              : progress.status || run.status}
+                          </span>
+                        </div>
+                      );
+                    })()}
+                  </td>
                   <td>{run.models.join(", ")}</td>
                   <td>{run.repeatCount}</td>
                   <td>{formatDurationMs(run.timeoutMs)}</td>
@@ -564,7 +796,7 @@ export function LabConsole({
               ))}
               {runs.length === 0 ? (
                 <tr>
-                  <td colSpan={7}>No benchmark runs saved yet.</td>
+                  <td colSpan={8}>No benchmark runs saved yet.</td>
                 </tr>
               ) : null}
             </tbody>
@@ -578,7 +810,7 @@ export function LabConsole({
             <div>
               <h3>Benchmark Run #{selectedRun.run.id}</h3>
               <p className="muted-text">
-                Status: {selectedRun.run.status} · Models: {selectedRun.run.models.join(", ")}
+                Status: {selectedRunMeta?.status || selectedRun.run.status} · Models: {selectedRun.run.models.join(", ")}
               </p>
             </div>
             <button
@@ -592,6 +824,56 @@ export function LabConsole({
               Close Run
             </button>
           </div>
+          {selectedRunSummary.progress ? (
+            <div className="run-progress-panel">
+              <div className="run-progress-copy">
+                <strong>
+                  {selectedRunSummary.progress.total > 0
+                    ? `${selectedRunSummary.progress.completed}/${selectedRunSummary.progress.total} benchmark checks complete`
+                    : selectedRunSummary.progress.status || "Running"}
+                </strong>
+                <span>
+                  {selectedRunSummary.progress.currentModel
+                    ? `${selectedRunSummary.progress.currentModel} · ${selectedRunSummary.progress.currentCase || "warming up"}`
+                    : "Waiting for the next benchmark update."}
+                </span>
+              </div>
+              <div className="progress-bar progress-bar-large">
+                <div
+                  className="progress-bar-fill"
+                  style={{
+                    width: `${Math.max(6, selectedRunSummary.progress.percent)}%`,
+                  }}
+                />
+              </div>
+            </div>
+          ) : null}
+          {selectedRunSummary.models.length > 0 ? (
+            <div className="benchmark-compare-grid">
+              {selectedRunSummary.models.map((summary) => (
+                <div key={summary.modelName} className="benchmark-compare-card">
+                  <div className="benchmark-compare-header">
+                    <strong>{summary.modelName}</strong>
+                    <span>{summary.total} cases</span>
+                  </div>
+                  <dl className="benchmark-compare-stats">
+                    <div>
+                      <dt>Avg. latency</dt>
+                      <dd>{formatDurationMs(summary.avgLatencyMs)}</dd>
+                    </div>
+                    <div>
+                      <dt>Valid prefix</dt>
+                      <dd>{Math.round(summary.validPrefixRate * 100)}%</dd>
+                    </div>
+                    <div>
+                      <dt>Accepted</dt>
+                      <dd>{Math.round(summary.acceptedRate * 100)}%</dd>
+                    </div>
+                  </dl>
+                </div>
+              ))}
+            </div>
+          ) : null}
           <div className="table-wrap">
             <table>
               <thead>

@@ -1,4 +1,14 @@
 export type SuggestionOutcome = "all" | "accepted" | "rejected" | "unreviewed";
+export type SuggestionQuality = "good" | "bad";
+export type SuggestionQualityFilter = "all" | SuggestionQuality | "unlabeled";
+export type SuggestionSort =
+  | "newest"
+  | "oldest"
+  | "latency-desc"
+  | "latency-asc"
+  | "buffer-asc"
+  | "model-asc"
+  | "quality-desc";
 export type ClearDataset = "suggestions" | "feedback" | "benchmarks";
 export type SuggestStrategy = "history-only" | "history+model" | "model-only";
 
@@ -17,6 +27,7 @@ export interface OllamaModelOption {
   name: string;
   installed: boolean;
   source: "installed" | "library";
+  capabilities?: string[];
 }
 
 export interface OllamaInstallJob {
@@ -73,6 +84,7 @@ export interface SuggestionRow {
   cwd: string;
   repoRoot: string;
   branch: string;
+  lastExitCode: number;
   modelName: string;
   latencyMs: number;
   createdAtMs: number;
@@ -80,6 +92,10 @@ export interface SuggestionRow {
   rejected: boolean;
   acceptedCommand: string;
   actualCommand: string;
+  promptText: string;
+  structuredContextJson: string;
+  qualityLabel: SuggestionQuality | null;
+  qualityUpdatedAtMs: number;
 }
 
 export interface CommandRow {

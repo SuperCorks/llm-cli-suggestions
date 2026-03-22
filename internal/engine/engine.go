@@ -2,7 +2,9 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -36,6 +38,11 @@ type rankedCandidate struct {
 	LastCtxAdj     int
 }
 
+type inspectResult struct {
+	response        api.InspectResponse
+	resolvedRequest api.SuggestRequest
+}
+
 func New(store *db.Store, modelClient model.Client, modelName, modelBaseURL, suggestStrategy string, suggestTimeout time.Duration) *Engine {
 	return &Engine{
 		store:           store,
@@ -59,13 +66,13 @@ func (e *Engine) Suggest(ctx context.Context, request api.SuggestRequest) (api.S
 
 	recentCommands := request.RecentCommands
 	var err error
-	inspection, err := e.inspect(ctx, api.InspectRequest{
+	inspection, err := e.inspectDetailed(ctx, api.InspectRequest{
 		SessionID:      request.SessionID,
 		Buffer:         request.Buffer,
 		CWD:            request.CWD,
 		RepoRoot:       request.RepoRoot,
 		Branch:         request.Branch,
-		LastExitCode:   request.LastExitCode,
+		LastExitCode:   intPtr(request.LastExitCode),
 		RecentCommands: recentCommands,
 		Strategy:       request.Strategy,
 		Limit:          8,
@@ -74,11 +81,11 @@ func (e *Engine) Suggest(ctx context.Context, request api.SuggestRequest) (api.S
 		return api.SuggestResponse{}, err
 	}
 
-	if len(inspection.Candidates) == 0 || inspection.Winner == nil {
+	if len(inspection.response.Candidates) == 0 || inspection.response.Winner == nil {
 		return api.SuggestResponse{}, nil
 	}
-	winner := inspection.Winner
-	return e.recordSuggestion(ctx, request, rankedCandidate{
+	winner := inspection.response.Winner
+	return e.recordSuggestion(ctx, inspection, rankedCandidate{
 		Command:      winner.Command,
 		Source:       winner.Source,
 		Score:        winner.Score,
@@ -97,17 +104,21 @@ func (e *Engine) Suggest(ctx context.Context, request api.SuggestRequest) (api.S
 }
 
 func (e *Engine) Inspect(ctx context.Context, request api.InspectRequest) (api.InspectResponse, error) {
-	return e.inspect(ctx, request)
+	result, err := e.inspectDetailed(ctx, request)
+	if err != nil {
+		return api.InspectResponse{}, err
+	}
+	return result.response, nil
 }
 
-func (e *Engine) inspect(ctx context.Context, request api.InspectRequest) (api.InspectResponse, error) {
+func (e *Engine) inspectDetailed(ctx context.Context, request api.InspectRequest) (inspectResult, error) {
 	if err := e.store.EnsureSession(ctx, request.SessionID); err != nil {
-		return api.InspectResponse{}, err
+		return inspectResult{}, err
 	}
 
 	buffer := strings.TrimSpace(request.Buffer)
 	if buffer == "" {
-		return api.InspectResponse{}, nil
+		return inspectResult{}, nil
 	}
 
 	limit := request.Limit
@@ -115,21 +126,9 @@ func (e *Engine) inspect(ctx context.Context, request api.InspectRequest) (api.I
 		limit = 8
 	}
 
-	recentCommands := request.RecentCommands
-	var err error
-	if len(recentCommands) == 0 {
-		recentCommands, err = e.store.GetRecentCommands(ctx, request.SessionID, 12)
-		if err != nil {
-			return api.InspectResponse{}, err
-		}
-	}
-	if recentCommands == nil {
-		recentCommands = []string{}
-	}
-
-	lastContext, err := e.store.GetLastCommandContext(ctx, request.SessionID)
+	resolvedSuggestRequest, recentCommands, lastContext, err := e.resolveInspectContext(ctx, request)
 	if err != nil {
-		return api.InspectResponse{}, err
+		return inspectResult{}, err
 	}
 
 	candidateMap := map[string]*rankedCandidate{}
@@ -142,9 +141,9 @@ func (e *Engine) inspect(ctx context.Context, request api.InspectRequest) (api.I
 	useModel := strategy != config.SuggestStrategyHistoryOnly
 
 	if useHistory {
-		historyCandidates, err = e.store.FindCommandCandidates(ctx, buffer, request.CWD, request.RepoRoot, request.Branch, limit)
+		historyCandidates, err = e.store.FindCommandCandidates(ctx, buffer, resolvedSuggestRequest.CWD, resolvedSuggestRequest.RepoRoot, resolvedSuggestRequest.Branch, limit)
 		if err != nil {
-			return api.InspectResponse{}, err
+			return inspectResult{}, err
 		}
 
 		for _, historyCandidate := range historyCandidates {
@@ -170,17 +169,9 @@ func (e *Engine) inspect(ctx context.Context, request api.InspectRequest) (api.I
 		}
 	}
 
-	suggestRequest := api.SuggestRequest{
-		SessionID:      request.SessionID,
-		Buffer:         request.Buffer,
-		CWD:            request.CWD,
-		RepoRoot:       request.RepoRoot,
-		Branch:         request.Branch,
-		LastExitCode:   request.LastExitCode,
-		RecentCommands: recentCommands,
-		Strategy:       strategy,
-	}
-	retrievedContext, retrievalCandidates := buildRetrievedContext(ctx, suggestRequest, historyCandidates)
+	resolvedSuggestRequest.Strategy = strategy
+	resolvedSuggestRequest.RecentCommands = recentCommands
+	retrievedContext, retrievalCandidates := buildRetrievedContext(ctx, resolvedSuggestRequest, historyCandidates)
 	for _, retrievalCandidate := range retrievalCandidates {
 		candidate := candidateMap[retrievalCandidate.Command]
 		if candidate == nil {
@@ -201,7 +192,7 @@ func (e *Engine) inspect(ctx context.Context, request api.InspectRequest) (api.I
 
 	initialCandidates := sortedCandidates(candidateMap)
 	historyTrusted := useHistory && len(initialCandidates) > 0 && shouldTrustHistory(initialCandidates)
-	prompt := BuildPrompt(suggestRequest, recentCommands, lastContext, retrievedContext)
+	prompt := BuildPrompt(resolvedSuggestRequest, recentCommands, lastContext, retrievedContext)
 
 	rawModelOutput := ""
 	cleanedModelOutput := ""
@@ -239,7 +230,7 @@ func (e *Engine) inspect(ctx context.Context, request api.InspectRequest) (api.I
 					}
 
 					candidate.LatencyMS = time.Since(startedAt).Milliseconds()
-					candidate.ModelScore = scoreModelCandidate(cleanedModelOutput, suggestRequest, recentCommands, lastContext)
+					candidate.ModelScore = scoreModelCandidate(cleanedModelOutput, resolvedSuggestRequest, recentCommands, lastContext)
 					candidate.Score = max(candidate.Score, candidate.ModelScore)
 				}
 			}
@@ -247,7 +238,7 @@ func (e *Engine) inspect(ctx context.Context, request api.InspectRequest) (api.I
 	}
 
 	if len(candidateMap) == 0 {
-		return api.InspectResponse{
+		return inspectResult{response: api.InspectResponse{
 			ModelName:          activeModelName,
 			HistoryTrusted:     historyTrusted,
 			Prompt:             prompt,
@@ -259,12 +250,12 @@ func (e *Engine) inspect(ctx context.Context, request api.InspectRequest) (api.I
 			LastStderrExcerpt:  lastContext.StderrExcerpt,
 			RetrievedContext:   retrievedContext,
 			Candidates:         []api.InspectCandidate{},
-		}, nil
+		}, resolvedRequest: resolvedSuggestRequest}, nil
 	}
 
 	feedbackStats, err := e.store.GetCommandFeedbackStats(ctx, candidateCommands(candidateMap))
 	if err != nil {
-		return api.InspectResponse{}, err
+		return inspectResult{}, err
 	}
 
 	for command, candidate := range candidateMap {
@@ -272,7 +263,7 @@ func (e *Engine) inspect(ctx context.Context, request api.InspectRequest) (api.I
 		candidate.Feedback = stats
 		candidate.FeedbackAdj = scoreFeedback(stats)
 		candidate.RecentAdj = scoreRecentUsage(command, recentCommands)
-		candidate.LastCtxAdj = scoreLastContext(command, lastContext, request.LastExitCode)
+		candidate.LastCtxAdj = scoreLastContext(command, lastContext, resolvedSuggestRequest.LastExitCode)
 		candidate.Score += candidate.FeedbackAdj + candidate.RecentAdj + candidate.LastCtxAdj
 	}
 
@@ -319,22 +310,120 @@ func (e *Engine) inspect(ctx context.Context, request api.InspectRequest) (api.I
 	if len(inspectCandidates) > 0 {
 		response.Winner = &inspectCandidates[0]
 	}
-	return response, nil
+	return inspectResult{response: response, resolvedRequest: resolvedSuggestRequest}, nil
 }
 
-func (e *Engine) recordSuggestion(ctx context.Context, request api.SuggestRequest, candidate rankedCandidate) (api.SuggestResponse, error) {
+func (e *Engine) resolveInspectContext(ctx context.Context, request api.InspectRequest) (api.SuggestRequest, []string, db.CommandContext, error) {
+	resolved := api.SuggestRequest{
+		SessionID: request.SessionID,
+		Buffer:    request.Buffer,
+		CWD:       request.CWD,
+		RepoRoot:  request.RepoRoot,
+		Branch:    request.Branch,
+		Strategy:  request.Strategy,
+	}
+	recentCommands := request.RecentCommands
+	lastContext := db.CommandContext{}
+	var err error
+
+	if request.SessionID != "" {
+		lastContext, err = e.store.GetLastCommandContext(ctx, request.SessionID)
+		if err != nil {
+			return api.SuggestRequest{}, nil, db.CommandContext{}, err
+		}
+		if resolved.CWD == "" {
+			resolved.CWD = lastContext.CWD
+		}
+		if resolved.RepoRoot == "" {
+			resolved.RepoRoot = lastContext.RepoRoot
+		}
+		if resolved.Branch == "" {
+			resolved.Branch = lastContext.Branch
+		}
+		if len(recentCommands) == 0 {
+			recentCommands, err = e.store.GetRecentCommands(ctx, request.SessionID, 12)
+			if err != nil {
+				return api.SuggestRequest{}, nil, db.CommandContext{}, err
+			}
+		}
+	} else if resolved.CWD != "" {
+		lastContext, err = e.store.GetLastCommandContextByCWD(ctx, resolved.CWD)
+		if err != nil {
+			return api.SuggestRequest{}, nil, db.CommandContext{}, err
+		}
+		if resolved.RepoRoot == "" {
+			resolved.RepoRoot = lastContext.RepoRoot
+		}
+		if resolved.Branch == "" {
+			resolved.Branch = lastContext.Branch
+		}
+		if len(recentCommands) == 0 {
+			recentCommands, err = e.store.GetRecentCommandsByCWD(ctx, resolved.CWD, 12)
+			if err != nil {
+				return api.SuggestRequest{}, nil, db.CommandContext{}, err
+			}
+		}
+	}
+
+	if request.LastExitCode != nil {
+		resolved.LastExitCode = *request.LastExitCode
+	} else {
+		resolved.LastExitCode = lastContext.ExitCode
+	}
+
+	if (resolved.RepoRoot == "" || resolved.Branch == "") && resolved.CWD != "" {
+		inferredRepoRoot, inferredBranch := inferGitContext(ctx, resolved.CWD)
+		if resolved.RepoRoot == "" {
+			resolved.RepoRoot = inferredRepoRoot
+		}
+		if resolved.Branch == "" {
+			resolved.Branch = inferredBranch
+		}
+	}
+
+	if recentCommands == nil {
+		recentCommands = []string{}
+	}
+
+	return resolved, recentCommands, lastContext, nil
+}
+
+func inferGitContext(ctx context.Context, cwd string) (string, string) {
+	repoRootOutput, err := exec.CommandContext(ctx, "git", "-C", cwd, "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		return "", ""
+	}
+	repoRoot := strings.TrimSpace(string(repoRootOutput))
+	if repoRoot == "" {
+		return "", ""
+	}
+
+	branchOutput, err := exec.CommandContext(ctx, "git", "-C", cwd, "rev-parse", "--abbrev-ref", "HEAD").Output()
+	if err != nil {
+		return repoRoot, ""
+	}
+	return repoRoot, strings.TrimSpace(string(branchOutput))
+}
+
+func intPtr(value int) *int {
+	return &value
+}
+
+func (e *Engine) recordSuggestion(ctx context.Context, inspection inspectResult, candidate rankedCandidate) (api.SuggestResponse, error) {
 	suggestionID, err := e.store.CreateSuggestion(ctx, db.SuggestionRecord{
-		SessionID:    request.SessionID,
-		Buffer:       request.Buffer,
-		Suggestion:   candidate.Command,
-		Source:       candidate.Source,
-		CWD:          request.CWD,
-		RepoRoot:     request.RepoRoot,
-		Branch:       request.Branch,
-		LastExitCode: request.LastExitCode,
-		LatencyMS:    candidate.LatencyMS,
-		ModelName:    modelNameForSource(e.modelName, candidate.Source),
-		CreatedAtMS:  time.Now().UnixMilli(),
+		SessionID:             inspection.resolvedRequest.SessionID,
+		Buffer:                inspection.resolvedRequest.Buffer,
+		Suggestion:            candidate.Command,
+		Source:                candidate.Source,
+		CWD:                   inspection.resolvedRequest.CWD,
+		RepoRoot:              inspection.resolvedRequest.RepoRoot,
+		Branch:                inspection.resolvedRequest.Branch,
+		LastExitCode:          inspection.resolvedRequest.LastExitCode,
+		LatencyMS:             candidate.LatencyMS,
+		ModelName:             modelNameForSource(inspection.response.ModelName, candidate.Source),
+		PromptText:            inspection.response.Prompt,
+		StructuredContextJSON: marshalSuggestionContext(inspection),
+		CreatedAtMS:           time.Now().UnixMilli(),
 	})
 	if err != nil {
 		return api.SuggestResponse{}, err
@@ -345,6 +434,52 @@ func (e *Engine) recordSuggestion(ctx context.Context, request api.SuggestReques
 		Suggestion:   candidate.Command,
 		Source:       candidate.Source,
 	}, nil
+}
+
+func marshalSuggestionContext(inspection inspectResult) string {
+	payload := struct {
+		Request struct {
+			SessionID    string `json:"sessionId"`
+			Buffer       string `json:"buffer"`
+			CWD          string `json:"cwd"`
+			RepoRoot     string `json:"repoRoot"`
+			Branch       string `json:"branch"`
+			LastExitCode int    `json:"lastExitCode"`
+			Strategy     string `json:"strategy"`
+		} `json:"request"`
+		ModelName        string                      `json:"modelName"`
+		HistoryTrusted   bool                        `json:"historyTrusted"`
+		RecentCommands   []string                    `json:"recentCommands"`
+		LastContext      db.CommandContext           `json:"lastContext"`
+		RetrievedContext api.InspectRetrievedContext `json:"retrievedContext"`
+	}{}
+
+	payload.Request.SessionID = inspection.resolvedRequest.SessionID
+	payload.Request.Buffer = inspection.resolvedRequest.Buffer
+	payload.Request.CWD = inspection.resolvedRequest.CWD
+	payload.Request.RepoRoot = inspection.resolvedRequest.RepoRoot
+	payload.Request.Branch = inspection.resolvedRequest.Branch
+	payload.Request.LastExitCode = inspection.resolvedRequest.LastExitCode
+	payload.Request.Strategy = inspection.resolvedRequest.Strategy
+	payload.ModelName = inspection.response.ModelName
+	payload.HistoryTrusted = inspection.response.HistoryTrusted
+	payload.RecentCommands = inspection.response.RecentCommands
+	payload.LastContext = db.CommandContext{
+		CWD:           inspection.resolvedRequest.CWD,
+		RepoRoot:      inspection.resolvedRequest.RepoRoot,
+		Branch:        inspection.resolvedRequest.Branch,
+		ExitCode:      inspection.resolvedRequest.LastExitCode,
+		Command:       inspection.response.LastCommand,
+		StdoutExcerpt: inspection.response.LastStdoutExcerpt,
+		StderrExcerpt: inspection.response.LastStderrExcerpt,
+	}
+	payload.RetrievedContext = inspection.response.RetrievedContext
+
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return ""
+	}
+	return string(encoded)
 }
 
 func BuildPrompt(request api.SuggestRequest, recentCommands []string, lastContext db.CommandContext, retrievedContext api.InspectRetrievedContext) string {
@@ -386,6 +521,7 @@ func BuildPrompt(request api.SuggestRequest, recentCommands []string, lastContex
 	appendPromptList(&builder, "matching_history", retrievedContext.HistoryMatches)
 	appendPromptList(&builder, "path_matches", retrievedContext.PathMatches)
 	appendPromptList(&builder, "git_branch_matches", retrievedContext.GitBranchMatches)
+	appendPromptList(&builder, "project_tasks", retrievedContext.ProjectTasks)
 	appendPromptList(&builder, "project_task_matches", retrievedContext.ProjectTaskMatches)
 	builder.WriteString("\ncurrent_buffer:\n")
 	builder.WriteString(request.Buffer)

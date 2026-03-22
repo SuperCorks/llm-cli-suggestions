@@ -19,6 +19,13 @@ The fastest way to improve suggestion quality is to stop guessing and start meas
 - measure prefix-validity rate
 - compare history-only, model-only, and blended ranking
 
+## Good Near-Term Step
+
+- let a few recent days of local usage accumulate in SQLite after a clean reset
+- export accepted, rejected, and manually-corrected suggestion flows into a candidate eval dataset
+- bucket the data by repo, command family, and failure mode so the first benchmark refresh is not dominated by one workflow
+- keep the raw local history private and derive a small curated fixture set for repeatable repo benchmarks
+
 ## Why It Comes Early
 
 Without an eval loop, prompt changes and ranking tweaks are hard to trust. With one, we can make deliberate improvements instead of chasing anecdotes.

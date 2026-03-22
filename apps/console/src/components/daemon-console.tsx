@@ -1,9 +1,10 @@
 "use client";
 
-import { FolderOpen, SquareTerminal } from "lucide-react";
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import Link from "next/link";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 
 import { ModelPicker } from "@/components/model-picker";
+import { PathHoverActions } from "@/components/path-hover-actions";
 import { SuggestStrategyField } from "@/components/suggest-strategy-field";
 import { formatTimestamp } from "@/lib/format";
 import type {
@@ -31,6 +32,7 @@ export function DaemonConsole({
   initialAvailableModels,
 }: DaemonConsoleProps) {
   const [status, setStatus] = useState(initialStatus);
+  const [observedAtMs, setObservedAtMs] = useState<number | null>(null);
   const [logText, setLogText] = useState(initialLog);
   const [availableModels, setAvailableModels] = useState(initialAvailableModels);
   const [settings, setSettings] = useState({
@@ -66,14 +68,6 @@ export function DaemonConsole({
     { label: "Log file", value: status.logPath },
   ] as const;
 
-  useEffect(() => {
-    return () => {
-      if (pollTimerRef.current !== null) {
-        window.clearTimeout(pollTimerRef.current);
-      }
-    };
-  }, []);
-
   function findModelOption(modelName: string) {
     const normalized = modelName.trim();
     return availableModels.find((option) => option.name === normalized);
@@ -84,7 +78,7 @@ export function DaemonConsole({
     return Boolean(option && !option.installed);
   }
 
-  async function refreshAvailableModels(baseUrl = settings.LAC_MODEL_BASE_URL) {
+  const refreshAvailableModels = useCallback(async (baseUrl: string) => {
     const response = await fetch(
       `/api/ollama/models?baseUrl=${encodeURIComponent(baseUrl)}`,
     );
@@ -96,15 +90,16 @@ export function DaemonConsole({
       throw new Error(data.error || "Unable to refresh model inventory");
     }
     setAvailableModels(data.models || []);
-  }
+  }, []);
 
-  async function refreshRuntime() {
+  const refreshRuntime = useCallback(async () => {
     const response = await fetch("/api/runtime");
     const data = (await response.json()) as RuntimeStatus & { recentLog: string; error?: string };
     if (!response.ok) {
       throw new Error(data.error || "Unable to refresh runtime");
     }
     setStatus(data);
+    setObservedAtMs(Date.now());
     setLogText(data.recentLog);
     setSettings({
       LAC_MODEL_NAME: data.settings.modelName,
@@ -114,7 +109,37 @@ export function DaemonConsole({
       LAC_DB_PATH: data.settings.dbPath,
       LAC_SUGGEST_TIMEOUT_MS: String(data.settings.suggestTimeoutMs),
     });
-  }
+    return data;
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setObservedAtMs(Date.now());
+
+    async function syncFromRuntime() {
+      try {
+        const data = await refreshRuntime();
+        if (!cancelled) {
+          await refreshAvailableModels(data.settings.modelBaseUrl);
+        }
+      } catch (requestError) {
+        if (!cancelled) {
+          setError(
+            requestError instanceof Error ? requestError.message : "Unable to refresh runtime",
+          );
+        }
+      }
+    }
+
+    void syncFromRuntime();
+
+    return () => {
+      cancelled = true;
+      if (pollTimerRef.current !== null) {
+        window.clearTimeout(pollTimerRef.current);
+      }
+    };
+  }, [refreshAvailableModels, refreshRuntime]);
 
   async function persistSettings(nextMessage = "Runtime settings saved to runtime.env.") {
     const response = await fetch("/api/runtime/settings", {
@@ -128,6 +153,28 @@ export function DaemonConsole({
     }
     setMessage(nextMessage);
     await refreshRuntime();
+  }
+
+  async function applySettings(nextMessage?: string) {
+    setBusy("settings");
+    setError("");
+    setMessage("");
+    try {
+      await persistSettings("Runtime settings saved. Restarting daemon with the new configuration...");
+
+      const response = await fetch("/api/runtime/restart", { method: "POST" });
+      const data = (await response.json()) as RuntimeStatus & { error?: string };
+      if (!response.ok) {
+        throw new Error(data.error || "Unable to restart daemon with new settings");
+      }
+      setStatus(data);
+      setMessage(nextMessage || "Runtime settings saved and daemon restarted.");
+      await refreshRuntime();
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Unable to apply settings");
+    } finally {
+      setBusy("");
+    }
   }
 
   async function performRuntimeAction(endpoint: string, nextMessage: string) {
@@ -161,17 +208,7 @@ export function DaemonConsole({
       setError("");
       return;
     }
-
-    setBusy("settings");
-    setError("");
-    setMessage("");
-    try {
-      await persistSettings();
-    } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "Unable to save settings");
-    } finally {
-      setBusy("");
-    }
+    await applySettings();
   }
 
   function scheduleInstallPoll(jobId: string) {
@@ -213,19 +250,7 @@ export function DaemonConsole({
         const pendingSave = pendingSaveAfterInstallRef.current;
         pendingSaveAfterInstallRef.current = false;
         if (pendingSave) {
-          setBusy("settings");
-          setError("");
-          try {
-            await persistSettings(`${data.job.model} downloaded and runtime settings saved.`);
-          } catch (requestError) {
-            setError(
-              requestError instanceof Error
-                ? requestError.message
-                : "Unable to save settings after download",
-            );
-          } finally {
-            setBusy("");
-          }
+          await applySettings(`${data.job.model} downloaded. Runtime settings saved and applied.`);
         } else {
           setMessage(`${data.job.model} downloaded from Ollama.`);
         }
@@ -305,36 +330,16 @@ export function DaemonConsole({
     }
   }
 
-  async function openPath(pathValue: string, target: "finder" | "terminal") {
-    setError("");
-    setMessage("");
-    try {
-      const response = await fetch("/api/system/open-path", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          path: pathValue,
-          target,
-        }),
-      });
-      const data = (await response.json()) as { error?: string };
-      if (!response.ok) {
-        throw new Error(data.error || "Unable to open path");
-      }
-    } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "Unable to open path");
-    }
-  }
-
   return (
     <div className="stack-lg">
       <div className="hero-card">
         <div className="hero-card-topline">Daemon status</div>
         <h3>{status.health.ok ? "Healthy" : "Offline"}</h3>
         <p>
-          Model: <code>{status.health.modelName}</code> · Socket: <code>{status.health.socket}</code>
+          Model: <code>{status.health.modelName}</code> · Socket:{" "}
+          <PathHoverActions pathValue={status.health.socket} label="Daemon socket" variant="inline">
+            <code>{status.health.socket}</code>
+          </PathHoverActions>
         </p>
         {status.health.error ? <p className="error-text">{status.health.error}</p> : null}
         <div className="inline-actions">
@@ -379,6 +384,7 @@ export function DaemonConsole({
               label="Model Name"
               value={settings.LAC_MODEL_NAME}
               options={availableModels}
+              installedOnly
               onValueChange={(value) => {
                 setSettings((current) => ({ ...current, LAC_MODEL_NAME: value }));
                 if (!shouldPromptToInstall(value)) {
@@ -393,8 +399,19 @@ export function DaemonConsole({
                   });
                 }
               }}
-              placeholder="Select or type an Ollama model"
-              helperText="Installed models are ready immediately. Available models can be downloaded from the Ollama library."
+              placeholder="Select an installed model"
+              helperText={
+                <>
+                  Only installed models appear here. Download additional models from the{" "}
+                  <Link href="/models">Models</Link> page.
+                </>
+              }
+              emptyMessage={
+                <>
+                  No matching installed models. Download additional models from the{" "}
+                  <Link href="/models">Models</Link> page.
+                </>
+              }
             />
             <SuggestStrategyField
               value={settings.LAC_SUGGEST_STRATEGY}
@@ -416,21 +433,33 @@ export function DaemonConsole({
             </label>
             <label>
               Socket Path
-              <input
-                value={settings.LAC_SOCKET_PATH}
-                onChange={(event) =>
-                  setSettings((current) => ({ ...current, LAC_SOCKET_PATH: event.target.value }))
-                }
-              />
+              <PathHoverActions
+                pathValue={settings.LAC_SOCKET_PATH}
+                label="Socket path"
+                variant="input"
+              >
+                <input
+                  value={settings.LAC_SOCKET_PATH}
+                  onChange={(event) =>
+                    setSettings((current) => ({ ...current, LAC_SOCKET_PATH: event.target.value }))
+                  }
+                />
+              </PathHoverActions>
             </label>
             <label>
               Database Path
-              <input
-                value={settings.LAC_DB_PATH}
-                onChange={(event) =>
-                  setSettings((current) => ({ ...current, LAC_DB_PATH: event.target.value }))
-                }
-              />
+              <PathHoverActions
+                pathValue={settings.LAC_DB_PATH}
+                label="Database path"
+                variant="input"
+              >
+                <input
+                  value={settings.LAC_DB_PATH}
+                  onChange={(event) =>
+                    setSettings((current) => ({ ...current, LAC_DB_PATH: event.target.value }))
+                  }
+                />
+              </PathHoverActions>
             </label>
             <label>
               Suggest Timeout (ms)
@@ -457,29 +486,9 @@ export function DaemonConsole({
               <div key={row.label} className="path-row">
                 <dt>{row.label}</dt>
                 <dd>
-                  <div className="path-value-row">
+                  <PathHoverActions pathValue={row.value} label={row.label} className="path-value-row">
                     <code className="path-value">{row.value}</code>
-                    <div className="path-actions">
-                      <button
-                        type="button"
-                        className="icon-button path-action-button"
-                        aria-label={`Open ${row.label} in Finder`}
-                        title="Open in Finder"
-                        onClick={() => void openPath(row.value, "finder")}
-                      >
-                        <FolderOpen aria-hidden="true" className="path-action-icon" strokeWidth={2.2} />
-                      </button>
-                      <button
-                        type="button"
-                        className="icon-button path-action-button"
-                        aria-label={`Open ${row.label} in Terminal`}
-                        title="Open in Terminal"
-                        onClick={() => void openPath(row.value, "terminal")}
-                      >
-                        <SquareTerminal aria-hidden="true" className="path-action-icon" strokeWidth={2.2} />
-                      </button>
-                    </div>
-                  </div>
+                  </PathHoverActions>
                 </dd>
               </div>
             ))}
@@ -489,48 +498,10 @@ export function DaemonConsole({
             </div>
             <div>
               <dt>Observed</dt>
-              <dd>{formatTimestamp(Date.now())}</dd>
+              <dd>{observedAtMs ? formatTimestamp(observedAtMs) : "Waiting for client sync..."}</dd>
             </div>
           </dl>
         </div>
-      </div>
-
-      <div className="detail-block">
-          <div className="detail-block-header">
-            <div>
-              <h3>Danger Zone</h3>
-              <p className="helper-text">
-                These actions permanently remove local data from the control app and daemon history.
-              </p>
-            </div>
-          </div>
-          <div className="stack-sm">
-            {(["suggestions", "feedback", "benchmarks"] as ClearDataset[]).map((dataset) => (
-              <div key={dataset} className="destructive-card">
-                <strong>{dataset}</strong>
-                <p className="muted-text">
-                  Type <code>{CONFIRMATIONS[dataset]}</code> to confirm.
-                </p>
-                <input
-                  value={confirmations[dataset]}
-                  onChange={(event) =>
-                    setConfirmations((current) => ({
-                      ...current,
-                      [dataset]: event.target.value,
-                    }))
-                  }
-                />
-                <button
-                  type="button"
-                  className="button-danger"
-                  disabled={busy !== ""}
-                  onClick={() => void clearDataset(dataset)}
-                >
-                  Clear {dataset}
-                </button>
-              </div>
-            ))}
-          </div>
       </div>
 
       <div className="detail-block">
@@ -541,6 +512,44 @@ export function DaemonConsole({
           </button>
         </div>
         <pre className="code-block code-block-tall">{logText || "No daemon log output yet."}</pre>
+      </div>
+
+      <div className="detail-block">
+        <div className="detail-block-header">
+          <div>
+            <h3>Danger Zone</h3>
+            <p className="helper-text">
+              These actions permanently remove local data from the control app and daemon history.
+            </p>
+          </div>
+        </div>
+        <div className="stack-sm danger-zone-content">
+          {(["suggestions", "feedback", "benchmarks"] as ClearDataset[]).map((dataset) => (
+            <div key={dataset} className="destructive-card">
+              <strong>{dataset}</strong>
+              <p className="muted-text">
+                Type <code>{CONFIRMATIONS[dataset]}</code> to confirm.
+              </p>
+              <input
+                value={confirmations[dataset]}
+                onChange={(event) =>
+                  setConfirmations((current) => ({
+                    ...current,
+                    [dataset]: event.target.value,
+                  }))
+                }
+              />
+              <button
+                type="button"
+                className="button-danger"
+                disabled={busy !== ""}
+                onClick={() => void clearDataset(dataset)}
+              >
+                Clear {dataset}
+              </button>
+            </div>
+          ))}
+        </div>
       </div>
 
       <div className="toast-stack" aria-live="polite">

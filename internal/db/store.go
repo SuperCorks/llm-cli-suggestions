@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -22,17 +23,19 @@ type CommandCandidate struct {
 }
 
 type SuggestionRecord struct {
-	SessionID    string
-	Buffer       string
-	Suggestion   string
-	Source       string
-	CWD          string
-	RepoRoot     string
-	Branch       string
-	LastExitCode int
-	LatencyMS    int64
-	ModelName    string
-	CreatedAtMS  int64
+	SessionID             string
+	Buffer                string
+	Suggestion            string
+	Source                string
+	CWD                   string
+	RepoRoot              string
+	Branch                string
+	LastExitCode          int
+	LatencyMS             int64
+	ModelName             string
+	PromptText            string
+	StructuredContextJSON string
+	CreatedAtMS           int64
 }
 
 type FeedbackRecord struct {
@@ -113,6 +116,8 @@ func (s *Store) migrate(ctx context.Context) error {
 			last_exit_code INTEGER NOT NULL,
 			latency_ms INTEGER NOT NULL,
 			model_name TEXT NOT NULL,
+			prompt_text TEXT NOT NULL DEFAULT '',
+			structured_context_json TEXT NOT NULL DEFAULT '',
 			created_at_ms INTEGER NOT NULL
 		);`,
 		`CREATE TABLE IF NOT EXISTS feedback_events (
@@ -161,6 +166,44 @@ func (s *Store) migrate(ctx context.Context) error {
 		}
 	}
 
+	if err := s.ensureColumn(ctx, "suggestions", "prompt_text", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "suggestions", "structured_context_json", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (s *Store) ensureColumn(ctx context.Context, table, column, definition string) error {
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return fmt.Errorf("inspect %s columns: %w", table, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name string
+		var colType string
+		var notNull int
+		var defaultValue sql.NullString
+		var primaryKey int
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return fmt.Errorf("scan %s column: %w", table, err)
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read %s columns: %w", table, err)
+	}
+
+	if _, err := s.db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, definition)); err != nil {
+		return fmt.Errorf("add %s.%s: %w", table, column, err)
+	}
 	return nil
 }
 
@@ -202,6 +245,37 @@ func (s *Store) GetRecentCommands(ctx context.Context, sessionID string, limit i
 		var command string
 		if err := rows.Scan(&command); err != nil {
 			return nil, fmt.Errorf("scan recent command: %w", err)
+		}
+		commands = append(commands, command)
+	}
+	return commands, rows.Err()
+}
+
+func (s *Store) GetRecentCommandsByCWD(ctx context.Context, cwd string, limit int) ([]string, error) {
+	if strings.TrimSpace(cwd) == "" {
+		return []string{}, nil
+	}
+
+	rows, err := s.db.QueryContext(
+		ctx,
+		`SELECT command_text
+		 FROM commands
+		 WHERE cwd = ?
+		 ORDER BY finished_at_ms DESC
+		 LIMIT ?`,
+		cwd,
+		limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query recent commands by cwd: %w", err)
+	}
+	defer rows.Close()
+
+	var commands []string
+	for rows.Next() {
+		var command string
+		if err := rows.Scan(&command); err != nil {
+			return nil, fmt.Errorf("scan recent command by cwd: %w", err)
 		}
 		commands = append(commands, command)
 	}
@@ -298,8 +372,8 @@ func (s *Store) CreateSuggestion(ctx context.Context, record SuggestionRecord) (
 		ctx,
 		`INSERT INTO suggestions(
 			session_id, buffer, suggestion_text, source, cwd, repo_root, branch,
-			last_exit_code, latency_ms, model_name, created_at_ms
-		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			last_exit_code, latency_ms, model_name, prompt_text, structured_context_json, created_at_ms
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		record.SessionID,
 		record.Buffer,
 		record.Suggestion,
@@ -310,6 +384,8 @@ func (s *Store) CreateSuggestion(ctx context.Context, record SuggestionRecord) (
 		record.LastExitCode,
 		record.LatencyMS,
 		record.ModelName,
+		record.PromptText,
+		record.StructuredContextJSON,
 		record.CreatedAtMS,
 	)
 	if err != nil {

@@ -1,7 +1,8 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { PathHoverActions } from "@/components/path-hover-actions";
 import { formatDurationMs } from "@/lib/format";
 import {
   normalizeSuggestStrategy,
@@ -43,6 +44,7 @@ type InspectResponse = {
     history_matches: string[];
     path_matches: string[];
     git_branch_matches: string[];
+    project_tasks: string[];
     project_task_matches: string[];
   };
   winner: InspectCandidate | null;
@@ -50,6 +52,18 @@ type InspectResponse = {
 };
 
 type InspectResponsePayload = Partial<InspectResponse> & { error?: string };
+
+type InspectFormState = {
+  sessionId: string;
+  buffer: string;
+  cwd: string;
+  repoRoot: string;
+  branch: string;
+  lastExitCode: string;
+  modelName: string;
+  suggestStrategy: SuggestStrategy;
+  recentCommands: string;
+};
 
 function normalizeCandidate(
   input: Partial<InspectCandidate> | null | undefined,
@@ -133,6 +147,9 @@ function normalizeInspectResponse(
       )
         ? input.retrieved_context?.git_branch_matches
         : [],
+      project_tasks: Array.isArray(input.retrieved_context?.project_tasks)
+        ? input.retrieved_context?.project_tasks
+        : [],
       project_task_matches: Array.isArray(
         input.retrieved_context?.project_task_matches,
       )
@@ -146,30 +163,32 @@ function normalizeInspectResponse(
 
 interface RankingInspectorProps {
   defaultModelName: string;
-  defaultModelBaseUrl: string;
   defaultSuggestStrategy: SuggestStrategy;
+  initialForm?: Partial<InspectFormState>;
+  autoInspect?: boolean;
 }
 
 export function RankingInspector({
   defaultModelName,
-  defaultModelBaseUrl,
   defaultSuggestStrategy,
+  initialForm,
+  autoInspect = false,
 }: RankingInspectorProps) {
-  const [form, setForm] = useState({
-    sessionId: "console-ranking",
-    buffer: "git st",
-    cwd: "",
-    repoRoot: "",
-    branch: "",
-    lastExitCode: "0",
-    modelName: defaultModelName,
-    modelBaseUrl: defaultModelBaseUrl,
-    suggestStrategy: defaultSuggestStrategy,
-    recentCommands: "",
-  });
+  const [form, setForm] = useState<InspectFormState>(() => ({
+    sessionId: initialForm?.sessionId || "",
+    buffer: initialForm?.buffer || "git st",
+    cwd: initialForm?.cwd || "",
+    repoRoot: initialForm?.repoRoot || "",
+    branch: initialForm?.branch || "",
+    lastExitCode: initialForm?.lastExitCode || "",
+    modelName: initialForm?.modelName || defaultModelName,
+    suggestStrategy: initialForm?.suggestStrategy || defaultSuggestStrategy,
+    recentCommands: initialForm?.recentCommands || "",
+  }));
   const [response, setResponse] = useState<InspectResponse | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const didAutoInspect = useRef(false);
   const canInspect = form.buffer.trim().length > 0 && !loading;
 
   const parsedRecentCommands = useMemo(
@@ -181,24 +200,27 @@ export function RankingInspector({
     [form.recentCommands],
   );
 
-  async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  const runInspect = useCallback(async () => {
     setLoading(true);
     setError("");
     setResponse(null);
     try {
+      const parsedLastExitCode = form.lastExitCode.trim()
+        ? Number.parseInt(form.lastExitCode, 10)
+        : null;
       const res = await fetch("/api/ranking", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          session_id: form.sessionId,
+          session_id: form.sessionId.trim(),
           buffer: form.buffer,
-          cwd: form.cwd,
-          repo_root: form.repoRoot,
-          branch: form.branch,
-          last_exit_code: Number.parseInt(form.lastExitCode || "0", 10) || 0,
+          cwd: form.cwd.trim(),
+          ...(form.repoRoot.trim() ? { repo_root: form.repoRoot.trim() } : {}),
+          ...(form.branch.trim() ? { branch: form.branch.trim() } : {}),
+          ...(Number.isFinite(parsedLastExitCode)
+            ? { last_exit_code: parsedLastExitCode }
+            : {}),
           model_name: form.modelName,
-          model_base_url: form.modelBaseUrl,
           strategy: form.suggestStrategy,
           recent_commands: parsedRecentCommands,
           limit: 8,
@@ -206,19 +228,32 @@ export function RankingInspector({
       });
       const data = (await res.json()) as InspectResponsePayload;
       if (!res.ok) {
-        throw new Error(data.error || "ranking request failed");
+        throw new Error(data.error || "inspect request failed");
       }
       setResponse(normalizeInspectResponse(data));
     } catch (requestError) {
       setError(
         requestError instanceof Error
           ? requestError.message
-          : "ranking request failed",
+          : "inspect request failed",
       );
     } finally {
       setLoading(false);
     }
+  }, [form, parsedRecentCommands]);
+
+  async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await runInspect();
   }
+
+  useEffect(() => {
+    if (!autoInspect || didAutoInspect.current || form.buffer.trim().length === 0) {
+      return;
+    }
+    didAutoInspect.current = true;
+    void runInspect();
+  }, [autoInspect, form.buffer, runInspect]);
 
   return (
     <div className="stack-lg">
@@ -252,36 +287,34 @@ export function RankingInspector({
           </label>
           <label>
             CWD
-            <input
-              value={form.cwd}
-              onChange={(event) =>
-                setForm((current) => ({ ...current, cwd: event.target.value }))
-              }
-              placeholder="/Users/simon/project"
-            />
+            <PathHoverActions pathValue={form.cwd} label="Inspector CWD" variant="input">
+              <input
+                value={form.cwd}
+                onChange={(event) =>
+                  setForm((current) => ({ ...current, cwd: event.target.value }))
+                }
+                placeholder="/Users/simon/project"
+              />
+            </PathHoverActions>
           </label>
           <label>
             Repo Root
-            <input
-              value={form.repoRoot}
-              onChange={(event) =>
-                setForm((current) => ({
-                  ...current,
-                  repoRoot: event.target.value,
-                }))
-              }
-              placeholder="/Users/simon/project"
-            />
+            <PathHoverActions pathValue={form.repoRoot} label="Inspector repo root" variant="input">
+              <input
+                value={form.repoRoot}
+                onChange={(event) =>
+                  setForm((current) => ({ ...current, repoRoot: event.target.value }))
+                }
+                placeholder="/Users/simon/project"
+              />
+            </PathHoverActions>
           </label>
           <label>
             Branch
             <input
               value={form.branch}
               onChange={(event) =>
-                setForm((current) => ({
-                  ...current,
-                  branch: event.target.value,
-                }))
+                setForm((current) => ({ ...current, branch: event.target.value }))
               }
               placeholder="main"
             />
@@ -318,20 +351,13 @@ export function RankingInspector({
               setForm((current) => ({ ...current, suggestStrategy: value }))
             }
           />
-          <label>
-            Model Base URL
-            <input
-              value={form.modelBaseUrl}
-              onChange={(event) =>
-                setForm((current) => ({
-                  ...current,
-                  modelBaseUrl: event.target.value,
-                }))
-              }
-              placeholder={defaultModelBaseUrl}
-            />
-          </label>
         </div>
+        <p className="helper-text">
+          Leave <code>Session ID</code> empty to inspect from the current form
+          inputs only. When you provide a session or a working directory, the
+          engine can infer repo root, branch, and recent command context
+          automatically, but replay links can also pin those fields directly.
+        </p>
         <label>
           Recent Commands
           <textarea
@@ -348,7 +374,7 @@ export function RankingInspector({
         </label>
         <div className="inline-actions">
           <button type="submit" disabled={!canInspect}>
-            {loading ? "Inspecting..." : "Inspect Ranking"}
+            {loading ? "Inspecting..." : "Inspect"}
           </button>
           {!canInspect ? (
             <p className="helper-text">Buffer is required.</p>
@@ -457,6 +483,10 @@ export function RankingInspector({
                   </dd>
                 </div>
                 <div>
+                  <dt>Project tasks</dt>
+                  <dd>{response.retrieved_context.project_tasks.length}</dd>
+                </div>
+                <div>
                   <dt>Project task matches</dt>
                   <dd>
                     {response.retrieved_context.project_task_matches.length}
@@ -477,8 +507,11 @@ export function RankingInspector({
                   response.retrieved_context.git_branch_matches.length
                     ? `branches:\n- ${response.retrieved_context.git_branch_matches.join("\n- ")}`
                     : "",
+                  response.retrieved_context.project_tasks.length
+                    ? `project tasks:\n- ${response.retrieved_context.project_tasks.join("\n- ")}`
+                    : "",
                   response.retrieved_context.project_task_matches.length
-                    ? `project tasks:\n- ${response.retrieved_context.project_task_matches.join("\n- ")}`
+                    ? `project task matches:\n- ${response.retrieved_context.project_task_matches.join("\n- ")}`
                     : "",
                 ]
                   .filter(Boolean)

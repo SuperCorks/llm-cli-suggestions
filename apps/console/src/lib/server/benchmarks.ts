@@ -18,11 +18,24 @@ export function createBenchmarkRun(input: {
     `benchmark-${createdAtMs}-${Math.random().toString(36).slice(2)}.json`,
   );
 
+  const initialSummary = JSON.stringify({
+    progress: {
+      completed: 0,
+      total: 0,
+      percent: 0,
+      status: "queued",
+      currentModel: "",
+      currentCase: "",
+      currentRun: 0,
+    },
+    models: {},
+  });
+
   const result = db
     .prepare(
       `INSERT INTO benchmark_runs(
          status, models, repeat_count, timeout_ms, output_json_path, summary_json, error_text, created_at_ms
-       ) VALUES(?, ?, ?, ?, ?, '', '', ?)`,
+       ) VALUES(?, ?, ?, ?, ?, ?, '', ?)`,
     )
     .run(
       "queued",
@@ -30,6 +43,7 @@ export function createBenchmarkRun(input: {
       input.repeatCount,
       input.timeoutMs,
       outputJsonPath,
+      initialSummary,
       createdAtMs,
     );
 

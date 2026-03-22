@@ -11,7 +11,7 @@ This repo currently contains:
 - an Ollama model adapter
 - a small client binary for shell integration
 - a `zsh` plugin that fetches suggestions asynchronously and accepts them with `Tab`
-- a local Next.js control app in `apps/console` for analytics, daemon control, ranking inspection, and model testing
+- a local Next.js control app in `apps/console` for analytics, daemon control, inspection, and model testing
 
 ## Build
 
@@ -115,7 +115,7 @@ Open the local URL shown by Next.js to access:
 
 - overview metrics and recent activity
 - suggestion and command history explorers
-- ranking inspection against the daemon `/inspect` route
+- inspection against the daemon `/inspect` route
 - ad-hoc model testing and saved benchmark runs
 - daemon start, stop, restart, runtime settings, exports, and maintenance actions
 
@@ -131,7 +131,7 @@ Run the console e2e smoke suite with:
 npm run e2e
 ```
 
-This suite boots the app against a seeded temporary SQLite fixture and checks the main happy paths across the dashboard, suggestions, commands, ranking inspector, model lab, and daemon screens.
+This suite boots the app against a seeded temporary SQLite fixture and checks the main happy paths across the dashboard, suggestions, commands, inspector, model lab, and daemon screens.
 
 ## Benchmark And Smoke Tests
 

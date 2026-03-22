@@ -37,18 +37,22 @@ npm run e2e
 The Playwright suite currently covers a seeded local happy path for:
 
 - overview dashboard rendering
+- shared shell navigation collapse and expand behavior
 - suggestions explorer filtering
+- suggestions explorer sorting, pagination, persisted good/bad grading, and structured context hover previews
 - commands and feedback rendering
-- ranking inspector interaction with a mocked ranking response
-- ranking inspector rendering of retrieved local context alongside candidate scores
-- ranking inspector resilience when the daemon returns `null` prompt-context fields
-- ranking inspector validation states, payload wiring, and API error handling
-- ranking inspector strategy override coverage for `history-only`, `history+model`, and `model-only`
-- ranking inspector `model-only` states for both successful raw model output and empty-output fallback rendering
+- inspector interaction with a mocked ranking response
+- inspector rendering of retrieved local context alongside candidate scores
+- inspector resilience when the daemon returns `null` prompt-context fields
+- inspector validation states, payload wiring, inferred-context form contract, and API error handling
+- inspector strategy override coverage for `history-only`, `history+model`, and `model-only`
+- inspector `model-only` states for both successful raw model output and empty-output fallback rendering
 - model lab guardrails, default state, and reset flows
-- model lab benchmark queueing, refreshed run lists, closable detail views, and mouse-driven model selection
-- model lab ad-hoc multi-model test results, picker interactions, and clear-results flow
-- daemon page settings save flow, shared model-picker interactions, and log rendering
+- model lab sync against live runtime defaults for current model and saved suggestion strategy
+- model lab benchmark queueing, running-progress indicators, refreshed run lists, closable detail views, and stricter picker validation
+- model lab ad-hoc multi-model test results, strategy overrides, session-or-cwd context wiring, picker interactions, and clear-results flow
+- models page download, removal, available-catalog pagination, and capability-display flows for local Ollama inventory management
+- daemon page settings save flow, shared model-picker interactions, log rendering, and danger-zone ordering below the log section
 - daemon runtime strategy persistence through the shared settings form
 - daemon-side model download prompt and progress handling for Ollama-backed runtime settings
 - daemon control readiness and restart-failure handling
@@ -104,6 +108,27 @@ It currently checks:
 
 This is the strongest automated test in the repo right now because it exercises the real integration boundary.
 
+### Ghost Text Timing Test
+
+Command:
+
+```bash
+bash ./scripts/test_ghost_text.sh
+```
+
+This test uses `expect` to drive real `zsh -dfi` sessions over a pseudo-terminal, seeds history through the daemon API, and records redraw snapshots through `LAC_SNAPSHOT_PATH`.
+
+It currently checks four isolated one-prefix idle sessions:
+
+- `n`
+- `npm `
+- `npm p`
+- `npm pr`
+
+For each prefix, the test first confirms the daemon can produce a usable direct suggestion, then verifies the live shell reaches a `notify-applied` snapshot with a rendered suffix that matches the shell suggestion for that prefix.
+
+This is the best targeted regression test for the shell timing issue because it leaves the shell idle after one prefix, avoids invalidating the in-flight request with extra editing input, and exercises the actual ZLE integration instead of only synchronous helper functions.
+
 ### Model Benchmark CLI
 
 Command:
@@ -138,7 +163,7 @@ In addition to the scripted checks, the current development workflow has relied 
 - opening the local control app and loading overview, suggestions, commands, ranking, lab, and daemon pages
 - confirming daemon start or restart controls update runtime health
 - running a benchmark from the control app and verifying rows persist in SQLite
-- using the ranking inspector to confirm candidate breakdowns render correctly
+- using the inspector to confirm candidate breakdowns render correctly
 
 These checks matter because terminal UX issues often do not show up in pure unit tests.
 
@@ -148,6 +173,7 @@ These checks matter because terminal UX issues often do not show up in pure unit
 - end-to-end shell integration
 - command and feedback logging
 - async suggestion delivery at a smoke-test level
+- interactive ghost-text timing across isolated idle prefixes
 - model comparison on representative cases
 - console app compilation and route wiring
 - persisted runtime settings flow from the control app into the shell startup path
@@ -158,7 +184,7 @@ These checks matter because terminal UX issues often do not show up in pure unit
 - unit tests for prompt construction and suggestion cleanup
 - dedicated database migration tests
 - failure-mode integration tests for missing daemon or missing Ollama
-- race-heavy shell behavior under rapid typing
+- race-heavy shell behavior under rapid typing beyond the seeded prefix matrix
 - regression tests built from real accepted and rejected user suggestions
 - focused tests for console query filters and export routes
 - daemon control route tests from the control app surface
