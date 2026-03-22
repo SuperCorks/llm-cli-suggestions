@@ -112,10 +112,17 @@ Start the daemon:
 ./bin/autocomplete-daemon
 ```
 
-Load the zsh plugin (add to your `.zshrc` for persistence):
+Load the zsh plugin:
 
 ```bash
 source "$PWD/zsh/llm-cli-suggestions.zsh"
+lac-start-daemon
+```
+
+For a persistent setup, use the absolute clone path in your `.zshrc` so it works from any directory:
+
+```bash
+source "/absolute/path/to/llm-cli-suggestions/zsh/llm-cli-suggestions.zsh"
 lac-start-daemon
 ```
 
