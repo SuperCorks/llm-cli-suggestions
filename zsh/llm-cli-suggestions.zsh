@@ -10,7 +10,7 @@ zmodload zsh/datetime 2>/dev/null || true
 
 typeset -g LAC_PLUGIN_PATH="${${(%):-%x}:A}"
 typeset -g LAC_ROOT_DIR="${LAC_PLUGIN_PATH:h:h}"
-typeset -g LAC_STATE_DIR="${LAC_STATE_DIR:-$HOME/Library/Application Support/cli-auto-complete}"
+typeset -g LAC_STATE_DIR="${LAC_STATE_DIR:-$HOME/Library/Application Support/llm-cli-suggestions}"
 typeset -g LAC_RUNTIME_ENV_PATH="$LAC_STATE_DIR/runtime.env"
 typeset -g LAC_ASYNC_DIR="${LAC_ASYNC_DIR:-$LAC_STATE_DIR/async}"
 typeset -g LAC_CLIENT_BIN="${LAC_CLIENT_BIN:-$LAC_ROOT_DIR/bin/autocomplete-client}"
@@ -21,6 +21,8 @@ typeset -g LAC_DEBOUNCE_SECONDS="${LAC_DEBOUNCE_SECONDS:-0.08}"
 typeset -g LAC_HIGHLIGHT_STYLE="${LAC_HIGHLIGHT_STYLE:-fg=242}"
 typeset -g LAC_SNAPSHOT_PATH="${LAC_SNAPSHOT_PATH:-}"
 typeset -gi LAC_CAPTURE_BYTES="${LAC_CAPTURE_BYTES:-600}"
+typeset -g LAC_AUTO_CAPTURE_ENABLED="${LAC_AUTO_CAPTURE_ENABLED:-0}"
+typeset -g LAC_PTY_CAPTURE_ALLOWLIST="${LAC_PTY_CAPTURE_ALLOWLIST:-}"
 typeset -g LAC_MODEL_BASE_URL="${LAC_MODEL_BASE_URL:-}"
 typeset -g LAC_SUGGEST_STRATEGY="${LAC_SUGGEST_STRATEGY:-}"
 typeset -g LAC_SUGGEST_TIMEOUT_MS="${LAC_SUGGEST_TIMEOUT_MS:-}"
@@ -40,6 +42,8 @@ typeset -gx LAC_MODEL_NAME="${LAC_MODEL_NAME:-$(_lac_runtime_value LAC_MODEL_NAM
 typeset -gx LAC_MODEL_BASE_URL="${LAC_MODEL_BASE_URL:-$(_lac_runtime_value LAC_MODEL_BASE_URL)}"
 typeset -gx LAC_SUGGEST_STRATEGY="${LAC_SUGGEST_STRATEGY:-$(_lac_runtime_value LAC_SUGGEST_STRATEGY)}"
 typeset -gx LAC_SUGGEST_TIMEOUT_MS="${LAC_SUGGEST_TIMEOUT_MS:-$(_lac_runtime_value LAC_SUGGEST_TIMEOUT_MS)}"
+typeset -gx LAC_AUTO_CAPTURE_ENABLED="${LAC_AUTO_CAPTURE_ENABLED:-$(_lac_runtime_value LAC_AUTO_CAPTURE_ENABLED)}"
+typeset -gx LAC_PTY_CAPTURE_ALLOWLIST="${LAC_PTY_CAPTURE_ALLOWLIST:-$(_lac_runtime_value LAC_PTY_CAPTURE_ALLOWLIST)}"
 typeset -gx LAC_STATE_DIR
 
 typeset -gx LAC_SOCKET_PATH="${LAC_SOCKET_PATH:-$LAC_STATE_DIR/daemon.sock}"
@@ -48,6 +52,8 @@ typeset -gx LAC_MODEL_NAME="${LAC_MODEL_NAME:-qwen2.5-coder:7b}"
 typeset -gx LAC_MODEL_BASE_URL="${LAC_MODEL_BASE_URL:-http://127.0.0.1:11434}"
 typeset -gx LAC_SUGGEST_STRATEGY="${LAC_SUGGEST_STRATEGY:-history+model}"
 typeset -gx LAC_SUGGEST_TIMEOUT_MS="${LAC_SUGGEST_TIMEOUT_MS:-1200}"
+typeset -gx LAC_AUTO_CAPTURE_ENABLED="${LAC_AUTO_CAPTURE_ENABLED:-0}"
+typeset -gx LAC_PTY_CAPTURE_ALLOWLIST="${LAC_PTY_CAPTURE_ALLOWLIST:-}"
 
 mkdir -p -- "$LAC_STATE_DIR" "$LAC_ASYNC_DIR"
 
@@ -68,6 +74,11 @@ typeset -g LAC_COMMAND_BRANCH=""
 typeset -gi LAC_COMMAND_STARTED_AT_MS=0
 typeset -g LAC_CAPTURED_STDOUT=""
 typeset -g LAC_CAPTURED_STDERR=""
+typeset -gi LAC_AUTO_CAPTURE_ACTIVE=0
+typeset -gi LAC_CAPTURE_STDOUT_SAVE_FD=-1
+typeset -gi LAC_CAPTURE_STDERR_SAVE_FD=-1
+typeset -g LAC_CAPTURE_STDOUT_FILE=""
+typeset -g LAC_CAPTURE_STDERR_FILE=""
 
 mkdir -p -- "$LAC_ASYNC_SESSION_DIR"
 
@@ -85,11 +96,235 @@ _lac_git_branch() {
 
 _lac_trim_capture() {
   local text="$1"
+  local marker=$'\n...\n'
+  local marker_len="${#marker}"
+  local remaining head_len tail_len tail_start
+
   if (( ${#text} <= LAC_CAPTURE_BYTES )); then
     print -rn -- "$text"
     return 0
   fi
-  print -rn -- "${text[1,LAC_CAPTURE_BYTES]}"
+
+  remaining=$(( LAC_CAPTURE_BYTES - marker_len ))
+  if (( remaining < 2 )); then
+    print -rn -- "${text[1,LAC_CAPTURE_BYTES]}"
+    return 0
+  fi
+
+  head_len=$(( remaining / 2 ))
+  tail_len=$(( remaining - head_len ))
+  tail_start=$(( ${#text} - tail_len + 1 ))
+
+  print -rn -- "${text[1,head_len]}${marker}${text[tail_start,-1]}"
+}
+
+_lac_set_captured_output() {
+  local stdout_text="$1"
+  local stderr_text="$2"
+
+  typeset -g LAC_CAPTURED_STDOUT="$(_lac_trim_capture "$stdout_text")"
+  typeset -g LAC_CAPTURED_STDERR="$(_lac_trim_capture "$stderr_text")"
+}
+
+_lac_sanitize_capture_text() {
+  local capture_file="$1"
+  local sanitized=""
+
+  [[ -f "$capture_file" ]] || return 0
+
+  if (( $+commands[perl] )); then
+    sanitized="$(
+      perl -0pe '
+        s/\e\[[0-9;?]*[ -\/]*[@-~]//g;
+        s/\e\][^\a]*(?:\a|\e\\\\)//g;
+        s/\r//g;
+        s/\x04//g;
+        s/\x08//g;
+      ' -- "$capture_file" 2>/dev/null
+    )"
+  else
+    sanitized="$(<"$capture_file")"
+    sanitized="${sanitized//$'\r'/}"
+    sanitized="${sanitized//$'\x04'/}"
+    sanitized="${sanitized//$'\x08'/}"
+  fi
+
+  print -rn -- "$sanitized"
+}
+
+_lac_auto_capture_enabled() {
+  case "${${LAC_AUTO_CAPTURE_ENABLED:-0}:l}" in
+    1|true|yes|on|enabled)
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
+_lac_is_pty_allowlisted_command() {
+  local raw_command="$1"
+  local normalized="${LAC_PTY_CAPTURE_ALLOWLIST//,/ }"
+  local cmd
+  local -a words
+  local -a allowlisted_commands=(${=normalized})
+
+  [[ -n "${raw_command//[[:space:]]/}" ]] || return 1
+  words=("${(z)raw_command}")
+  (( ${#words} > 0 )) || return 1
+
+  for cmd in "${allowlisted_commands[@]}"; do
+    [[ "$cmd" == "$words[1]" ]] && return 0
+  done
+
+  return 1
+}
+
+_lac_reset_auto_capture() {
+  typeset -gi LAC_AUTO_CAPTURE_ACTIVE=0
+  typeset -gi LAC_CAPTURE_STDOUT_SAVE_FD=-1
+  typeset -gi LAC_CAPTURE_STDERR_SAVE_FD=-1
+  typeset -g LAC_CAPTURE_STDOUT_FILE=""
+  typeset -g LAC_CAPTURE_STDERR_FILE=""
+}
+
+_lac_should_auto_capture() {
+  local raw_command="$1"
+  local -a words
+  local word
+
+  _lac_auto_capture_enabled || return 1
+  _lac_is_pty_allowlisted_command "$raw_command" && return 1
+  [[ -n "${raw_command//[[:space:]]/}" ]] || return 1
+  words=("${(z)raw_command}")
+  (( ${#words} > 0 )) || return 1
+
+  if [[ "$words[1]" == "lac-capture" ]]; then
+    return 1
+  fi
+
+  if [[ "$words[-1]" == "&" ]]; then
+    return 1
+  fi
+
+  for word in "${words[@]}"; do
+    case "$word" in
+      "|"|"||"|"&&"|";"|"&"|">"|">>"|"<"|"<<"|"<<-"|"<<<"|">&"|"<&"|"<>")
+        return 1
+        ;;
+      [0-9]">"*|[0-9]"<"*|">"*|"<"*)
+        return 1
+        ;;
+      vim|nvim|vi|nano|less|more|man|top|htop|watch|ssh|sftp|scp|mosh|tmux|screen|fzf)
+        return 1
+        ;;
+    esac
+  done
+
+  return 0
+}
+
+_lac_begin_auto_capture() {
+  local stdout_file stderr_file
+
+  _lac_reset_auto_capture
+  stdout_file="$(mktemp "$LAC_ASYNC_SESSION_DIR/auto.stdout.XXXXXX")" || return 1
+  stderr_file="$(mktemp "$LAC_ASYNC_SESSION_DIR/auto.stderr.XXXXXX")" || {
+    rm -f -- "$stdout_file"
+    return 1
+  }
+
+  exec {LAC_CAPTURE_STDOUT_SAVE_FD}>&1 || {
+    rm -f -- "$stdout_file" "$stderr_file"
+    _lac_reset_auto_capture
+    return 1
+  }
+  exec {LAC_CAPTURE_STDERR_SAVE_FD}>&2 || {
+    exec {LAC_CAPTURE_STDOUT_SAVE_FD}>&-
+    rm -f -- "$stdout_file" "$stderr_file"
+    _lac_reset_auto_capture
+    return 1
+  }
+
+  typeset -g LAC_CAPTURE_STDOUT_FILE="$stdout_file"
+  typeset -g LAC_CAPTURE_STDERR_FILE="$stderr_file"
+
+  eval "exec > >(tee \"$LAC_CAPTURE_STDOUT_FILE\" >&$LAC_CAPTURE_STDOUT_SAVE_FD)"
+  eval "exec 2> >(tee \"$LAC_CAPTURE_STDERR_FILE\" >&$LAC_CAPTURE_STDERR_SAVE_FD)"
+  typeset -gi LAC_AUTO_CAPTURE_ACTIVE=1
+  return 0
+}
+
+_lac_wait_for_capture_files() {
+  local file="$1"
+  local previous_size=-1
+  local current_size=0
+  local attempt
+
+  [[ -f "$file" ]] || return 0
+
+  for attempt in {1..5}; do
+    current_size="$(wc -c < "$file" 2>/dev/null || print 0)"
+    if [[ "$current_size" == "$previous_size" ]]; then
+      return 0
+    fi
+    previous_size="$current_size"
+    sleep 0.01
+  done
+}
+
+_lac_finish_auto_capture() {
+  local stdout_text="" stderr_text=""
+
+  if (( ! LAC_AUTO_CAPTURE_ACTIVE )); then
+    return 0
+  fi
+
+  eval "exec 1>&$LAC_CAPTURE_STDOUT_SAVE_FD"
+  eval "exec 2>&$LAC_CAPTURE_STDERR_SAVE_FD"
+  exec {LAC_CAPTURE_STDOUT_SAVE_FD}>&-
+  exec {LAC_CAPTURE_STDERR_SAVE_FD}>&-
+
+  _lac_wait_for_capture_files "$LAC_CAPTURE_STDOUT_FILE"
+  _lac_wait_for_capture_files "$LAC_CAPTURE_STDERR_FILE"
+
+  [[ -f "$LAC_CAPTURE_STDOUT_FILE" ]] && stdout_text="$(<"$LAC_CAPTURE_STDOUT_FILE")"
+  [[ -f "$LAC_CAPTURE_STDERR_FILE" ]] && stderr_text="$(<"$LAC_CAPTURE_STDERR_FILE")"
+
+  _lac_set_captured_output "$stdout_text" "$stderr_text"
+
+  rm -f -- "$LAC_CAPTURE_STDOUT_FILE" "$LAC_CAPTURE_STDERR_FILE"
+  _lac_reset_auto_capture
+}
+
+_lac_should_use_pty_capture() {
+  [[ -o interactive ]] || return 1
+  [[ -t 0 && -t 1 && -t 2 ]] || return 1
+  (( $+commands[script] )) || return 1
+  return 0
+}
+
+_lac_install_pty_capture_wrappers() {
+  local normalized="${LAC_PTY_CAPTURE_ALLOWLIST//,/ }"
+  local cmd
+  local -a allowlisted_commands=(${=normalized})
+
+  for cmd in "${allowlisted_commands[@]}"; do
+    [[ "$cmd" =~ '^[A-Za-z0-9_.+-]+$' ]] || continue
+    (( $+commands[$cmd] )) || continue
+    (( $+functions[$cmd] )) && continue
+    (( $+aliases[$cmd] )) && continue
+
+    eval "
+function $cmd() {
+  if _lac_should_use_pty_capture; then
+    lac-capture-pty \"$cmd\" \"\$@\"
+  else
+    command \"$cmd\" \"\$@\"
+  fi
+}
+"
+  done
 }
 
 _lac_clear_suggestion() {
@@ -464,11 +699,17 @@ _lac_preexec() {
   typeset -gi LAC_COMMAND_STARTED_AT_MS="$(_lac_now_ms)"
   typeset -g LAC_CAPTURED_STDOUT=""
   typeset -g LAC_CAPTURED_STDERR=""
+
+  if _lac_should_auto_capture "$raw_command"; then
+    _lac_begin_auto_capture || true
+  fi
 }
 
 _lac_precmd() {
   local exit_code="$?"
   local finished_at_ms duration_ms stdout_excerpt stderr_excerpt
+
+  _lac_finish_auto_capture
 
   if [[ -n "$LAC_ACTIVE_COMMAND" ]]; then
     finished_at_ms="$(_lac_now_ms)"
@@ -492,6 +733,7 @@ _lac_precmd() {
   typeset -g LAC_ACTIVE_COMMAND=""
   typeset -g LAC_CAPTURED_STDOUT=""
   typeset -g LAC_CAPTURED_STDERR=""
+  _lac_reset_auto_capture
   typeset -gi LAC_LAST_EXIT_CODE="$exit_code"
 }
 
@@ -538,10 +780,40 @@ lac-capture() {
   [[ -n "$stdout_text" ]] && print -rn -- "$stdout_text"
   [[ -n "$stderr_text" ]] && print -rn -- "$stderr_text" >&2
 
-  typeset -g LAC_CAPTURED_STDOUT="$(_lac_trim_capture "$stdout_text")"
-  typeset -g LAC_CAPTURED_STDERR="$(_lac_trim_capture "$stderr_text")"
+  _lac_set_captured_output "$stdout_text" "$stderr_text"
 
   rm -f -- "$stdout_file" "$stderr_file"
+  return "$cmd_status"
+}
+
+lac-capture-pty() {
+  local capture_file cmd_status captured_text
+
+  if (( $# == 0 )); then
+    return 1
+  fi
+
+  if ! _lac_should_use_pty_capture; then
+    command "$@"
+    return $?
+  fi
+
+  capture_file="$(mktemp "$LAC_ASYNC_DIR/capture.pty.XXXXXX")" || {
+    command "$@"
+    return $?
+  }
+
+  script -q "$capture_file" "$@"
+  cmd_status=$?
+  captured_text="$(_lac_sanitize_capture_text "$capture_file")"
+
+  if (( cmd_status == 0 )); then
+    _lac_set_captured_output "$captured_text" ""
+  else
+    _lac_set_captured_output "" "$captured_text"
+  fi
+
+  rm -f -- "$capture_file"
   return "$cmd_status"
 }
 
@@ -583,6 +855,8 @@ zle -N lac-accept-or-complete
 zle -N lac-async-notify _lac_async_notify_handler
 zle -N zle-line-init _lac_zle_line_init
 zle -N zle-line-pre-redraw _lac_zle_line_pre_redraw
+
+_lac_install_pty_capture_wrappers
 
 for widget in \
   self-insert \

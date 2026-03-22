@@ -6,6 +6,6 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
-  const lines = Number(request.nextUrl.searchParams.get("lines") || "120");
+  const lines = Number(request.nextUrl.searchParams.get("lines") || "160");
   return NextResponse.json({ log: tailDaemonLog(lines) });
 }

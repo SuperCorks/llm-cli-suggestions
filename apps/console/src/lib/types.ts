@@ -21,6 +21,7 @@ export interface RuntimeSettings {
   modelBaseUrl: string;
   suggestStrategy: SuggestStrategy;
   suggestTimeoutMs: number;
+  ptyCaptureAllowlist: string;
 }
 
 export interface OllamaModelOption {
@@ -55,6 +56,14 @@ export interface RuntimeStatus {
   logPath: string;
   pidPath: string;
   pid: number | null;
+}
+
+export interface ActivitySignal {
+  id: number;
+  timestamp: string;
+  tone: "accepted" | "rejected" | "observed";
+  label: "ACCEPT" | "REJECT" | "TRACE";
+  message: string;
 }
 
 export interface OverviewData {

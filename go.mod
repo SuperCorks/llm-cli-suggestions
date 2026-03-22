@@ -1,4 +1,4 @@
-module github.com/SuperCorks/cli-auto-complete
+module github.com/SuperCorks/llm-cli-suggestions
 
 go 1.25.0
 

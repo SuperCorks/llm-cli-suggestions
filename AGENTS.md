@@ -2,7 +2,7 @@
 
 ## Project
 
-`cli-auto-complete` is a local-only LLM-powered terminal autosuggestion tool for macOS `zsh`.
+`llm-cli-suggestions` is a local-only LLM-powered terminal autosuggestion tool for macOS `zsh`.
 
 The project currently includes:
 

@@ -1,10 +1,10 @@
 # Architecture
 
-`cli-auto-complete` is a local-only autosuggestion system for macOS `zsh`.
+`llm-cli-suggestions` is a local-only autosuggestion system for macOS `zsh`.
 
 The current implementation is built from five main pieces:
 
-1. A `zsh` plugin in `zsh/cli-auto-complete.zsh`
+1. A `zsh` plugin in `zsh/llm-cli-suggestions.zsh`
 2. A Go daemon in `cmd/autocomplete-daemon`
 3. A small shell-facing client in `cmd/autocomplete-client`
 4. A SQLite-backed storage layer in `internal/db`
@@ -34,7 +34,7 @@ The shell layer is intentionally shallow. It is responsible for:
 - styling the ghost text with `region_highlight`
 - accepting the suggestion with `Tab`
 - falling back to normal completion when no suggestion is present
-- capturing command execution lifecycle via `preexec` and `precmd`
+- capturing command execution lifecycle and bounded output excerpts via `preexec` and `precmd`, with explicit wrappers for one-off capture (`lac-capture`, `lac-capture-pty`) and optional allowlisted PTY capture for selected commands
 
 The plugin does not run model inference directly. That work stays outside the shell so typing remains responsive and the inference backend can evolve without rewriting the editor integration.
 
@@ -58,6 +58,7 @@ It is intentionally hybrid:
 
 - analytics pages query SQLite directly from Next server code
 - control actions call local server routes that manage the daemon, run benchmark jobs, or export data
+- live dashboard activity and daemon log panels subscribe to local server-sent event routes hosted by the same Next app
 
 The current app sections are:
 
@@ -118,6 +119,7 @@ The suggestion engine combines multiple local signals:
 - acceptance and rejection feedback
 - previous command context
 - last command output excerpts when available
+- a small selected set of recent session output snippets when they look relevant
 - optional local model output
 
 The current ranking shape is:
@@ -207,7 +209,7 @@ The current implementation is deliberately scoped:
 
 - it is built for macOS and `zsh`
 - it keeps all inference local
-- it supports bounded output capture, not full PTY transcript capture
+- it supports bounded output capture, including a lightweight PTY wrapper for explicitly allowlisted commands, but not a full PTY interposer or complete terminal transcript system
 - it focuses on command-line autosuggestions, not a full terminal replacement
 - it is designed to be started explicitly from the shell integration or the local control app rather than always running for every shell session
 

@@ -1,6 +1,6 @@
 # Control App
 
-The control app in `apps/console` is the local operations and analysis surface for `cli-auto-complete`.
+The control app in `apps/console` is the local operations and analysis surface for `llm-cli-suggestions`.
 
 ## Purpose
 
@@ -24,6 +24,7 @@ Shows:
 - active model
 - socket and database paths
 - totals for sessions, commands, suggestions, accepted, and rejected feedback
+- a live activity tape that auto-refreshes recent suggestion signals without a manual page reload
 - recent suggestions
 - latency by model
 - acceptance by working directory path
@@ -53,6 +54,7 @@ Shows paginated suggestion history with filters for:
 Shows:
 
 - executed command history
+- compact command-context snapshots in the history table, with full cwd/repo/output details moved into a right-side slide-over drawer so long excerpts do not overwhelm the main table
 - session ids alongside each command and feedback event so session-scoped filters are discoverable
 - recent feedback events
 - top rejected suggestions
@@ -119,12 +121,13 @@ Supports:
 - runtime settings saved to `runtime.env`
 - the same installed-only model picker used in the lab
 - a persisted suggestion-strategy selector shared with the daemon and shell runtime
+- shell-facing PTY capture allow-list editing, persisted to `runtime.env` so new shells can pick up the wrapper list
 - single-model runtime selection shown directly in the input instead of as a duplicate chip below it
 - download prompts for models that are available in Ollama but not installed locally
 - live pull-progress toasts while a model is downloading
 - daemon path rows with hover actions to reveal items in Finder or open their directory in Terminal
 - live PID fallback from process discovery when the pid file is missing or stale
-- daemon log viewing
+- daemon log viewing through a live-updating stream with reconnect status in the panel header
 - destructive maintenance actions with typed confirmation, placed after the log section so runtime inspection stays primary
 
 ## Architectural Role
@@ -133,6 +136,7 @@ The control app is intentionally server-first:
 
 - pages read SQLite directly from Next server code
 - live operations go through local Next API routes
+- live dashboard and daemon tapes subscribe to local server-sent event routes exposed by Next
 - the browser never talks directly to SQLite or the Unix socket daemon
 
 This keeps the app local-only, simple to reason about, and aligned with the existing daemon and storage boundaries.

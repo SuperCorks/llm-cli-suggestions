@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/SuperCorks/cli-auto-complete/internal/api"
-	"github.com/SuperCorks/cli-auto-complete/internal/config"
-	"github.com/SuperCorks/cli-auto-complete/internal/db"
+	"github.com/SuperCorks/llm-cli-suggestions/internal/api"
+	"github.com/SuperCorks/llm-cli-suggestions/internal/config"
+	"github.com/SuperCorks/llm-cli-suggestions/internal/db"
 )
 
 func main() {

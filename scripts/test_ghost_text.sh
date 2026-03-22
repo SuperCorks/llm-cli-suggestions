@@ -116,7 +116,7 @@ spawn env \
 
 set shell_pid [exp_pid]
 after 200
-send -- "PROMPT='> '; RPROMPT=''; cd '$env(WORK_DIR)'; source '$env(ROOT_DIR)/zsh/cli-auto-complete.zsh'\r"
+send -- "PROMPT='> '; RPROMPT=''; cd '$env(WORK_DIR)'; source '$env(ROOT_DIR)/zsh/llm-cli-suggestions.zsh'\r"
 expect "> "
 send -- $env(LAC_TEST_PREFIX)
 

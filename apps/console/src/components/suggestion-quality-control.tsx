@@ -1,5 +1,6 @@
 "use client";
 
+import { RotateCcw, ThumbsDown, ThumbsUp } from "lucide-react";
 import { useState } from "react";
 
 import type { SuggestionQuality } from "@/lib/types";
@@ -58,28 +59,39 @@ export function SuggestionQualityControl({
       <div className="quality-toggle-group" role="group" aria-label="Suggestion quality">
         <button
           type="button"
-          className={label === "good" ? "quality-toggle-button active good" : "quality-toggle-button"}
+          className={label === "good" ? "quality-toggle-button good active" : "quality-toggle-button good"}
+          aria-label="Mark suggestion as good"
+          aria-pressed={label === "good"}
           disabled={pending}
           onClick={() => void updateLabel(label === "good" ? null : "good")}
+          title="Mark suggestion as good"
         >
-          Good
+          <ThumbsUp aria-hidden="true" />
+          <span className="visually-hidden">Good</span>
         </button>
         <button
           type="button"
-          className={label === "bad" ? "quality-toggle-button active bad" : "quality-toggle-button"}
+          className={label === "bad" ? "quality-toggle-button bad active" : "quality-toggle-button bad"}
+          aria-label="Mark suggestion as bad"
+          aria-pressed={label === "bad"}
           disabled={pending}
           onClick={() => void updateLabel(label === "bad" ? null : "bad")}
+          title="Mark suggestion as bad"
         >
-          Bad
+          <ThumbsDown aria-hidden="true" />
+          <span className="visually-hidden">Bad</span>
         </button>
         {label ? (
           <button
             type="button"
             className="quality-toggle-button clear"
+            aria-label="Clear suggestion label"
             disabled={pending}
             onClick={() => void updateLabel(null)}
+            title="Clear suggestion label"
           >
-            Clear
+            <RotateCcw aria-hidden="true" />
+            <span className="visually-hidden">Clear</span>
           </button>
         ) : null}
       </div>

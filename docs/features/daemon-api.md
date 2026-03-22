@@ -6,7 +6,7 @@ The Go daemon is the local service that coordinates suggestions, logging, and st
 
 - protocol: HTTP
 - address type: Unix domain socket
-- default socket path: `~/Library/Application Support/cli-auto-complete/daemon.sock`
+- default socket path: `~/Library/Application Support/llm-cli-suggestions/daemon.sock`
 
 ## Routes
 
@@ -68,6 +68,8 @@ Returns:
 - prompt text
 - raw model output
 - cleaned model output
+- last-command output excerpts
+- selected recent session output snippets used for prompting and ranking
 
 ## Why It Exists
 

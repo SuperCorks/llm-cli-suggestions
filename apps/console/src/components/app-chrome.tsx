@@ -21,7 +21,7 @@ export function AppChrome({ runtime, children }: AppChromeProps) {
           <div className="sidebar-brand-mark">
             <TerminalSquare aria-hidden="true" />
           </div>
-          <h1>cli-auto-complete</h1>
+          <h1>llm-cli-suggestions</h1>
           <p>Terminal engine</p>
         </div>
         <AppNav collapsed={collapsed} />
@@ -39,7 +39,7 @@ export function AppChrome({ runtime, children }: AppChromeProps) {
             >
               {collapsed ? <PanelLeftOpen aria-hidden="true" /> : <PanelLeftClose aria-hidden="true" />}
             </button>
-            <h2>cli-auto-complete Console</h2>
+            <h2>llm-cli-suggestions Console</h2>
             <div className="topbar-statuses">
               <span className={runtime.health.ok ? "status-chip status-chip-live" : "status-chip"}>
                 <span className="status-dot" aria-hidden="true" />

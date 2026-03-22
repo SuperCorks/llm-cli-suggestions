@@ -1,3 +1,4 @@
+import { LiveActivityStream } from "@/components/live-activity-stream";
 import { PathHoverActions } from "@/components/path-hover-actions";
 import { Panel } from "@/components/panel";
 import {
@@ -6,7 +7,7 @@ import {
   formatPercent,
   formatTimestamp,
 } from "@/lib/format";
-import { getOverviewData } from "@/lib/server/queries";
+import { getOverviewData, getRecentActivitySignals } from "@/lib/server/queries";
 import { getRuntimeStatusWithHealth } from "@/lib/server/runtime";
 
 export const dynamic = "force-dynamic";
@@ -14,13 +15,7 @@ export const dynamic = "force-dynamic";
 export default async function Home() {
   const overview = getOverviewData();
   const runtime = await getRuntimeStatusWithHealth();
-  const recentSignals = overview.recentSuggestions.slice(0, 6).map((row) => ({
-    id: row.id,
-    timestamp: formatTimestamp(row.createdAtMs),
-    tone: row.accepted ? "accepted" : row.rejected ? "rejected" : "observed",
-    label: row.accepted ? "ACCEPT" : row.rejected ? "REJECT" : "TRACE",
-    message: `${row.source} suggestion for ${row.buffer || "empty buffer"}`,
-  }));
+  const recentSignals = getRecentActivitySignals(6);
   const cards = [
     { label: "Avg. latency", value: formatDurationMs(overview.averageModelLatency) },
     { label: "Acceptance rate", value: formatPercent(overview.acceptanceRate) },
@@ -51,31 +46,7 @@ export default async function Home() {
 
       <div className="overview-grid">
         <Panel title="Live Activity" subtitle="Recent daemon and suggestion signals rendered as a terminal tape.">
-          <div className="terminal-panel">
-            <div className="terminal-header">
-              <span className="terminal-lights">
-                <i />
-                <i />
-                <i />
-              </span>
-              <span className="terminal-meta">session.log — local activity stream</span>
-            </div>
-            <div className="terminal-body">
-              {recentSignals.map((signal) => (
-                <p key={signal.id} className="terminal-line">
-                  <span className="terminal-time">{signal.timestamp}</span>{" "}
-                  <span className={`terminal-tag terminal-tag-${signal.tone}`}>{signal.label}</span>{" "}
-                  <span>{signal.message}</span>
-                </p>
-              ))}
-              {recentSignals.length === 0 ? (
-                <p className="terminal-line">
-                  <span className="terminal-time">standby</span>{" "}
-                  <span className="terminal-tag terminal-tag-observed">TRACE</span> Waiting for local activity...
-                </p>
-              ) : null}
-            </div>
-          </div>
+          <LiveActivityStream initialSignals={recentSignals} />
         </Panel>
 
         <Panel title="Top Commands" subtitle="Most frequent command patterns found in SQLite.">

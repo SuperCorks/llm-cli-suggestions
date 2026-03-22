@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/SuperCorks/cli-auto-complete/internal/api"
-	"github.com/SuperCorks/cli-auto-complete/internal/db"
-	"github.com/SuperCorks/cli-auto-complete/internal/engine"
-	"github.com/SuperCorks/cli-auto-complete/internal/model/ollama"
+	"github.com/SuperCorks/llm-cli-suggestions/internal/api"
+	"github.com/SuperCorks/llm-cli-suggestions/internal/db"
+	"github.com/SuperCorks/llm-cli-suggestions/internal/engine"
+	"github.com/SuperCorks/llm-cli-suggestions/internal/model/ollama"
 )
 
 type benchmarkCase struct {
@@ -55,7 +55,13 @@ func main() {
 		client := ollama.New(*baseURL, modelName)
 		for _, testCase := range cases {
 			for run := 1; run <= *repeat; run++ {
-				prompt := engine.BuildPrompt(testCase.Request, testCase.Request.RecentCommands, db.CommandContext{}, api.InspectRetrievedContext{})
+				prompt := engine.BuildPrompt(
+					testCase.Request,
+					testCase.Request.RecentCommands,
+					db.CommandContext{},
+					nil,
+					api.InspectRetrievedContext{},
+				)
 				ctx, cancel := context.WithTimeout(context.Background(), time.Duration(*timeoutMS)*time.Millisecond)
 				startedAt := time.Now()
 				raw, err := client.Suggest(ctx, prompt)
@@ -99,12 +105,12 @@ func benchmarkCases() []benchmarkCase {
 			Request: api.SuggestRequest{
 				SessionID:    "bench",
 				Buffer:       "git st",
-				CWD:          "/Users/example/projects/cli-auto-complete",
-				RepoRoot:     "/Users/example/projects/cli-auto-complete",
+				CWD:          "/Users/example/projects/llm-cli-suggestions",
+				RepoRoot:     "/Users/example/projects/llm-cli-suggestions",
 				Branch:       "main",
 				LastExitCode: 0,
 				RecentCommands: []string{
-					"cd /Users/example/projects/cli-auto-complete",
+					"cd /Users/example/projects/llm-cli-suggestions",
 					"git checkout main",
 					"git pull",
 					"go test ./...",
@@ -168,8 +174,8 @@ func benchmarkCases() []benchmarkCase {
 			Request: api.SuggestRequest{
 				SessionID:    "bench",
 				Buffer:       "git chec",
-				CWD:          "/Users/example/projects/cli-auto-complete",
-				RepoRoot:     "/Users/example/projects/cli-auto-complete",
+				CWD:          "/Users/example/projects/llm-cli-suggestions",
+				RepoRoot:     "/Users/example/projects/llm-cli-suggestions",
 				Branch:       "main",
 				LastExitCode: 0,
 				RecentCommands: []string{

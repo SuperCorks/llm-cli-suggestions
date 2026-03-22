@@ -9,6 +9,6 @@ export async function GET() {
   const status = await getRuntimeStatusWithHealth();
   return NextResponse.json({
     ...status,
-    recentLog: tailDaemonLog(120),
+    recentLog: tailDaemonLog(160),
   });
 }

@@ -62,13 +62,14 @@ type InspectRequest struct {
 }
 
 type InspectCandidateBreakdown struct {
-	History     int `json:"history"`
-	Retrieval   int `json:"retrieval"`
-	Model       int `json:"model"`
-	Feedback    int `json:"feedback"`
-	RecentUsage int `json:"recent_usage"`
-	LastContext int `json:"last_context"`
-	Total       int `json:"total"`
+	History       int `json:"history"`
+	Retrieval     int `json:"retrieval"`
+	Model         int `json:"model"`
+	Feedback      int `json:"feedback"`
+	RecentUsage   int `json:"recent_usage"`
+	LastContext   int `json:"last_context"`
+	OutputContext int `json:"output_context"`
+	Total         int `json:"total"`
 }
 
 type InspectCandidate struct {
@@ -91,17 +92,27 @@ type InspectRetrievedContext struct {
 	ProjectTaskMatches []string `json:"project_task_matches"`
 }
 
+type InspectRecentOutputContext struct {
+	Command       string `json:"command"`
+	ExitCode      int    `json:"exit_code"`
+	StdoutExcerpt string `json:"stdout_excerpt"`
+	StderrExcerpt string `json:"stderr_excerpt"`
+	FinishedAtMS  int64  `json:"finished_at_ms"`
+	Score         int    `json:"score"`
+}
+
 type InspectResponse struct {
-	ModelName          string                  `json:"model_name"`
-	HistoryTrusted     bool                    `json:"history_trusted"`
-	Prompt             string                  `json:"prompt"`
-	RawModelOutput     string                  `json:"raw_model_output"`
-	CleanedModelOutput string                  `json:"cleaned_model_output"`
-	RecentCommands     []string                `json:"recent_commands"`
-	LastCommand        string                  `json:"last_command"`
-	LastStdoutExcerpt  string                  `json:"last_stdout_excerpt"`
-	LastStderrExcerpt  string                  `json:"last_stderr_excerpt"`
-	RetrievedContext   InspectRetrievedContext `json:"retrieved_context"`
-	Winner             *InspectCandidate       `json:"winner"`
-	Candidates         []InspectCandidate      `json:"candidates"`
+	ModelName           string                       `json:"model_name"`
+	HistoryTrusted      bool                         `json:"history_trusted"`
+	Prompt              string                       `json:"prompt"`
+	RawModelOutput      string                       `json:"raw_model_output"`
+	CleanedModelOutput  string                       `json:"cleaned_model_output"`
+	RecentCommands      []string                     `json:"recent_commands"`
+	LastCommand         string                       `json:"last_command"`
+	LastStdoutExcerpt   string                       `json:"last_stdout_excerpt"`
+	LastStderrExcerpt   string                       `json:"last_stderr_excerpt"`
+	RecentOutputContext []InspectRecentOutputContext `json:"recent_output_context"`
+	RetrievedContext    InspectRetrievedContext      `json:"retrieved_context"`
+	Winner              *InspectCandidate            `json:"winner"`
+	Candidates          []InspectCandidate           `json:"candidates"`
 }

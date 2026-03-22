@@ -7,11 +7,11 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/SuperCorks/cli-auto-complete/internal/config"
-	"github.com/SuperCorks/cli-auto-complete/internal/db"
-	"github.com/SuperCorks/cli-auto-complete/internal/engine"
-	"github.com/SuperCorks/cli-auto-complete/internal/model/ollama"
-	"github.com/SuperCorks/cli-auto-complete/internal/server"
+	"github.com/SuperCorks/llm-cli-suggestions/internal/config"
+	"github.com/SuperCorks/llm-cli-suggestions/internal/db"
+	"github.com/SuperCorks/llm-cli-suggestions/internal/engine"
+	"github.com/SuperCorks/llm-cli-suggestions/internal/model/ollama"
+	"github.com/SuperCorks/llm-cli-suggestions/internal/server"
 )
 
 func main() {

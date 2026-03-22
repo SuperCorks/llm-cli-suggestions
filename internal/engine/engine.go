@@ -5,14 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
+	"unicode"
 
-	"github.com/SuperCorks/cli-auto-complete/internal/api"
-	"github.com/SuperCorks/cli-auto-complete/internal/config"
-	"github.com/SuperCorks/cli-auto-complete/internal/db"
-	"github.com/SuperCorks/cli-auto-complete/internal/model"
-	"github.com/SuperCorks/cli-auto-complete/internal/model/ollama"
+	"github.com/SuperCorks/llm-cli-suggestions/internal/api"
+	"github.com/SuperCorks/llm-cli-suggestions/internal/config"
+	"github.com/SuperCorks/llm-cli-suggestions/internal/db"
+	"github.com/SuperCorks/llm-cli-suggestions/internal/model"
+	"github.com/SuperCorks/llm-cli-suggestions/internal/model/ollama"
 )
 
 type Engine struct {
@@ -36,12 +38,19 @@ type rankedCandidate struct {
 	FeedbackAdj    int
 	RecentAdj      int
 	LastCtxAdj     int
+	OutputCtxAdj   int
 }
 
 type inspectResult struct {
 	response        api.InspectResponse
 	resolvedRequest api.SuggestRequest
 }
+
+const (
+	recentOutputFetchLimit  = 20
+	recentOutputSelectLimit = 3
+	recentOutputPromptLimit = 220
+)
 
 func New(store *db.Store, modelClient model.Client, modelName, modelBaseURL, suggestStrategy string, suggestTimeout time.Duration) *Engine {
 	return &Engine{
@@ -130,6 +139,11 @@ func (e *Engine) inspectDetailed(ctx context.Context, request api.InspectRequest
 	if err != nil {
 		return inspectResult{}, err
 	}
+	recentOutputContexts, err := e.store.GetRecentOutputContexts(ctx, resolvedSuggestRequest.SessionID, recentOutputFetchLimit)
+	if err != nil {
+		return inspectResult{}, err
+	}
+	selectedRecentOutput := selectRecentOutputContext(resolvedSuggestRequest, recentOutputContexts)
 
 	candidateMap := map[string]*rankedCandidate{}
 	historyCandidates := []db.CommandCandidate{}
@@ -192,7 +206,7 @@ func (e *Engine) inspectDetailed(ctx context.Context, request api.InspectRequest
 
 	initialCandidates := sortedCandidates(candidateMap)
 	historyTrusted := useHistory && len(initialCandidates) > 0 && shouldTrustHistory(initialCandidates)
-	prompt := BuildPrompt(resolvedSuggestRequest, recentCommands, lastContext, retrievedContext)
+	prompt := BuildPrompt(resolvedSuggestRequest, recentCommands, lastContext, selectedRecentOutput, retrievedContext)
 
 	rawModelOutput := ""
 	cleanedModelOutput := ""
@@ -239,17 +253,18 @@ func (e *Engine) inspectDetailed(ctx context.Context, request api.InspectRequest
 
 	if len(candidateMap) == 0 {
 		return inspectResult{response: api.InspectResponse{
-			ModelName:          activeModelName,
-			HistoryTrusted:     historyTrusted,
-			Prompt:             prompt,
-			RawModelOutput:     rawModelOutput,
-			CleanedModelOutput: cleanedModelOutput,
-			RecentCommands:     recentCommands,
-			LastCommand:        lastContext.Command,
-			LastStdoutExcerpt:  lastContext.StdoutExcerpt,
-			LastStderrExcerpt:  lastContext.StderrExcerpt,
-			RetrievedContext:   retrievedContext,
-			Candidates:         []api.InspectCandidate{},
+			ModelName:           activeModelName,
+			HistoryTrusted:      historyTrusted,
+			Prompt:              prompt,
+			RawModelOutput:      rawModelOutput,
+			CleanedModelOutput:  cleanedModelOutput,
+			RecentCommands:      recentCommands,
+			LastCommand:         lastContext.Command,
+			LastStdoutExcerpt:   lastContext.StdoutExcerpt,
+			LastStderrExcerpt:   lastContext.StderrExcerpt,
+			RecentOutputContext: selectedRecentOutput,
+			RetrievedContext:    retrievedContext,
+			Candidates:          []api.InspectCandidate{},
 		}, resolvedRequest: resolvedSuggestRequest}, nil
 	}
 
@@ -264,7 +279,8 @@ func (e *Engine) inspectDetailed(ctx context.Context, request api.InspectRequest
 		candidate.FeedbackAdj = scoreFeedback(stats)
 		candidate.RecentAdj = scoreRecentUsage(command, recentCommands)
 		candidate.LastCtxAdj = scoreLastContext(command, lastContext, resolvedSuggestRequest.LastExitCode)
-		candidate.Score += candidate.FeedbackAdj + candidate.RecentAdj + candidate.LastCtxAdj
+		candidate.OutputCtxAdj = scoreOutputContext(command, selectedRecentOutput)
+		candidate.Score += candidate.FeedbackAdj + candidate.RecentAdj + candidate.LastCtxAdj + candidate.OutputCtxAdj
 	}
 
 	ranked := sortedCandidates(candidateMap)
@@ -283,29 +299,31 @@ func (e *Engine) inspectDetailed(ctx context.Context, request api.InspectRequest
 			AcceptedCount: candidate.Feedback.AcceptedCount,
 			RejectedCount: candidate.Feedback.RejectedCount,
 			Breakdown: api.InspectCandidateBreakdown{
-				History:     candidate.HistoryScore,
-				Retrieval:   candidate.RetrievalScore,
-				Model:       candidate.ModelScore,
-				Feedback:    candidate.FeedbackAdj,
-				RecentUsage: candidate.RecentAdj,
-				LastContext: candidate.LastCtxAdj,
-				Total:       candidate.Score,
+				History:       candidate.HistoryScore,
+				Retrieval:     candidate.RetrievalScore,
+				Model:         candidate.ModelScore,
+				Feedback:      candidate.FeedbackAdj,
+				RecentUsage:   candidate.RecentAdj,
+				LastContext:   candidate.LastCtxAdj,
+				OutputContext: candidate.OutputCtxAdj,
+				Total:         candidate.Score,
 			},
 		})
 	}
 
 	response := api.InspectResponse{
-		ModelName:          activeModelName,
-		HistoryTrusted:     historyTrusted,
-		Prompt:             prompt,
-		RawModelOutput:     rawModelOutput,
-		CleanedModelOutput: cleanedModelOutput,
-		RecentCommands:     recentCommands,
-		LastCommand:        lastContext.Command,
-		LastStdoutExcerpt:  lastContext.StdoutExcerpt,
-		LastStderrExcerpt:  lastContext.StderrExcerpt,
-		RetrievedContext:   retrievedContext,
-		Candidates:         inspectCandidates,
+		ModelName:           activeModelName,
+		HistoryTrusted:      historyTrusted,
+		Prompt:              prompt,
+		RawModelOutput:      rawModelOutput,
+		CleanedModelOutput:  cleanedModelOutput,
+		RecentCommands:      recentCommands,
+		LastCommand:         lastContext.Command,
+		LastStdoutExcerpt:   lastContext.StdoutExcerpt,
+		LastStderrExcerpt:   lastContext.StderrExcerpt,
+		RecentOutputContext: selectedRecentOutput,
+		RetrievedContext:    retrievedContext,
+		Candidates:          inspectCandidates,
 	}
 	if len(inspectCandidates) > 0 {
 		response.Winner = &inspectCandidates[0]
@@ -447,11 +465,12 @@ func marshalSuggestionContext(inspection inspectResult) string {
 			LastExitCode int    `json:"lastExitCode"`
 			Strategy     string `json:"strategy"`
 		} `json:"request"`
-		ModelName        string                      `json:"modelName"`
-		HistoryTrusted   bool                        `json:"historyTrusted"`
-		RecentCommands   []string                    `json:"recentCommands"`
-		LastContext      db.CommandContext           `json:"lastContext"`
-		RetrievedContext api.InspectRetrievedContext `json:"retrievedContext"`
+		ModelName           string                           `json:"modelName"`
+		HistoryTrusted      bool                             `json:"historyTrusted"`
+		RecentCommands      []string                         `json:"recentCommands"`
+		LastContext         db.CommandContext                `json:"lastContext"`
+		RecentOutputContext []api.InspectRecentOutputContext `json:"recentOutputContext"`
+		RetrievedContext    api.InspectRetrievedContext      `json:"retrievedContext"`
 	}{}
 
 	payload.Request.SessionID = inspection.resolvedRequest.SessionID
@@ -473,6 +492,7 @@ func marshalSuggestionContext(inspection inspectResult) string {
 		StdoutExcerpt: inspection.response.LastStdoutExcerpt,
 		StderrExcerpt: inspection.response.LastStderrExcerpt,
 	}
+	payload.RecentOutputContext = inspection.response.RecentOutputContext
 	payload.RetrievedContext = inspection.response.RetrievedContext
 
 	encoded, err := json.Marshal(payload)
@@ -482,7 +502,13 @@ func marshalSuggestionContext(inspection inspectResult) string {
 	return string(encoded)
 }
 
-func BuildPrompt(request api.SuggestRequest, recentCommands []string, lastContext db.CommandContext, retrievedContext api.InspectRetrievedContext) string {
+func BuildPrompt(
+	request api.SuggestRequest,
+	recentCommands []string,
+	lastContext db.CommandContext,
+	recentOutputContext []api.InspectRecentOutputContext,
+	retrievedContext api.InspectRetrievedContext,
+) string {
 	var builder strings.Builder
 	builder.WriteString("You are a shell autosuggestion engine.\n")
 	builder.WriteString("Complete the current shell command with the single most likely next command.\n")
@@ -518,6 +544,7 @@ func BuildPrompt(request api.SuggestRequest, recentCommands []string, lastContex
 		builder.WriteString(command)
 		builder.WriteString("\n")
 	}
+	appendRecentOutputContext(&builder, recentOutputContext)
 	appendPromptList(&builder, "matching_history", retrievedContext.HistoryMatches)
 	appendPromptList(&builder, "path_matches", retrievedContext.PathMatches)
 	appendPromptList(&builder, "git_branch_matches", retrievedContext.GitBranchMatches)
@@ -527,6 +554,225 @@ func BuildPrompt(request api.SuggestRequest, recentCommands []string, lastContex
 	builder.WriteString(request.Buffer)
 	builder.WriteString("\n")
 	return builder.String()
+}
+
+func appendRecentOutputContext(builder *strings.Builder, snippets []api.InspectRecentOutputContext) {
+	if len(snippets) == 0 {
+		return
+	}
+
+	builder.WriteString("recent_output_context:\n")
+	for _, snippet := range snippets {
+		builder.WriteString("- command: ")
+		builder.WriteString(snippet.Command)
+		builder.WriteString("\n")
+		builder.WriteString(fmt.Sprintf("  exit_code: %d\n", snippet.ExitCode))
+		appendIndentedBlock(builder, "stdout_excerpt", snippet.StdoutExcerpt)
+		appendIndentedBlock(builder, "stderr_excerpt", snippet.StderrExcerpt)
+	}
+}
+
+func appendIndentedBlock(builder *strings.Builder, label, text string) {
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+
+	builder.WriteString("  ")
+	builder.WriteString(label)
+	builder.WriteString(":\n")
+	for _, line := range strings.Split(text, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		builder.WriteString("    ")
+		builder.WriteString(line)
+		builder.WriteString("\n")
+	}
+}
+
+func selectRecentOutputContext(request api.SuggestRequest, candidates []db.RecentOutputContext) []api.InspectRecentOutputContext {
+	selected := make([]api.InspectRecentOutputContext, 0, min(len(candidates), recentOutputSelectLimit))
+	seen := map[string]struct{}{}
+
+	for index, candidate := range candidates {
+		score := scoreRecentOutputSelection(request, candidate, index)
+		if score <= 0 {
+			continue
+		}
+
+		stdoutExcerpt := trimOutputContextText(candidate.StdoutExcerpt)
+		stderrExcerpt := trimOutputContextText(candidate.StderrExcerpt)
+		if stdoutExcerpt == "" && stderrExcerpt == "" {
+			continue
+		}
+
+		key := candidate.Command + "\x00" + stdoutExcerpt + "\x00" + stderrExcerpt
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+
+		selected = append(selected, api.InspectRecentOutputContext{
+			Command:       candidate.Command,
+			ExitCode:      candidate.ExitCode,
+			StdoutExcerpt: stdoutExcerpt,
+			StderrExcerpt: stderrExcerpt,
+			FinishedAtMS:  candidate.FinishedAtMS,
+			Score:         score,
+		})
+	}
+
+	sort.Slice(selected, func(i, j int) bool {
+		if selected[i].Score != selected[j].Score {
+			return selected[i].Score > selected[j].Score
+		}
+		return selected[i].FinishedAtMS > selected[j].FinishedAtMS
+	})
+
+	if len(selected) > recentOutputSelectLimit {
+		selected = selected[:recentOutputSelectLimit]
+	}
+
+	return selected
+}
+
+func scoreRecentOutputSelection(request api.SuggestRequest, context db.RecentOutputContext, index int) int {
+	if strings.TrimSpace(context.Command) == "" {
+		return 0
+	}
+
+	textTokens := tokenSet(strings.Join([]string{
+		context.Command,
+		context.StdoutExcerpt,
+		context.StderrExcerpt,
+		context.CWD,
+		context.RepoRoot,
+		context.Branch,
+	}, " "))
+	bufferTokens := tokenSet(request.Buffer)
+	current := strings.ToLower(currentToken(request.Buffer))
+
+	rootMatch := sameRootCommand(request.Buffer, context.Command)
+	tokenOverlap := tokenOverlapCount(bufferTokens, textTokens)
+	currentPrefixMatch := prefixTokenMatch(current, textTokens)
+	pathOverlap := tokenOverlapCount(tokenSet(request.CWD), textTokens) + tokenOverlapCount(tokenSet(request.RepoRoot), textTokens)
+	branchMatch := tokenOverlapCount(tokenSet(request.Branch), textTokens)
+	failureRelevant := (context.ExitCode != 0 || context.StderrExcerpt != "") && rootMatch
+
+	if !rootMatch && tokenOverlap == 0 && currentPrefixMatch == 0 && pathOverlap == 0 && branchMatch == 0 && !failureRelevant {
+		return 0
+	}
+
+	score := max(1, recentOutputFetchLimit-index)
+	if rootMatch {
+		score += 4
+	}
+	if context.ExitCode != 0 {
+		score += 4
+	}
+	if context.StderrExcerpt != "" {
+		score += 3
+	}
+	score += min(tokenOverlap*2, 6)
+	score += min(currentPrefixMatch*4, 8)
+	score += min(pathOverlap, 4)
+	score += min(branchMatch*2, 4)
+	return score
+}
+
+func trimOutputContextText(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+
+	runes := []rune(text)
+	if len(runes) <= recentOutputPromptLimit {
+		return text
+	}
+	return strings.TrimSpace(string(runes[:recentOutputPromptLimit])) + "..."
+}
+
+func scoreOutputContext(command string, contexts []api.InspectRecentOutputContext) int {
+	if strings.TrimSpace(command) == "" || len(contexts) == 0 {
+		return 0
+	}
+
+	commandTokens := tokenSet(command)
+	commandCurrentToken := strings.ToLower(currentToken(command))
+	score := 0
+
+	for _, context := range contexts {
+		contextTokens := tokenSet(strings.Join([]string{
+			context.Command,
+			context.StdoutExcerpt,
+			context.StderrExcerpt,
+		}, " "))
+
+		if sameRootCommand(command, context.Command) {
+			score += 2
+		}
+		if context.ExitCode != 0 || context.StderrExcerpt != "" {
+			if sameRootCommand(command, context.Command) {
+				score += 2
+			}
+		}
+		score += min(tokenOverlapCount(commandTokens, contextTokens), 4)
+		score += min(prefixTokenMatch(commandCurrentToken, contextTokens)*2, 4)
+	}
+
+	return min(score, 12)
+}
+
+func tokenSet(value string) map[string]struct{} {
+	result := map[string]struct{}{}
+	var builder strings.Builder
+
+	flush := func() {
+		if builder.Len() == 0 {
+			return
+		}
+		token := strings.ToLower(builder.String())
+		if len(token) >= 2 {
+			result[token] = struct{}{}
+		}
+		builder.Reset()
+	}
+
+	for _, r := range value {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			builder.WriteRune(unicode.ToLower(r))
+			continue
+		}
+		flush()
+	}
+	flush()
+
+	return result
+}
+
+func tokenOverlapCount(left, right map[string]struct{}) int {
+	count := 0
+	for token := range left {
+		if _, exists := right[token]; exists {
+			count++
+		}
+	}
+	return count
+}
+
+func prefixTokenMatch(token string, tokens map[string]struct{}) int {
+	if len(token) < 2 {
+		return 0
+	}
+
+	count := 0
+	for candidate := range tokens {
+		if strings.HasPrefix(candidate, token) || strings.HasPrefix(token, candidate) {
+			count++
+		}
+	}
+	return count
 }
 
 func CleanSuggestion(prefix, raw string) string {
@@ -652,6 +898,15 @@ func containsRecentPrefix(command string, recentCommands []string) bool {
 		}
 	}
 	return false
+}
+
+func sameRootCommand(left, right string) bool {
+	leftFields := strings.Fields(left)
+	rightFields := strings.Fields(right)
+	if len(leftFields) == 0 || len(rightFields) == 0 {
+		return false
+	}
+	return leftFields[0] == rightFields[0]
 }
 
 func sameCommandFamily(left, right string) bool {

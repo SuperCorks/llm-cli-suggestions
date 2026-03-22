@@ -33,7 +33,7 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("resolve home dir: %w", err)
 	}
 
-	stateDir := getenvDefault("LAC_STATE_DIR", filepath.Join(home, "Library", "Application Support", "cli-auto-complete"))
+	stateDir := getenvDefault("LAC_STATE_DIR", filepath.Join(home, "Library", "Application Support", "llm-cli-suggestions"))
 	runtimeEnvPath := filepath.Join(stateDir, "runtime.env")
 	runtimeValues, err := loadRuntimeEnv(runtimeEnvPath)
 	if err != nil {

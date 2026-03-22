@@ -12,7 +12,7 @@ const DEFAULT_STATE_DIR = path.join(
   os.homedir(),
   "Library",
   "Application Support",
-  "cli-auto-complete",
+  "llm-cli-suggestions",
 );
 
 const DEFAULTS = {
@@ -22,6 +22,7 @@ const DEFAULTS = {
   LAC_MODEL_BASE_URL: "http://127.0.0.1:11434",
   LAC_SUGGEST_STRATEGY: "history+model",
   LAC_SUGGEST_TIMEOUT_MS: "1200",
+  LAC_PTY_CAPTURE_ALLOWLIST: "",
 } as const;
 
 const CONFIG_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -112,6 +113,8 @@ export function getResolvedRuntimeSettings(options?: { useProcessEnvOverrides?: 
       runtimeValue("LAC_SUGGEST_TIMEOUT_MS") || DEFAULTS.LAC_SUGGEST_TIMEOUT_MS,
       10,
     ),
+    ptyCaptureAllowlist:
+      runtimeValue("LAC_PTY_CAPTURE_ALLOWLIST") || DEFAULTS.LAC_PTY_CAPTURE_ALLOWLIST,
   };
 }
 
@@ -122,6 +125,7 @@ const SAVED_KEYS = [
   "LAC_SOCKET_PATH",
   "LAC_DB_PATH",
   "LAC_SUGGEST_TIMEOUT_MS",
+  "LAC_PTY_CAPTURE_ALLOWLIST",
 ] as const;
 
 export type PersistedKey = (typeof SAVED_KEYS)[number];

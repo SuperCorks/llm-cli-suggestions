@@ -1,4 +1,4 @@
-# cli-auto-complete
+# llm-cli-suggestions
 
 **Local-first, LLM-powered terminal autosuggestions for macOS `zsh`.**
 
@@ -89,8 +89,8 @@ See executed commands, feedback events, rejection pressure, and acceptance rates
 ### Install and run
 
 ```bash
-git clone https://github.com/SuperCorks/cli-auto-complete.git
-cd cli-auto-complete
+git clone https://github.com/SuperCorks/llm-cli-suggestions.git
+cd llm-cli-suggestions
 make build
 ```
 
@@ -103,7 +103,7 @@ Start the daemon:
 Load the zsh plugin (add to your `.zshrc` for persistence):
 
 ```bash
-source "$PWD/zsh/cli-auto-complete.zsh"
+source "$PWD/zsh/llm-cli-suggestions.zsh"
 lac-start-daemon
 ```
 
@@ -142,8 +142,8 @@ The daemon uses sensible defaults:
 
 | Setting | Default | Env var |
 |---|---|---|
-| Socket | `~/Library/Application Support/cli-auto-complete/daemon.sock` | `LAC_SOCKET_PATH` |
-| Database | `~/Library/Application Support/cli-auto-complete/autocomplete.sqlite` | `LAC_DB_PATH` |
+| Socket | `~/Library/Application Support/llm-cli-suggestions/daemon.sock` | `LAC_SOCKET_PATH` |
+| Database | `~/Library/Application Support/llm-cli-suggestions/autocomplete.sqlite` | `LAC_DB_PATH` |
 | Model | `qwen2.5-coder:7b` | `LAC_MODEL_NAME` |
 | Ollama URL | `http://127.0.0.1:11434` | `LAC_MODEL_BASE_URL` |
 | Suggest timeout | `1200ms` | `LAC_SUGGEST_TIMEOUT_MS` |

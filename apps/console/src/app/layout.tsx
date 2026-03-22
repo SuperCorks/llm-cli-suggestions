@@ -20,8 +20,8 @@ const robotoMono = Roboto_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "cli-auto-complete Console",
-  description: "Local control app for the cli-auto-complete daemon, SQLite logs, and model benchmarking.",
+  title: "llm-cli-suggestions Console",
+  description: "Local control app for the llm-cli-suggestions daemon, SQLite logs, and model benchmarking.",
 };
 
 export default async function RootLayout({

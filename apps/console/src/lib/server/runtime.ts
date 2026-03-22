@@ -96,6 +96,8 @@ export async function saveRuntimeSettings(input: Partial<Record<PersistedKey, st
     LAC_DB_PATH: input.LAC_DB_PATH || current.dbPath,
     LAC_SUGGEST_TIMEOUT_MS:
       input.LAC_SUGGEST_TIMEOUT_MS || String(current.suggestTimeoutMs),
+    LAC_PTY_CAPTURE_ALLOWLIST:
+      input.LAC_PTY_CAPTURE_ALLOWLIST ?? current.ptyCaptureAllowlist,
   });
   return getResolvedRuntimeSettings();
 }
@@ -161,6 +163,7 @@ export async function startDaemon() {
         LAC_MODEL_BASE_URL: settings.modelBaseUrl,
         LAC_SUGGEST_STRATEGY: settings.suggestStrategy,
         LAC_SUGGEST_TIMEOUT_MS: String(settings.suggestTimeoutMs),
+        LAC_PTY_CAPTURE_ALLOWLIST: settings.ptyCaptureAllowlist,
       },
     },
   );

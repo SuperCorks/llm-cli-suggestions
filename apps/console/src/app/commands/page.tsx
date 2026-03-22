@@ -1,6 +1,7 @@
+import { CommandsHistoryShell } from "@/components/commands-history-shell";
 import { PathHoverActions } from "@/components/path-hover-actions";
 import { Panel } from "@/components/panel";
-import { formatDurationMs, formatPercent, formatTimestamp } from "@/lib/format";
+import { formatPercent, formatTimestamp } from "@/lib/format";
 import { getFeedbackSummaryFiltered, listCommands } from "@/lib/server/queries";
 
 export const dynamic = "force-dynamic";
@@ -152,65 +153,7 @@ export default async function CommandsPage({
         title="Command History"
         subtitle={`Showing ${commands.rows.length} of ${commands.total} commands.`}
       >
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Finished</th>
-                <th>Session</th>
-                <th>Command</th>
-                <th>Exit</th>
-                <th>Duration</th>
-                <th>Context</th>
-                <th>Stdout</th>
-                <th>Stderr</th>
-              </tr>
-            </thead>
-            <tbody>
-              {commands.rows.map((row) => (
-                <tr key={row.id}>
-                  <td>{formatTimestamp(row.finishedAtMs)}</td>
-                  <td>
-                    <code>{row.sessionId}</code>
-                  </td>
-                  <td>
-                    <code>{row.commandText}</code>
-                  </td>
-                  <td>{row.exitCode}</td>
-                  <td>{formatDurationMs(row.durationMs)}</td>
-                  <td className="context-cell">
-                    {row.cwd ? (
-                      <PathHoverActions pathValue={row.cwd} label="Command cwd">
-                        <div>{row.cwd}</div>
-                      </PathHoverActions>
-                    ) : (
-                      <div>n/a</div>
-                    )}
-                    {row.repoRoot ? (
-                      <PathHoverActions pathValue={row.repoRoot} label="Command repo root">
-                        <div>{row.repoRoot}</div>
-                      </PathHoverActions>
-                    ) : (
-                      <div>n/a</div>
-                    )}
-                    <div>{row.branch || "n/a"}</div>
-                  </td>
-                  <td>
-                    <pre className="inline-pre">{row.stdoutExcerpt || "n/a"}</pre>
-                  </td>
-                  <td>
-                    <pre className="inline-pre">{row.stderrExcerpt || "n/a"}</pre>
-                  </td>
-                </tr>
-              ))}
-              {commands.rows.length === 0 ? (
-                <tr>
-                  <td colSpan={8}>No commands matched the selected filters.</td>
-                </tr>
-              ) : null}
-            </tbody>
-          </table>
-        </div>
+        <CommandsHistoryShell rows={commands.rows} />
       </Panel>
     </div>
   );

@@ -52,7 +52,8 @@ The Playwright suite currently covers a seeded local happy path for:
 - model lab benchmark queueing, running-progress indicators, refreshed run lists, closable detail views, and stricter picker validation
 - model lab ad-hoc multi-model test results, strategy overrides, session-or-cwd context wiring, picker interactions, and clear-results flow
 - models page download, removal, available-catalog pagination, and capability-display flows for local Ollama inventory management
-- daemon page settings save flow, shared model-picker interactions, log rendering, and danger-zone ordering below the log section
+- overview live activity stream updates through the browser EventSource client
+- daemon page settings save flow, shared model-picker interactions, live log rendering, and danger-zone ordering below the log section
 - daemon runtime strategy persistence through the shared settings form
 - daemon-side model download prompt and progress handling for Ollama-backed runtime settings
 - daemon control readiness and restart-failure handling
@@ -79,6 +80,8 @@ This now verifies both package integrity and a first slice of focused engine beh
 - project-task retrieval for commands like `npm run d`
 - filesystem retrieval for path-oriented buffers like `git add s`
 - git branch retrieval for branch-oriented buffers like `git switch fea`
+- recent-output selection that prefers relevant failure and branch context over unrelated session noise
+- inspect responses and prompts that expose selected recent output context
 - prompt construction that includes retrieved local context
 
 ### Shell Smoke Test
@@ -104,6 +107,9 @@ It currently checks:
 - a recorded command can be suggested back from history
 - accepting a suggestion updates the buffer correctly
 - rejecting a suggestion logs feedback correctly
+- non-allowlisted commands remain uncaptured by default
+- allowlisted PTY capture records command output without stripping terminal behavior
+- redirected commands still remain uncaptured in the shell smoke path
 - bounded output capture through `lac-capture` is recorded
 
 This is the strongest automated test in the repo right now because it exercises the real integration boundary.
@@ -172,6 +178,7 @@ These checks matter because terminal UX issues often do not show up in pure unit
 - daemon startup and socket health
 - end-to-end shell integration
 - command and feedback logging
+- allowlisted PTY output capture for selected shell commands
 - async suggestion delivery at a smoke-test level
 - interactive ghost-text timing across isolated idle prefixes
 - model comparison on representative cases

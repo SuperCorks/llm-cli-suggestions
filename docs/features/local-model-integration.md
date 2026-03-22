@@ -21,6 +21,7 @@ The daemon sends a single prompt that includes:
 - recent commands
 - previous command context
 - bounded previous stdout/stderr when available
+- a small selected set of recent session output snippets when they look relevant to the current buffer
 
 The model is asked to return exactly one shell command on one line.
 

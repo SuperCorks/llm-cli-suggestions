@@ -25,6 +25,7 @@ type InspectCandidate = {
     feedback: number;
     recent_usage: number;
     last_context: number;
+    output_context: number;
     total: number;
   };
 };
@@ -39,6 +40,14 @@ type InspectResponse = {
   last_command: string;
   last_stdout_excerpt: string;
   last_stderr_excerpt: string;
+  recent_output_context: Array<{
+    command: string;
+    exit_code: number;
+    stdout_excerpt: string;
+    stderr_excerpt: string;
+    finished_at_ms: number;
+    score: number;
+  }>;
   retrieved_context: {
     current_token: string;
     history_matches: string[];
@@ -105,6 +114,10 @@ function normalizeCandidate(
         typeof input.breakdown?.last_context === "number"
           ? input.breakdown.last_context
           : 0,
+      output_context:
+        typeof input.breakdown?.output_context === "number"
+          ? input.breakdown.output_context
+          : 0,
       total:
         typeof input.breakdown?.total === "number" ? input.breakdown.total : 0,
     },
@@ -134,6 +147,20 @@ function normalizeInspectResponse(
     last_command: input.last_command || "",
     last_stdout_excerpt: input.last_stdout_excerpt || "",
     last_stderr_excerpt: input.last_stderr_excerpt || "",
+    recent_output_context: Array.isArray(input.recent_output_context)
+      ? input.recent_output_context.map((entry) => ({
+          command: entry?.command || "",
+          exit_code:
+            typeof entry?.exit_code === "number" ? entry.exit_code : 0,
+          stdout_excerpt: entry?.stdout_excerpt || "",
+          stderr_excerpt: entry?.stderr_excerpt || "",
+          finished_at_ms:
+            typeof entry?.finished_at_ms === "number"
+              ? entry.finished_at_ms
+              : 0,
+          score: typeof entry?.score === "number" ? entry.score : 0,
+        }))
+      : [],
     retrieved_context: {
       current_token: input.retrieved_context?.current_token || "",
       history_matches: Array.isArray(input.retrieved_context?.history_matches)
@@ -409,6 +436,7 @@ export function RankingInspector({
                     <th>Feedback</th>
                     <th>Recent</th>
                     <th>Last Context</th>
+                    <th>Output Context</th>
                     <th>Latency</th>
                   </tr>
                 </thead>
@@ -426,6 +454,7 @@ export function RankingInspector({
                       <td>{candidate.breakdown.feedback}</td>
                       <td>{candidate.breakdown.recent_usage}</td>
                       <td>{candidate.breakdown.last_context}</td>
+                      <td>{candidate.breakdown.output_context}</td>
                       <td>{formatDurationMs(candidate.latency_ms)}</td>
                     </tr>
                   ))}
@@ -449,6 +478,10 @@ export function RankingInspector({
                 <div>
                   <dt>Current token</dt>
                   <dd>{response.retrieved_context.current_token || "n/a"}</dd>
+                </div>
+                <div>
+                  <dt>Recent output snippets</dt>
+                  <dd>{response.recent_output_context.length || 0}</dd>
                 </div>
                 <div>
                   <dt>Cleaned model output</dt>
@@ -541,6 +574,31 @@ export function RankingInspector({
                   {response.last_stderr_excerpt || "n/a"}
                 </pre>
               </div>
+            </div>
+          ) : null}
+
+          {response.recent_output_context.length ? (
+            <div className="detail-block">
+              <h3>Recent Output Context</h3>
+              <pre className="code-block">
+                {response.recent_output_context
+                  .map((entry) =>
+                    [
+                      `command: ${entry.command}`,
+                      `exit_code: ${entry.exit_code}`,
+                      `score: ${entry.score}`,
+                      entry.stdout_excerpt
+                        ? `stdout:\n${entry.stdout_excerpt}`
+                        : "",
+                      entry.stderr_excerpt
+                        ? `stderr:\n${entry.stderr_excerpt}`
+                        : "",
+                    ]
+                      .filter(Boolean)
+                      .join("\n"),
+                  )
+                  .join("\n\n---\n\n")}
+              </pre>
             </div>
           ) : null}
         </div>

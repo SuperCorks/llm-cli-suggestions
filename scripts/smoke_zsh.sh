@@ -41,12 +41,23 @@ done
 
 LAC_SOCKET_PATH="$SOCKET_PATH" "$ROOT_DIR/bin/autocomplete-client" health >/dev/null
 
-export ROOT_DIR SOCKET_PATH DB_PATH MODEL_NAME
-zsh -dfi -c '
+cat >"$TMP_DIR/runtime.env" <<EOF
+LAC_MODEL_NAME="$MODEL_NAME"
+LAC_MODEL_BASE_URL="http://127.0.0.1:11434"
+LAC_SUGGEST_STRATEGY="history+model"
+LAC_SOCKET_PATH="$SOCKET_PATH"
+LAC_DB_PATH="$DB_PATH"
+LAC_SUGGEST_TIMEOUT_MS="1200"
+LAC_PTY_CAPTURE_ALLOWLIST="uname"
+EOF
+
+export ROOT_DIR SOCKET_PATH DB_PATH MODEL_NAME TMP_DIR
+script -q /dev/null zsh -dfi -c '
   export LAC_CLIENT_BIN="$ROOT_DIR/bin/autocomplete-client"
   export LAC_DAEMON_BIN="$ROOT_DIR/bin/autocomplete-daemon"
   export LAC_SOCKET_PATH="$SOCKET_PATH"
-  source "$ROOT_DIR/zsh/cli-auto-complete.zsh"
+  export LAC_STATE_DIR="$TMP_DIR"
+  source "$ROOT_DIR/zsh/llm-cli-suggestions.zsh"
 
   lac-start-daemon
 
@@ -89,6 +100,26 @@ zsh -dfi -c '
   _lac_precmd
   sleep 0.3
 
+  (( $+functions[uname] )) || {
+    print -u2 -- "expected uname PTY wrapper to be installed from allowlist"
+    return 1
+  }
+
+  _lac_preexec "printf hello-plain"
+  printf "hello-plain\n"
+  _lac_precmd
+  sleep 0.3
+
+  _lac_preexec "uname -s"
+  uname -s
+  _lac_precmd
+  sleep 0.3
+
+  _lac_preexec "printf skipped > $TMP_DIR/skipped.txt"
+  printf "skipped\n" > "$TMP_DIR/skipped.txt"
+  _lac_precmd
+  sleep 0.3
+
   _lac_preexec "lac-capture printf hello"
   lac-capture printf "hello\n" >/dev/null
   _lac_precmd
@@ -100,6 +131,11 @@ accepted_count="$(sqlite3 "$DB_PATH" "select count(*) from feedback_events where
 rejected_count="$(sqlite3 "$DB_PATH" "select count(*) from feedback_events where event_type = 'rejected' and actual_command = 'git stash';")"
 suggestions_count="$(sqlite3 "$DB_PATH" "select count(*) from suggestions where suggestion_text = 'git status';")"
 stdout_capture_count="$(sqlite3 "$DB_PATH" "select count(*) from commands where command_text like 'printf%' and stdout_excerpt like '%hello%';")"
+plain_uncaptured_count="$(sqlite3 "$DB_PATH" "select count(*) from commands where command_text = 'printf hello-plain' and stdout_excerpt = '' and stderr_excerpt = '';")"
+pty_stdout_capture_count="$(sqlite3 "$DB_PATH" "select count(*) from commands where command_text = 'uname -s' and stdout_excerpt like '%Darwin%';")"
+skipped_redirect_capture_count="$(sqlite3 "$DB_PATH" "select count(*) from commands where command_text like 'printf skipped >%' and stdout_excerpt = '' and stderr_excerpt = '';")"
+
+trimmed_capture_test="$(zsh -dfi -c 'source "'"$ROOT_DIR"'/zsh/llm-cli-suggestions.zsh"; export LAC_CAPTURE_BYTES=24; sample=$'"'"'alpha\nbeta\ngamma\ndelta\nepsilon\nzeta'"'"'; trimmed="$(_lac_trim_capture "$sample")"; print -r -- "$trimmed"' )"
 
 [[ "$commands_count" -ge 2 ]] || {
   echo "expected at least 2 recorded commands, got $commands_count" >&2
@@ -126,5 +162,25 @@ stdout_capture_count="$(sqlite3 "$DB_PATH" "select count(*) from commands where 
   exit 1
 }
 
+[[ "$plain_uncaptured_count" -ge 1 ]] || {
+  echo "expected non-allowlisted command to remain uncaptured, got $plain_uncaptured_count" >&2
+  exit 1
+}
+
+[[ "$pty_stdout_capture_count" -ge 1 ]] || {
+  echo "expected PTY output capture for uname -s, got $pty_stdout_capture_count" >&2
+  exit 1
+}
+
+[[ "$skipped_redirect_capture_count" -ge 1 ]] || {
+  echo "expected skipped capture for redirected printf command, got $skipped_redirect_capture_count" >&2
+  exit 1
+}
+
+[[ "$trimmed_capture_test" == *"alpha"* && "$trimmed_capture_test" == *"zeta"* && "$trimmed_capture_test" == *$'\n...\n'* ]] || {
+  echo "expected trimmed capture to retain both start and end, got: $trimmed_capture_test" >&2
+  exit 1
+}
+
 echo "shell smoke test passed"
-echo "commands=$commands_count suggestions=$suggestions_count accepted=$accepted_count rejected=$rejected_count output_captured=$stdout_capture_count"
+echo "commands=$commands_count suggestions=$suggestions_count accepted=$accepted_count rejected=$rejected_count output_captured=$stdout_capture_count plain_uncaptured=$plain_uncaptured_count pty_output_captured=$pty_stdout_capture_count skipped_redirect_capture=$skipped_redirect_capture_count"

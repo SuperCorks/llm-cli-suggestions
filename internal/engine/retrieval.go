@@ -10,8 +10,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/SuperCorks/cli-auto-complete/internal/api"
-	"github.com/SuperCorks/cli-auto-complete/internal/db"
+	"github.com/SuperCorks/llm-cli-suggestions/internal/api"
+	"github.com/SuperCorks/llm-cli-suggestions/internal/db"
 )
 
 type retrievalCandidate struct {

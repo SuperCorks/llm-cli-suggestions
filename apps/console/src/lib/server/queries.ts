@@ -1,8 +1,10 @@
 import "server-only";
 
+import { formatTimestamp } from "@/lib/format";
 import { getDb } from "@/lib/server/db";
 import { getRuntimeStatus } from "@/lib/server/runtime";
 import type {
+  ActivitySignal,
   BenchmarkResultRow,
   BenchmarkRunRow,
   CommandRow,
@@ -27,6 +29,16 @@ function normalizeLike(value?: string) {
     return "";
   }
   return `%${value.trim()}%`;
+}
+
+function mapSuggestionToActivitySignal(row: SuggestionRow): ActivitySignal {
+  return {
+    id: row.id,
+    timestamp: formatTimestamp(row.createdAtMs),
+    tone: row.accepted ? "accepted" : row.rejected ? "rejected" : "observed",
+    label: row.accepted ? "ACCEPT" : row.rejected ? "REJECT" : "TRACE",
+    message: `${row.source} suggestion for ${row.buffer || "empty buffer"}`,
+  };
 }
 
 export function listSuggestions(input: {
@@ -139,6 +151,14 @@ export function listSuggestions(input: {
     .all(...params, pageSize, offset) as SuggestionRow[];
 
   return { total, page, pageSize, rows };
+}
+
+export function getRecentActivitySignals(limit = 6) {
+  return listSuggestions({
+    page: 1,
+    pageSize: limit,
+    outcome: "all",
+  }).rows.map(mapSuggestionToActivitySignal);
 }
 
 export function listSuggestionSources() {

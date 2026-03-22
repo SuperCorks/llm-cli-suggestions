@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/SuperCorks/cli-auto-complete/internal/api"
-	"github.com/SuperCorks/cli-auto-complete/internal/db"
+	"github.com/SuperCorks/llm-cli-suggestions/internal/api"
+	"github.com/SuperCorks/llm-cli-suggestions/internal/db"
 )
 
 func TestSuggestUsesProjectTaskRetrieval(t *testing.T) {
@@ -124,6 +124,133 @@ func TestSuggestUsesGitBranchRetrieval(t *testing.T) {
 	}
 }
 
+func TestSelectRecentOutputContextPrefersRelevantEntries(t *testing.T) {
+	t.Parallel()
+
+	request := api.SuggestRequest{
+		SessionID: "test-session",
+		Buffer:    "git checkout fea",
+		CWD:       "/tmp/project",
+		RepoRoot:  "/tmp/project",
+		Branch:    "main",
+	}
+	selected := selectRecentOutputContext(request, []db.RecentOutputContext{
+		{
+			Command:       "npm test",
+			ExitCode:      0,
+			StdoutExcerpt: "all tests passed",
+			FinishedAtMS:  3000,
+		},
+		{
+			Command:       "git branch",
+			ExitCode:      0,
+			StdoutExcerpt: "* main\n  feature/demo\n  fix/login",
+			FinishedAtMS:  2000,
+		},
+		{
+			Command:       "git checkout nope",
+			ExitCode:      1,
+			StderrExcerpt: "error: pathspec 'nope' did not match any file(s) known to git",
+			FinishedAtMS:  1000,
+		},
+	})
+
+	if len(selected) == 0 {
+		t.Fatalf("expected selected recent output context")
+	}
+	if containsRecentOutputCommand(selected, "npm test") {
+		t.Fatalf("did not expect unrelated npm test output to be selected: %#v", selected)
+	}
+	if !containsRecentOutputCommand(selected, "git branch") {
+		t.Fatalf("expected git branch output to be selected: %#v", selected)
+	}
+	if !containsRecentOutputCommand(selected, "git checkout nope") {
+		t.Fatalf("expected failing git checkout output to be selected: %#v", selected)
+	}
+}
+
+func TestInspectIncludesRecentOutputContextAndOutputBonus(t *testing.T) {
+	t.Parallel()
+
+	repoRoot := t.TempDir()
+	initGitRepo(t, repoRoot)
+
+	engine := newTestEngine(t)
+	recordTestCommand(t, engine.store, db.CommandRecord{
+		SessionID:     "test-session",
+		Command:       "git branch",
+		CWD:           repoRoot,
+		RepoRoot:      repoRoot,
+		Branch:        "main",
+		ExitCode:      0,
+		DurationMS:    80,
+		StartedAtMS:   1000,
+		FinishedAtMS:  1080,
+		StdoutExcerpt: "* main\n  feature/demo\n  fix/login",
+	})
+
+	response, err := engine.Inspect(context.Background(), api.InspectRequest{
+		SessionID: "test-session",
+		Buffer:    "git checkout fea",
+		CWD:       repoRoot,
+		RepoRoot:  repoRoot,
+		Branch:    "main",
+	})
+	if err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+
+	if len(response.RecentOutputContext) == 0 {
+		t.Fatalf("expected recent output context in inspect response")
+	}
+	if !strings.Contains(response.Prompt, "recent_output_context:") {
+		t.Fatalf("expected prompt to include recent output context, got %q", response.Prompt)
+	}
+	if !containsRecentOutputCommand(response.RecentOutputContext, "git branch") {
+		t.Fatalf("expected git branch output in inspect response: %#v", response.RecentOutputContext)
+	}
+
+	candidate := findCandidate(response.Candidates, "git checkout feature/demo")
+	if candidate == nil {
+		t.Fatalf("expected git checkout feature/demo candidate, got %#v", response.Candidates)
+	}
+	if candidate.Breakdown.OutputContext <= 0 {
+		t.Fatalf("expected output-context bonus, got %+v", candidate.Breakdown)
+	}
+}
+
+func TestBuildPromptIncludesRecentOutputContext(t *testing.T) {
+	t.Parallel()
+
+	prompt := BuildPrompt(
+		api.SuggestRequest{
+			Buffer:       "git checkout fea",
+			CWD:          "/tmp/project",
+			RepoRoot:     "/tmp/project",
+			Branch:       "main",
+			LastExitCode: 0,
+		},
+		[]string{"git status", "git branch"},
+		db.CommandContext{Command: "git branch"},
+		[]api.InspectRecentOutputContext{
+			{
+				Command:       "git branch",
+				ExitCode:      0,
+				StdoutExcerpt: "* main\n  feature/demo",
+				Score:         20,
+			},
+		},
+		api.InspectRetrievedContext{CurrentToken: "fea"},
+	)
+
+	if !strings.Contains(prompt, "recent_output_context:") {
+		t.Fatalf("expected recent_output_context block, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "feature/demo") {
+		t.Fatalf("expected prompt to include selected output text, got %q", prompt)
+	}
+}
+
 func newTestEngine(t *testing.T) *Engine {
 	t.Helper()
 
@@ -182,4 +309,29 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func containsRecentOutputCommand(values []api.InspectRecentOutputContext, want string) bool {
+	for _, value := range values {
+		if value.Command == want {
+			return true
+		}
+	}
+	return false
+}
+
+func findCandidate(values []api.InspectCandidate, want string) *api.InspectCandidate {
+	for index := range values {
+		if values[index].Command == want {
+			return &values[index]
+		}
+	}
+	return nil
+}
+
+func recordTestCommand(t *testing.T, store *db.Store, record db.CommandRecord) {
+	t.Helper()
+	if err := store.RecordCommand(context.Background(), record); err != nil {
+		t.Fatalf("record command: %v", err)
+	}
 }

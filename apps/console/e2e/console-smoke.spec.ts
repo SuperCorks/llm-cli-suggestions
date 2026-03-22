@@ -6,11 +6,70 @@ function getDetailBlock(page: Page, heading: string) {
   });
 }
 
+async function mockEventSource(
+  page: Page,
+  streams: Array<{ match: string; messages: unknown[] }>,
+) {
+  await page.addInitScript(
+    (definitions: Array<{ match: string; messages: unknown[] }>) => {
+      class MockEventSource {
+        static CONNECTING = 0;
+        static OPEN = 1;
+        static CLOSED = 2;
+
+        readonly url: string;
+        readonly withCredentials = false;
+        readyState = MockEventSource.CONNECTING;
+        onopen: ((event: Event) => void) | null = null;
+        onmessage: ((event: MessageEvent<string>) => void) | null = null;
+        onerror: ((event: Event) => void) | null = null;
+
+        constructor(url: string | URL) {
+          this.url = String(url);
+          const stream = definitions.find((entry) => this.url.includes(entry.match));
+
+          window.setTimeout(() => {
+            this.readyState = MockEventSource.OPEN;
+            this.onopen?.(new Event("open"));
+
+            for (const [index, payload] of (stream?.messages || []).entries()) {
+              window.setTimeout(() => {
+                if (this.readyState !== MockEventSource.OPEN) {
+                  return;
+                }
+                this.onmessage?.(
+                  { data: JSON.stringify(payload) } as MessageEvent<string>,
+                );
+              }, 30 * (index + 1));
+            }
+          }, 0);
+        }
+
+        addEventListener() {}
+
+        removeEventListener() {}
+
+        dispatchEvent() {
+          return true;
+        }
+
+        close() {
+          this.readyState = MockEventSource.CLOSED;
+        }
+      }
+
+      (window as Window & { EventSource: typeof EventSource }).EventSource =
+        MockEventSource as unknown as typeof EventSource;
+    },
+    streams,
+  );
+}
+
 test("dashboard renders seeded overview data", async ({ page }) => {
   await page.goto("/");
 
   await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
-  await expect(page.getByText("cli-auto-complete Console").first()).toBeVisible();
+  await expect(page.getByText("llm-cli-suggestions Console").first()).toBeVisible();
   await page.getByRole("button", { name: "Collapse navigation" }).click();
   await expect(page.locator(".app-shell.sidebar-collapsed")).toHaveCount(1);
   await page.getByRole("button", { name: "Expand navigation" }).click();
@@ -22,6 +81,44 @@ test("dashboard renders seeded overview data", async ({ page }) => {
   await expect(page.getByText("git status").first()).toBeVisible();
   await expect(page.getByText("model suggestion for npm run t31")).toBeVisible();
   await expect(page.getByText("qwen2.5-coder:7b").first()).toBeVisible();
+});
+
+test("overview and daemon panels apply streamed updates", async ({ page }) => {
+  await mockEventSource(page, [
+    {
+      match: "/api/overview/activity/stream",
+      messages: [
+        {
+          signals: [
+            {
+              id: 9001,
+              timestamp: "Mar 21, 2026, 10:19 p.m.",
+              tone: "accepted",
+              label: "ACCEPT",
+              message: "model suggestion for open https://docs",
+            },
+          ],
+        },
+      ],
+    },
+    {
+      match: "/api/runtime/log/stream",
+      messages: [
+        {
+          log: "daemon ready\nstream attached\nflag provided but not defined: -strategy",
+        },
+      ],
+    },
+  ]);
+
+  await page.goto("/");
+  await expect(page.locator(".stream-indicator-live").first()).toBeVisible();
+  await expect(page.getByText("model suggestion for open https://docs")).toBeVisible();
+
+  await page.goto("/daemon");
+  const logPanel = getDetailBlock(page, "Recent Daemon Log");
+  await expect(page.locator(".stream-indicator-live").first()).toBeVisible();
+  await expect(logPanel.getByText("stream attached")).toBeVisible();
 });
 
 test("suggestions and commands pages render seeded history", async ({ page }) => {
