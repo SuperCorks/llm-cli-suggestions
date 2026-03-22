@@ -1,8 +1,8 @@
 # llm-cli-suggestions
 
-**Local-first, LLM-powered terminal autosuggestions for macOS `zsh`.**
+**Local-first, context-aware terminal autosuggestions for macOS `zsh`.**
 
-Type a few characters and a ghost-text suggestion appears inline — press `Tab` to accept, keep typing to ignore. Everything runs on your machine: a Go daemon, a local Ollama model, and a SQLite learning loop. No cloud, no API keys, no telemetry.
+Type a few characters and a ghost-text suggestion appears inline — press `Tab` to accept, keep typing to ignore. Suggestions are shaped by where you are and what you were just doing: current working directory, repo root, git branch, recent commands, last exit code, recent command output, and local project tasks. Everything runs on your machine: a Go daemon, a local Ollama model, and a SQLite learning loop. No cloud, no API keys, no telemetry.
 
 <p align="center">
   <img src="docs/screenshots/console-dashboard-overview.png" width="100%" alt="Dashboard — live activity stream, top commands, acceptance rate, and model latency at a glance." />
@@ -14,7 +14,7 @@ Type a few characters and a ghost-text suggestion appears inline — press `Tab`
 
 - **Ghost-text suggestions in zsh** — async, debounced, and non-blocking. Feels like IDE autocomplete but for your terminal.
 - **Learns from you** — every command, acceptance, and rejection feeds back into ranking. The engine gets better the more you use it.
-- **Context-aware** — suggestions factor in your working directory, git branch, recent commands, last command output, error codes, and filesystem paths.
+- **Context-aware** — suggestions factor in your current working directory, repo root, git branch, recent commands, last exit code, recent command output, local filesystem paths, and project tasks from files like `package.json`, `Makefile`, and `justfile`.
 - **Local model inference** — ships with Ollama integration. Runs models like `qwen2.5-coder:7b` entirely on-device.
 - **Full control app** — a local Next.js dashboard for analytics, inspection, benchmarking, model management, and daemon control.
 - **Benchmark suite** — compare models head-to-head on your real prompt contexts and see which one actually works best for your workflow.
@@ -146,6 +146,8 @@ The suggestion engine blends signals from:
 2. **Local model** — Ollama inference with bounded timeout, only called when history isn't confident enough
 3. **Retrieved context** — filesystem paths, git branches, project tasks (npm/make/just), and recent command output
 4. **Feedback loop** — accepted suggestions get boosted, rejected ones get penalized
+
+That means the same prefix can lead to different suggestions depending on where you are. `git ch` inside one repo can favor a branch that exists there, `npm run` can surface scripts from the current project, and a failed command can bias the next suggestion toward a likely fix.
 
 The control app reads the same local state for analytics, inspection, benchmarking, runtime settings, and daemon operations.
 
