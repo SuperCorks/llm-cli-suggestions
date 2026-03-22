@@ -2,7 +2,7 @@
 
 `llm-cli-suggestions` is a local-only autosuggestion system for macOS `zsh`.
 
-The current implementation is built from five main pieces:
+The current implementation is built from six main pieces:
 
 1. A `zsh` plugin in `zsh/llm-cli-suggestions.zsh`
 2. A Go daemon in `cmd/autocomplete-daemon`
@@ -168,6 +168,7 @@ The control app writes this file, and the `zsh` plugin reads it before launching
 - socket path
 - SQLite path
 - suggest timeout
+- PTY capture allow-list
 
 The current strategy modes are:
 

@@ -166,8 +166,9 @@ In addition to the scripted checks, the current development workflow has relied 
 - verifying that ghost text appears asynchronously
 - confirming `Tab` accepts the suggestion
 - confirming ghost text is rendered with muted highlighting
-- opening the local control app and loading overview, suggestions, commands, ranking, lab, and daemon pages
+- opening the local control app and loading overview, suggestions, signals, inspector, models, model lab, and daemon pages
 - confirming daemon start or restart controls update runtime health
+- confirming the commands page keeps context/output details in the slide-over drawer
 - running a benchmark from the control app and verifying rows persist in SQLite
 - using the inspector to confirm candidate breakdowns render correctly
 

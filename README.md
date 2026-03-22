@@ -31,12 +31,12 @@ Ghost-text completions appear inline as you type. Press Tab to accept.
   <img src="docs/screenshots/zsh-ghost-text-terminal.png" width="100%" alt="Zsh ghost-text suggestions in the terminal" />
 </p>
 
-### Inspector — see why the engine chose a suggestion
+### Dashboard
 
-Replay any prompt context, inspect candidate scores, retrieval signals, and raw model output.
+The local console keeps the live signal stream, recent suggestions, and path-level acceptance trends in one place.
 
 <p align="center">
-  <img src="docs/screenshots/console-inspector.png" width="100%" alt="Ranking inspector showing candidate scores and prompt context" />
+  <img src="docs/screenshots/console-dashboard-with-suggestions.png" width="100%" alt="Dashboard lower panels showing recent suggestions, model summary, and acceptance by path" />
 </p>
 
 ### Suggestion history
@@ -44,7 +44,23 @@ Replay any prompt context, inspect candidate scores, retrieval signals, and raw 
 Browse every suggestion the engine has made, with timing, model, outcome, and full context snapshots.
 
 <p align="center">
-  <img src="docs/screenshots/console-suggestions-history.png" width="100%" alt="Suggestion history table with filtering" />
+  <img src="docs/screenshots/console-suggestions-history.png" width="100%" alt="Suggestion history table with filters, labels, and context snapshots" />
+</p>
+
+### Commands & feedback signals
+
+Review executed commands, feedback trends, and command-level context without crowding the main table with full output excerpts.
+
+<p align="center">
+  <img src="docs/screenshots/console-commands-and-feedback.png" width="100%" alt="Commands and feedback page with filters, rejected suggestions, and recent feedback events" />
+</p>
+
+### Inspector
+
+Replay any prompt context, inspect candidate scores, retrieval signals, and raw model output.
+
+<p align="center">
+  <img src="docs/screenshots/console-inspector.png" width="100%" alt="Ranking inspector showing candidate scores and prompt context" />
 </p>
 
 ### Model lab — benchmark and compare
@@ -52,11 +68,15 @@ Browse every suggestion the engine has made, with timing, model, outcome, and fu
 Queue repeatable benchmark runs across multiple models, compare latency and acceptance, and drill into individual results.
 
 <p align="center">
-  <img src="docs/screenshots/console-model-lab-benchmarks.png" width="100%" alt="Model lab for benchmarking and ad-hoc model testing" />
+  <img src="docs/screenshots/console-model-lab-benchmarks.png" width="100%" alt="Model lab page for ad-hoc tests and queued benchmark runs" />
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/console-benchmark-run-detail.png" width="100%" alt="Benchmark run detail showing per-model stats" />
+  <img src="docs/screenshots/console-benchmark-runs-list.png" width="100%" alt="Saved benchmark runs list with progress, models, and detail actions" />
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/console-benchmark-run-detail.png" width="100%" alt="Benchmark run detail showing per-model summaries and per-case results" />
 </p>
 
 ### Models — download and manage Ollama models
@@ -65,14 +85,6 @@ Browse the full Ollama library, download models, and switch the active daemon mo
 
 <p align="center">
   <img src="docs/screenshots/console-models-inventory.png" width="100%" alt="Model inventory with installed and available models" />
-</p>
-
-### Commands & feedback signals
-
-See executed commands, feedback events, rejection pressure, and acceptance rates by path.
-
-<p align="center">
-  <img src="docs/screenshots/console-commands-and-feedback.png" width="100%" alt="Commands and feedback signals page" />
 </p>
 
 ---
@@ -114,17 +126,18 @@ That's it — start typing and suggestions will appear.
 ## How It Works
 
 ```
-You type → zsh plugin schedules async request → Go daemon scores candidates → ghost-text renders
-                                                        │
-                                        ┌───────────────┼───────────────────┐
-                                        │               │                   │
-                                   History DB      Ollama model      Retrieval engine
-                                   (SQLite)        (local LLM)      (paths, branches,
-                                                                     tasks, output)
-                                        │               │                   │
-                                        └───────────────┼───────────────────┘
-                                                        │
-                                                  Ranked blend → top suggestion
+You type → zsh plugin debounces helper → autocomplete-client → local daemon → ghost-text renders
+                                                               │
+                                         ┌─────────────────────┼─────────────────────┐
+                                         │                     │                     │
+                                   SQLite history         Local retrieval      Ollama model
+                                   + feedback             (paths, branches,   (only when
+                                   + prompt snapshots     tasks, output)      history is not
+                                                                                 decisive)
+                                         │                     │                     │
+                                         └─────────────────────┼─────────────────────┘
+                                                               │
+                                                     Ranked blend → top suggestion
 ```
 
 The suggestion engine blends signals from:
@@ -133,6 +146,8 @@ The suggestion engine blends signals from:
 2. **Local model** — Ollama inference with bounded timeout, only called when history isn't confident enough
 3. **Retrieved context** — filesystem paths, git branches, project tasks (npm/make/just), and recent command output
 4. **Feedback loop** — accepted suggestions get boosted, rejected ones get penalized
+
+The control app reads the same local state for analytics, inspection, benchmarking, runtime settings, and daemon operations.
 
 ---
 
@@ -162,7 +177,7 @@ npm install
 npm run dev
 ```
 
-Open the local URL shown by Next.js to access the dashboard, suggestion explorer, inspector, model lab, and daemon controls.
+Open the local URL shown by Next.js to access the dashboard, suggestions, signals, inspector, models, model lab, and daemon controls.
 
 For a production build: `npm run build`. Run the e2e smoke suite with `npm run e2e`.
 
@@ -175,6 +190,8 @@ The engine can use previous command output to make smarter suggestions (e.g. run
 - **PTY capture** — set `LAC_PTY_CAPTURE_ALLOWLIST=git,npm,python` to automatically capture output for specific commands
 - **Auto capture** — set `LAC_AUTO_CAPTURE_ENABLED=1` for safe non-interactive commands (may affect color output)
 - **Explicit** — `lac-capture <command>` or `lac-capture-pty <command>` for one-off capture
+
+The control app Daemon page can persist the PTY capture allow-list to `runtime.env` so new shells pick it up automatically.
 
 ---
 
