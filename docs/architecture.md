@@ -101,8 +101,11 @@ The current HTTP routes are:
 For inspect requests, the daemon now resolves missing context before scoring:
 
 - if a `session_id` is present, it pulls the latest recorded command context and recent commands for that session
+- if a `session_id` is present, it also pulls recent output-bearing commands from that session for prompt and scoring context
 - if a `cwd` is present, it can pull the most recent command context seen in that working directory
 - if database context is incomplete but `cwd` is available, it falls back to lightweight local git inspection to infer repo root and branch
+
+These independent local lookups now run in parallel so the engine spends less time waiting on separate SQLite reads before ranking starts.
 
 That lets the control app keep ranking and ad-hoc test forms simple while still exercising the same context-aware engine behavior as the live shell flow.
 
@@ -124,12 +127,14 @@ The suggestion engine combines multiple local signals:
 
 The current ranking shape is:
 
-1. gather prefix-matching history candidates
-2. gather targeted local retrieval candidates for paths, branches, and project tasks while also loading broader local project task context for the prompt when available
-3. trust history immediately when one candidate is clearly dominant
-4. otherwise ask the local model for one candidate
-5. blend history, retrieval, model, recent usage, feedback, and last-command context
-6. store and return the top-ranked result
+1. resolve session- or cwd-scoped context, recent commands, and recent output context
+2. gather prefix-matching history candidates
+3. gather targeted local retrieval candidates for paths, branches, and project tasks while also loading broader local project task context for the prompt when available
+4. run the independent history and local retrieval work in parallel when possible
+5. trust history immediately when one candidate is clearly dominant
+6. otherwise ask the local model for one candidate
+7. blend history, retrieval, model, recent usage, feedback, and last-command context
+8. store and return the top-ranked result
 
 This keeps the system fast when local context is strong and still allows the model to help in more ambiguous cases.
 

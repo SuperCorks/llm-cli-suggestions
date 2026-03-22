@@ -80,9 +80,16 @@ This now verifies both package integrity and a first slice of focused engine beh
 - project-task retrieval for commands like `npm run d`
 - filesystem retrieval for path-oriented buffers like `git add s`
 - git branch retrieval for branch-oriented buffers like `git switch fea`
+- retrieved history matches surfacing in inspect context and prompts
 - recent-output selection that prefers relevant failure and branch context over unrelated session noise
 - inspect responses and prompts that expose selected recent output context
 - prompt construction that includes retrieved local context
+
+There is also a focused engine microbenchmark for a mixed `git checkout fea` workload that exercises session context hydration, history lookup, path retrieval, and git branch retrieval together:
+
+```bash
+GOCACHE=/tmp/lac-gocache go test ./internal/engine -run '^$' -bench BenchmarkInspectGitCheckoutMixedRetrieval -benchmem
+```
 
 ### Shell Smoke Test
 
@@ -197,6 +204,7 @@ These checks matter because terminal UX issues often do not show up in pure unit
 - focused tests for console query filters and export routes
 - daemon control route tests from the control app surface
 - benchmark job lifecycle tests for queue, run, and persistence behavior
+- broader engine microbenchmarks for model-including paths and larger SQLite histories
 
 ## Recommended Next Test Additions
 

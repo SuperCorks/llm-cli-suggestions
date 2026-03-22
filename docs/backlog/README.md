@@ -16,3 +16,6 @@ Current backlog topics:
 - `04-inspection-and-observability.md`
 - `05-model-benchmarking.md`
 - `06-shell-ux-hardening.md`
+
+## To refine
+- Use the llm to parse previous outputs like copilot/codex --prompt into the next command, even if it's not in the history

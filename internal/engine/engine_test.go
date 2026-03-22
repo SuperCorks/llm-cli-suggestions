@@ -98,6 +98,52 @@ func TestInspectIncludesProjectTasksInPromptWithoutTaskSpecificBuffer(t *testing
 	}
 }
 
+func TestInspectIncludesHistoryMatchesInRetrievedContext(t *testing.T) {
+	t.Parallel()
+
+	engine := newTestEngine(t)
+	recordTestCommand(t, engine.store, db.CommandRecord{
+		SessionID:    "test-session",
+		Command:      "git checkout feature/demo",
+		CWD:          "/tmp/project",
+		RepoRoot:     "/tmp/project",
+		Branch:       "main",
+		ExitCode:     0,
+		DurationMS:   50,
+		StartedAtMS:  1000,
+		FinishedAtMS: 1050,
+	})
+	recordTestCommand(t, engine.store, db.CommandRecord{
+		SessionID:    "test-session",
+		Command:      "git checkout feature/login",
+		CWD:          "/tmp/project",
+		RepoRoot:     "/tmp/project",
+		Branch:       "main",
+		ExitCode:     0,
+		DurationMS:   50,
+		StartedAtMS:  1100,
+		FinishedAtMS: 1150,
+	})
+
+	response, err := engine.Inspect(context.Background(), api.InspectRequest{
+		SessionID: "test-session",
+		Buffer:    "git checkout fea",
+		CWD:       "/tmp/project",
+		RepoRoot:  "/tmp/project",
+		Branch:    "main",
+	})
+	if err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+
+	if !containsString(response.RetrievedContext.HistoryMatches, "git checkout feature/demo") {
+		t.Fatalf("expected history matches to include feature/demo, got %#v", response.RetrievedContext.HistoryMatches)
+	}
+	if !strings.Contains(response.Prompt, "matching_history:") {
+		t.Fatalf("expected prompt to include matching history, got %q", response.Prompt)
+	}
+}
+
 func TestSuggestUsesGitBranchRetrieval(t *testing.T) {
 	t.Parallel()
 
@@ -251,7 +297,7 @@ func TestBuildPromptIncludesRecentOutputContext(t *testing.T) {
 	}
 }
 
-func newTestEngine(t *testing.T) *Engine {
+func newTestEngine(t testing.TB) *Engine {
 	t.Helper()
 
 	store, err := db.NewStore(filepath.Join(t.TempDir(), "test.db"))
@@ -265,7 +311,7 @@ func newTestEngine(t *testing.T) *Engine {
 	return New(store, nil, "qwen2.5-coder:7b", "http://127.0.0.1:11434", "history+model", 0)
 }
 
-func initGitRepo(t *testing.T, root string) {
+func initGitRepo(t testing.TB, root string) {
 	t.Helper()
 
 	runGit(t, root, "init", "-b", "main")
@@ -278,7 +324,7 @@ func initGitRepo(t *testing.T, root string) {
 	runGit(t, root, "branch", "fix/login")
 }
 
-func runGit(t *testing.T, root string, args ...string) {
+func runGit(t testing.TB, root string, args ...string) {
 	t.Helper()
 
 	cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
@@ -288,14 +334,14 @@ func runGit(t *testing.T, root string, args ...string) {
 	}
 }
 
-func writeFile(t *testing.T, path, content string) {
+func writeFile(t testing.TB, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write %s: %v", path, err)
 	}
 }
 
-func mustMkdir(t *testing.T, path string) {
+func mustMkdir(t testing.TB, path string) {
 	t.Helper()
 	if err := os.MkdirAll(path, 0o755); err != nil {
 		t.Fatalf("mkdir %s: %v", path, err)
@@ -329,7 +375,7 @@ func findCandidate(values []api.InspectCandidate, want string) *api.InspectCandi
 	return nil
 }
 
-func recordTestCommand(t *testing.T, store *db.Store, record db.CommandRecord) {
+func recordTestCommand(t testing.TB, store *db.Store, record db.CommandRecord) {
 	t.Helper()
 	if err := store.RecordCommand(context.Background(), record); err != nil {
 		t.Fatalf("record command: %v", err)

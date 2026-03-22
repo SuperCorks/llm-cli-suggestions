@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -135,11 +136,7 @@ func (e *Engine) inspectDetailed(ctx context.Context, request api.InspectRequest
 		limit = 8
 	}
 
-	resolvedSuggestRequest, recentCommands, lastContext, err := e.resolveInspectContext(ctx, request)
-	if err != nil {
-		return inspectResult{}, err
-	}
-	recentOutputContexts, err := e.store.GetRecentOutputContexts(ctx, resolvedSuggestRequest.SessionID, recentOutputFetchLimit)
+	resolvedSuggestRequest, recentCommands, lastContext, recentOutputContexts, err := e.resolveInspectContext(ctx, request)
 	if err != nil {
 		return inspectResult{}, err
 	}
@@ -154,12 +151,40 @@ func (e *Engine) inspectDetailed(ctx context.Context, request api.InspectRequest
 	useHistory := strategy != config.SuggestStrategyModelOnly
 	useModel := strategy != config.SuggestStrategyHistoryOnly
 
-	if useHistory {
-		historyCandidates, err = e.store.FindCommandCandidates(ctx, buffer, resolvedSuggestRequest.CWD, resolvedSuggestRequest.RepoRoot, resolvedSuggestRequest.Branch, limit)
-		if err != nil {
-			return inspectResult{}, err
-		}
+	resolvedSuggestRequest.Strategy = strategy
+	resolvedSuggestRequest.RecentCommands = recentCommands
+	var retrievedContext api.InspectRetrievedContext
+	var retrievalCandidates []retrievalCandidate
+	if err := runParallel(
+		func() error {
+			if !useHistory {
+				return nil
+			}
 
+			foundCandidates, queryErr := e.store.FindCommandCandidates(
+				ctx,
+				buffer,
+				resolvedSuggestRequest.CWD,
+				resolvedSuggestRequest.RepoRoot,
+				resolvedSuggestRequest.Branch,
+				limit,
+			)
+			if queryErr != nil {
+				return queryErr
+			}
+			historyCandidates = foundCandidates
+			return nil
+		},
+		func() error {
+			retrievedContext, retrievalCandidates = buildStaticRetrievedContext(ctx, resolvedSuggestRequest)
+			return nil
+		},
+	); err != nil {
+		return inspectResult{}, err
+	}
+	retrievedContext.HistoryMatches = historyMatchesForCandidates(buffer, historyCandidates)
+
+	if useHistory {
 		for _, historyCandidate := range historyCandidates {
 			command := CleanSuggestion(buffer, historyCandidate.Command)
 			if command == "" {
@@ -183,9 +208,6 @@ func (e *Engine) inspectDetailed(ctx context.Context, request api.InspectRequest
 		}
 	}
 
-	resolvedSuggestRequest.Strategy = strategy
-	resolvedSuggestRequest.RecentCommands = recentCommands
-	retrievedContext, retrievalCandidates := buildRetrievedContext(ctx, resolvedSuggestRequest, historyCandidates)
 	for _, retrievalCandidate := range retrievalCandidates {
 		candidate := candidateMap[retrievalCandidate.Command]
 		if candidate == nil {
@@ -331,7 +353,7 @@ func (e *Engine) inspectDetailed(ctx context.Context, request api.InspectRequest
 	return inspectResult{response: response, resolvedRequest: resolvedSuggestRequest}, nil
 }
 
-func (e *Engine) resolveInspectContext(ctx context.Context, request api.InspectRequest) (api.SuggestRequest, []string, db.CommandContext, error) {
+func (e *Engine) resolveInspectContext(ctx context.Context, request api.InspectRequest) (api.SuggestRequest, []string, db.CommandContext, []db.RecentOutputContext, error) {
 	resolved := api.SuggestRequest{
 		SessionID: request.SessionID,
 		Buffer:    request.Buffer,
@@ -342,12 +364,39 @@ func (e *Engine) resolveInspectContext(ctx context.Context, request api.InspectR
 	}
 	recentCommands := request.RecentCommands
 	lastContext := db.CommandContext{}
-	var err error
+	recentOutputContexts := []db.RecentOutputContext{}
 
 	if request.SessionID != "" {
-		lastContext, err = e.store.GetLastCommandContext(ctx, request.SessionID)
-		if err != nil {
-			return api.SuggestRequest{}, nil, db.CommandContext{}, err
+		if err := runParallel(
+			func() error {
+				contextValue, queryErr := e.store.GetLastCommandContext(ctx, request.SessionID)
+				if queryErr != nil {
+					return queryErr
+				}
+				lastContext = contextValue
+				return nil
+			},
+			func() error {
+				if len(recentCommands) != 0 {
+					return nil
+				}
+				commands, queryErr := e.store.GetRecentCommands(ctx, request.SessionID, 12)
+				if queryErr != nil {
+					return queryErr
+				}
+				recentCommands = commands
+				return nil
+			},
+			func() error {
+				outputs, queryErr := e.store.GetRecentOutputContexts(ctx, request.SessionID, recentOutputFetchLimit)
+				if queryErr != nil {
+					return queryErr
+				}
+				recentOutputContexts = outputs
+				return nil
+			},
+		); err != nil {
+			return api.SuggestRequest{}, nil, db.CommandContext{}, nil, err
 		}
 		if resolved.CWD == "" {
 			resolved.CWD = lastContext.CWD
@@ -358,28 +407,35 @@ func (e *Engine) resolveInspectContext(ctx context.Context, request api.InspectR
 		if resolved.Branch == "" {
 			resolved.Branch = lastContext.Branch
 		}
-		if len(recentCommands) == 0 {
-			recentCommands, err = e.store.GetRecentCommands(ctx, request.SessionID, 12)
-			if err != nil {
-				return api.SuggestRequest{}, nil, db.CommandContext{}, err
-			}
-		}
 	} else if resolved.CWD != "" {
-		lastContext, err = e.store.GetLastCommandContextByCWD(ctx, resolved.CWD)
-		if err != nil {
-			return api.SuggestRequest{}, nil, db.CommandContext{}, err
+		if err := runParallel(
+			func() error {
+				contextValue, queryErr := e.store.GetLastCommandContextByCWD(ctx, resolved.CWD)
+				if queryErr != nil {
+					return queryErr
+				}
+				lastContext = contextValue
+				return nil
+			},
+			func() error {
+				if len(recentCommands) != 0 {
+					return nil
+				}
+				commands, queryErr := e.store.GetRecentCommandsByCWD(ctx, resolved.CWD, 12)
+				if queryErr != nil {
+					return queryErr
+				}
+				recentCommands = commands
+				return nil
+			},
+		); err != nil {
+			return api.SuggestRequest{}, nil, db.CommandContext{}, nil, err
 		}
 		if resolved.RepoRoot == "" {
 			resolved.RepoRoot = lastContext.RepoRoot
 		}
 		if resolved.Branch == "" {
 			resolved.Branch = lastContext.Branch
-		}
-		if len(recentCommands) == 0 {
-			recentCommands, err = e.store.GetRecentCommandsByCWD(ctx, resolved.CWD, 12)
-			if err != nil {
-				return api.SuggestRequest{}, nil, db.CommandContext{}, err
-			}
 		}
 	}
 
@@ -403,7 +459,7 @@ func (e *Engine) resolveInspectContext(ctx context.Context, request api.InspectR
 		recentCommands = []string{}
 	}
 
-	return resolved, recentCommands, lastContext, nil
+	return resolved, recentCommands, lastContext, recentOutputContexts, nil
 }
 
 func inferGitContext(ctx context.Context, cwd string) (string, string) {
@@ -984,4 +1040,37 @@ func max(left, right int) int {
 		return left
 	}
 	return right
+}
+
+func runParallel(tasks ...func() error) error {
+	if len(tasks) == 0 {
+		return nil
+	}
+
+	errs := make(chan error, len(tasks))
+	var wg sync.WaitGroup
+
+	for _, task := range tasks {
+		if task == nil {
+			continue
+		}
+		wg.Add(1)
+		go func(task func() error) {
+			defer wg.Done()
+			if err := task(); err != nil {
+				errs <- err
+			}
+		}(task)
+	}
+
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }

@@ -21,28 +21,39 @@ type retrievalCandidate struct {
 }
 
 func buildRetrievedContext(ctx context.Context, request api.SuggestRequest, historyCandidates []db.CommandCandidate) (api.InspectRetrievedContext, []retrievalCandidate) {
+	result, candidates := buildStaticRetrievedContext(ctx, request)
+	result.HistoryMatches = historyMatchesForCandidates(request.Buffer, historyCandidates)
+	return result, candidates
+}
+
+func buildStaticRetrievedContext(ctx context.Context, request api.SuggestRequest) (api.InspectRetrievedContext, []retrievalCandidate) {
 	result := api.InspectRetrievedContext{
 		CurrentToken: currentToken(request.Buffer),
 	}
 
-	for _, candidate := range historyCandidates {
-		if len(result.HistoryMatches) >= 5 {
-			break
-		}
-		command := CleanSuggestion(request.Buffer, candidate.Command)
-		if command == "" {
-			continue
-		}
-		result.HistoryMatches = append(result.HistoryMatches, command)
-	}
+	var pathMatches []string
+	var pathCandidates []retrievalCandidate
+	var branchMatches []string
+	var branchCandidates []retrievalCandidate
+	var projectTasks []string
 
-	pathMatches, pathCandidates := retrievePathMatches(request)
+	_ = runParallel(
+		func() error {
+			pathMatches, pathCandidates = retrievePathMatches(request)
+			return nil
+		},
+		func() error {
+			branchMatches, branchCandidates = retrieveGitBranchMatches(ctx, request)
+			return nil
+		},
+		func() error {
+			projectTasks = loadProjectTasks(request.CWD, request.RepoRoot)
+			return nil
+		},
+	)
+
 	result.PathMatches = pathMatches
-
-	branchMatches, branchCandidates := retrieveGitBranchMatches(ctx, request)
 	result.GitBranchMatches = branchMatches
-
-	projectTasks := loadProjectTasks(request.CWD, request.RepoRoot)
 	result.ProjectTasks = projectTasks
 
 	taskMatches, taskCandidates := retrieveProjectTaskMatches(request.Buffer, projectTasks)
@@ -53,6 +64,21 @@ func buildRetrievedContext(ctx context.Context, request api.SuggestRequest, hist
 	candidates = append(candidates, branchCandidates...)
 	candidates = append(candidates, taskCandidates...)
 	return result, candidates
+}
+
+func historyMatchesForCandidates(buffer string, historyCandidates []db.CommandCandidate) []string {
+	result := make([]string, 0, min(len(historyCandidates), 5))
+	for _, candidate := range historyCandidates {
+		if len(result) >= 5 {
+			break
+		}
+		command := CleanSuggestion(buffer, candidate.Command)
+		if command == "" {
+			continue
+		}
+		result = append(result, command)
+	}
+	return result
 }
 
 func retrievePathMatches(request api.SuggestRequest) ([]string, []retrievalCandidate) {
