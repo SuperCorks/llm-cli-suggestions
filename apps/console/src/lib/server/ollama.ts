@@ -20,6 +20,37 @@ type OllamaShowResponse = {
   };
 };
 
+type OllamaPsResponse = {
+  models?: Array<{
+    name?: string;
+    model?: string;
+    size?: number;
+    size_vram?: number;
+  }>;
+};
+
+function normalizeModelName(name: string) {
+  const trimmed = name.trim().toLowerCase();
+  if (!trimmed) {
+    return "";
+  }
+  return trimmed.endsWith(":latest") ? trimmed.slice(0, -7) : trimmed;
+}
+
+const DEFAULT_SUPPLEMENTAL_LIBRARY_FAMILIES = [
+  "gemma3",
+  "qwen3-coder",
+  "qwen3-coder-next",
+];
+
+function isRemoteOnlyModelName(name: string) {
+	return name.endsWith(":cloud") || /-cloud$/i.test(name);
+}
+
+function localCapabilities(capabilities: string[]) {
+	return capabilities.filter((capability) => capability !== "cloud");
+}
+
 function uniqueSortedModels(models: OllamaModelOption[]) {
   const deduped = new Map<string, OllamaModelOption>();
   for (const model of models) {
@@ -30,6 +61,11 @@ function uniqueSortedModels(models: OllamaModelOption[]) {
     }
 
     if (!existing.installed && model.installed) {
+      deduped.set(model.name, model);
+      continue;
+    }
+
+    if (existing.remoteOnly && !model.remoteOnly) {
       deduped.set(model.name, model);
     }
   }
@@ -93,15 +129,6 @@ function parseLibraryModels(html: string): OllamaModelOption[] {
       .map((match) => match[1]?.trim().toLowerCase() || "")
       .filter(Boolean);
 
-    const isCloudModel =
-      capabilities.includes("cloud") ||
-      />\s*cloud\s*<\/span>/i.test(block) ||
-      name.endsWith(":cloud");
-
-    if (isCloudModel) {
-      continue;
-    }
-
     const sizes = Array.from(
       block.matchAll(/<span[^>]*x-test-size[^>]*>([^<]+)<\/span>/gi),
     )
@@ -110,13 +137,31 @@ function parseLibraryModels(html: string): OllamaModelOption[] {
 
     if (sizes.length > 0) {
       for (const size of sizes) {
+        const remoteOnly = size === "cloud" || size.endsWith("-cloud");
         models.push({
           name: `${name}:${size}`,
           installed: false,
           source: "library",
-          capabilities,
+          capabilities: localCapabilities(capabilities),
+          remoteOnly,
         });
       }
+      continue;
+    }
+
+    const isCloudOnlyFamily =
+      capabilities.includes("cloud") ||
+      />\s*cloud\s*<\/span>/i.test(block) ||
+      name.endsWith(":cloud");
+
+    if (isCloudOnlyFamily) {
+      models.push({
+        name: `${name}:cloud`,
+        installed: false,
+        source: "library",
+        capabilities: localCapabilities(capabilities),
+        remoteOnly: true,
+      });
       continue;
     }
 
@@ -124,10 +169,23 @@ function parseLibraryModels(html: string): OllamaModelOption[] {
       name,
       installed: false,
       source: "library",
-      capabilities,
+      capabilities: localCapabilities(capabilities),
+      remoteOnly: false,
     });
   }
   return models;
+}
+
+function supplementalLibraryFamilies() {
+  const configuredFamilies = process.env.LAC_OLLAMA_LIBRARY_FAMILY_PAGES;
+  const families = configuredFamilies
+    ? configuredFamilies
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean)
+    : DEFAULT_SUPPLEMENTAL_LIBRARY_FAMILIES;
+
+  return Array.from(new Set(families));
 }
 
 function escapeRegExp(value: string) {
@@ -142,19 +200,21 @@ function parseSupplementalFamilyVariants(
   const models: OllamaModelOption[] = [];
   const seen = new Set<string>();
   const escapedFamily = escapeRegExp(family);
-  const commandPattern = new RegExp(
-    `ollama\\s+run\\s+(${escapedFamily}:[a-z0-9][a-z0-9._-]*)`,
-    "gi",
+  const tagPattern = new RegExp(
+    `href="\\/library\\/(${escapedFamily}:[A-Za-z0-9][A-Za-z0-9._:-]*)"`,
+    "g",
   );
 
-  for (const match of html.matchAll(commandPattern)) {
-    const name = match[1]?.trim().toLowerCase();
+  for (const match of html.matchAll(tagPattern)) {
+    const rawName = match[1]?.trim();
+    const name = rawName === `${family}:latest` ? family : rawName;
     if (!name || seen.has(name)) {
       continue;
     }
 
-    const tag = name.slice(family.length + 1);
-    if (!tag || tag === "latest" || tag.endsWith("-cloud") || tag === "cloud") {
+    const tag = rawName?.slice(family.length + 1) || "";
+    const normalizedTag = tag.toLowerCase();
+    if (!tag) {
       continue;
     }
 
@@ -163,7 +223,8 @@ function parseSupplementalFamilyVariants(
       name,
       installed: false,
       source: "library",
-      capabilities,
+      capabilities: localCapabilities(capabilities),
+      remoteOnly: normalizedTag.endsWith("-cloud") || normalizedTag === "cloud",
     });
   }
 
@@ -197,6 +258,7 @@ async function fetchLibraryModels(): Promise<OllamaModelOption[]> {
         installed: false,
         source: "library" as const,
         capabilities: [],
+        remoteOnly: isRemoteOnlyModelName(name),
       }));
   }
 
@@ -209,15 +271,30 @@ async function fetchLibraryModels(): Promise<OllamaModelOption[]> {
   }
 
   const models = parseLibraryModels(await response.text());
-  const gemma3Capabilities =
-    models.find((model) => model.name.startsWith("gemma3:"))?.capabilities || [];
+  const capabilitiesByFamily = new Map<string, string[]>();
+  for (const model of models) {
+    const family = model.name.split(":", 1)[0];
+    if (!family || capabilitiesByFamily.has(family)) {
+      continue;
+    }
+    capabilitiesByFamily.set(family, model.capabilities || []);
+  }
 
   try {
-    const supplementalGemma3Models = await fetchSupplementalFamilyVariants(
-      "gemma3",
-      gemma3Capabilities,
+    const supplementalResults = await Promise.allSettled(
+      supplementalLibraryFamilies().map((family) =>
+        fetchSupplementalFamilyVariants(
+          family,
+          capabilitiesByFamily.get(family) || [],
+        ),
+      ),
     );
-    return uniqueSortedModels([...models, ...supplementalGemma3Models]);
+
+    const supplementalModels = supplementalResults.flatMap((result) =>
+      result.status === "fulfilled" ? result.value : [],
+    );
+
+    return uniqueSortedModels([...models, ...supplementalModels]);
   } catch {
     return models;
   }
@@ -264,11 +341,14 @@ export async function listAvailableOllamaModels(baseUrl: string) {
 
   const installedModels = installedResult.status === "fulfilled" ? installedResult.value : [];
   const libraryModels = libraryResult.status === "fulfilled" ? libraryResult.value : [];
+  const downloadableLibraryModels = libraryModels.filter((model) => !model.remoteOnly);
+  const remoteLibraryModels = libraryModels.filter((model) => model.remoteOnly);
 
   return {
     models: uniqueSortedModels([...installedModels, ...libraryModels]),
     installedCount: installedModels.length,
-    libraryCount: libraryModels.length,
+    libraryCount: downloadableLibraryModels.length,
+    remoteLibraryCount: remoteLibraryModels.length,
     installedError:
       installedResult.status === "rejected" ? installedResult.reason instanceof Error ? installedResult.reason.message : "Unable to load local models" : "",
     libraryError:
@@ -276,7 +356,54 @@ export async function listAvailableOllamaModels(baseUrl: string) {
   };
 }
 
-export async function removeOllamaModel(baseUrl: string, model: string) {
+export function isRemoteLibraryModelName(name: string) {
+	return isRemoteOnlyModelName(name.trim().toLowerCase());
+}
+
+export async function getLoadedOllamaModelUsage(baseUrl: string, activeModelName: string) {
+  const normalizedActiveName = normalizeModelName(activeModelName);
+  if (!normalizedActiveName) {
+    return {
+      modelLoadedBytes: null,
+      modelVramBytes: null,
+      modelName: null,
+    };
+  }
+
+  try {
+    const response = await fetch(`${normalizeBaseUrl(baseUrl)}/api/ps`, {
+      signal: AbortSignal.timeout(2_000),
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      throw new Error(`ollama ps request failed with ${response.status}`);
+    }
+
+    const parsed = (await response.json()) as OllamaPsResponse;
+    const match = (parsed.models || []).find((model) => {
+      const candidateName = model.name || model.model || "";
+      return normalizeModelName(candidateName) === normalizedActiveName;
+    });
+
+    return {
+      modelLoadedBytes:
+        typeof match?.size === "number" && Number.isFinite(match.size) ? match.size : null,
+      modelVramBytes:
+        typeof match?.size_vram === "number" && Number.isFinite(match.size_vram)
+          ? match.size_vram
+          : null,
+      modelName: match?.name || match?.model || null,
+    };
+  } catch {
+    return {
+      modelLoadedBytes: null,
+      modelVramBytes: null,
+      modelName: null,
+    };
+  }
+}
+
+export async function removeOllamaModel(baseUrl: string, model: string, signal?: AbortSignal) {
   const response = await fetch(`${normalizeBaseUrl(baseUrl)}/api/delete`, {
     method: "DELETE",
     headers: {
@@ -286,6 +413,7 @@ export async function removeOllamaModel(baseUrl: string, model: string) {
       model,
     }),
     cache: "no-store",
+    signal,
   });
 
   if (!response.ok) {

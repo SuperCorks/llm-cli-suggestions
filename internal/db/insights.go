@@ -33,6 +33,17 @@ type RecentOutputContext struct {
 	FinishedAtMS  int64
 }
 
+type RecentCommandContext struct {
+	CWD           string
+	RepoRoot      string
+	Branch        string
+	ExitCode      int
+	Command       string
+	StdoutExcerpt string
+	StderrExcerpt string
+	FinishedAtMS  int64
+}
+
 type Summary struct {
 	SessionCount        int
 	CommandCount        int
@@ -201,6 +212,130 @@ func (s *Store) GetRecentOutputContexts(ctx context.Context, sessionID string, l
 			&row.FinishedAtMS,
 		); err != nil {
 			return nil, fmt.Errorf("scan recent output context: %w", err)
+		}
+		results = append(results, row)
+	}
+
+	return results, rows.Err()
+}
+
+func (s *Store) GetRecentCommandContexts(ctx context.Context, sessionID string, limit int) ([]RecentCommandContext, error) {
+	if sessionID == "" || limit <= 0 {
+		return []RecentCommandContext{}, nil
+	}
+
+	rows, err := s.db.QueryContext(
+		ctx,
+		`SELECT cwd, repo_root, branch, exit_code, command_text, stdout_excerpt, stderr_excerpt, finished_at_ms
+		 FROM commands
+		 WHERE session_id = ?
+		 ORDER BY finished_at_ms DESC
+		 LIMIT ?`,
+		sessionID,
+		limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query recent command contexts: %w", err)
+	}
+	defer rows.Close()
+
+	var results []RecentCommandContext
+	for rows.Next() {
+		var row RecentCommandContext
+		if err := rows.Scan(
+			&row.CWD,
+			&row.RepoRoot,
+			&row.Branch,
+			&row.ExitCode,
+			&row.Command,
+			&row.StdoutExcerpt,
+			&row.StderrExcerpt,
+			&row.FinishedAtMS,
+		); err != nil {
+			return nil, fmt.Errorf("scan recent command context: %w", err)
+		}
+		results = append(results, row)
+	}
+
+	return results, rows.Err()
+}
+
+func (s *Store) GetRecentCommandContextsByCWD(ctx context.Context, cwd string, limit int) ([]RecentCommandContext, error) {
+	if strings.TrimSpace(cwd) == "" || limit <= 0 {
+		return []RecentCommandContext{}, nil
+	}
+
+	rows, err := s.db.QueryContext(
+		ctx,
+		`SELECT cwd, repo_root, branch, exit_code, command_text, stdout_excerpt, stderr_excerpt, finished_at_ms
+		 FROM commands
+		 WHERE cwd = ?
+		 ORDER BY finished_at_ms DESC
+		 LIMIT ?`,
+		cwd,
+		limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query recent command contexts by cwd: %w", err)
+	}
+	defer rows.Close()
+
+	var results []RecentCommandContext
+	for rows.Next() {
+		var row RecentCommandContext
+		if err := rows.Scan(
+			&row.CWD,
+			&row.RepoRoot,
+			&row.Branch,
+			&row.ExitCode,
+			&row.Command,
+			&row.StdoutExcerpt,
+			&row.StderrExcerpt,
+			&row.FinishedAtMS,
+		); err != nil {
+			return nil, fmt.Errorf("scan recent command context by cwd: %w", err)
+		}
+		results = append(results, row)
+	}
+
+	return results, rows.Err()
+}
+
+func (s *Store) GetRecentOutputContextsByCWD(ctx context.Context, cwd string, limit int) ([]RecentOutputContext, error) {
+	if strings.TrimSpace(cwd) == "" || limit <= 0 {
+		return []RecentOutputContext{}, nil
+	}
+
+	rows, err := s.db.QueryContext(
+		ctx,
+		`SELECT cwd, repo_root, branch, exit_code, command_text, stdout_excerpt, stderr_excerpt, finished_at_ms
+		 FROM commands
+		 WHERE cwd = ?
+		   AND (stdout_excerpt <> '' OR stderr_excerpt <> '')
+		 ORDER BY finished_at_ms DESC
+		 LIMIT ?`,
+		cwd,
+		limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query recent output contexts by cwd: %w", err)
+	}
+	defer rows.Close()
+
+	var results []RecentOutputContext
+	for rows.Next() {
+		var row RecentOutputContext
+		if err := rows.Scan(
+			&row.CWD,
+			&row.RepoRoot,
+			&row.Branch,
+			&row.ExitCode,
+			&row.Command,
+			&row.StdoutExcerpt,
+			&row.StderrExcerpt,
+			&row.FinishedAtMS,
+		); err != nil {
+			return nil, fmt.Errorf("scan recent output context by cwd: %w", err)
 		}
 		results = append(results, row)
 	}

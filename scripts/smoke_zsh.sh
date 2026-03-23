@@ -72,6 +72,16 @@ script -q /dev/null zsh -dfi -c '
   _lac_precmd
   sleep 0.3
 
+  _lac_preexec "npm run dev"
+  true
+  _lac_precmd
+  sleep 0.3
+
+  _lac_preexec "npm run"
+  true
+  _lac_precmd
+  sleep 0.3
+
   BUFFER="git st"
   CURSOR=${#BUFFER}
   _lac_refresh_suggestion_sync
@@ -124,9 +134,31 @@ script -q /dev/null zsh -dfi -c '
   lac-capture printf "hello\n" >/dev/null
   _lac_precmd
   sleep 0.3
+
+  BUFFER="npm"
+  CURSOR=${#BUFFER}
+  _lac_refresh_suggestion_sync
+  [[ "$LAC_SUGGESTION" == "npm run" ]] || {
+    print -u2 -- "expected npm run suggestion, got: $LAC_SUGGESTION"
+    return 1
+  }
+
+  function _lac_schedule_suggestion() {
+    _lac_refresh_suggestion_sync
+  }
+
+  lac-accept-or-complete
+  [[ "$BUFFER" == "npm run" ]] || {
+    print -u2 -- "expected accept widget to populate chained buffer, got: $BUFFER"
+    return 1
+  }
+  [[ "$LAC_SUGGESTION" == "npm run dev" ]] || {
+    print -u2 -- "expected follow-up suggestion after accept, got: $LAC_SUGGESTION"
+    return 1
+  }
 '
 
-commands_count="$(sqlite3 "$DB_PATH" "select count(*) from commands where command_text in ('git status','git stash');")"
+commands_count="$(sqlite3 "$DB_PATH" "select count(*) from commands where command_text in ('git status','git stash','npm run','npm run dev');")"
 accepted_count="$(sqlite3 "$DB_PATH" "select count(*) from feedback_events where event_type = 'accepted' and accepted_command = 'git status';")"
 rejected_count="$(sqlite3 "$DB_PATH" "select count(*) from feedback_events where event_type = 'rejected' and actual_command = 'git stash';")"
 suggestions_count="$(sqlite3 "$DB_PATH" "select count(*) from suggestions where suggestion_text = 'git status';")"

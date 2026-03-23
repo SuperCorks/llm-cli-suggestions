@@ -8,7 +8,7 @@ import { ModelPicker } from "@/components/model-picker";
 import { PathHoverActions } from "@/components/path-hover-actions";
 import { SuggestStrategyField } from "@/components/suggest-strategy-field";
 import { useJsonEventStream, type LiveStreamStatus } from "@/components/use-json-event-stream";
-import { formatTimestamp } from "@/lib/format";
+import { formatBytes, formatTimestamp } from "@/lib/format";
 import type {
   ClearDataset,
   OllamaInstallJob,
@@ -22,11 +22,42 @@ interface DaemonConsoleProps {
   initialAvailableModels: OllamaModelOption[];
 }
 
+type LastSeenModelMemory = {
+  modelLoadedBytes: number | null;
+  modelVramBytes: number | null;
+  totalTrackedBytes: number | null;
+  observedAtMs: number;
+};
+
 const CONFIRMATIONS: Record<ClearDataset, string> = {
   suggestions: "DELETE_SUGGESTIONS",
   feedback: "DELETE_FEEDBACK",
   benchmarks: "DELETE_BENCHMARKS",
 };
+const LAST_SEEN_MEMORY_STORAGE_KEY = "lac-daemon-last-seen-memory-v1";
+const DEFAULT_MODEL_KEEP_ALIVE = "5m";
+
+function normalizeModelMemoryKey(modelName: string) {
+  return modelName.trim().toLowerCase();
+}
+
+function readLastSeenModelMemory() {
+  if (typeof window === "undefined") {
+    return {} as Record<string, LastSeenModelMemory>;
+  }
+
+  try {
+    const raw = window.localStorage.getItem(LAST_SEEN_MEMORY_STORAGE_KEY);
+    if (!raw) {
+      return {} as Record<string, LastSeenModelMemory>;
+    }
+
+    const parsed = JSON.parse(raw) as Record<string, LastSeenModelMemory>;
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {} as Record<string, LastSeenModelMemory>;
+  }
+}
 
 function formatStreamStatus(status: LiveStreamStatus) {
   if (status === "live") {
@@ -43,6 +74,8 @@ export function DaemonConsole({
   initialLog,
   initialAvailableModels,
 }: DaemonConsoleProps) {
+  const initialModelKeepAlive =
+    initialStatus.settings.modelKeepAlive || DEFAULT_MODEL_KEEP_ALIVE;
   const [status, setStatus] = useState(initialStatus);
   const [observedAtMs, setObservedAtMs] = useState<number | null>(null);
   const [logText, setLogText] = useState(initialLog);
@@ -50,7 +83,9 @@ export function DaemonConsole({
   const [settings, setSettings] = useState({
     LAC_MODEL_NAME: initialStatus.settings.modelName,
     LAC_MODEL_BASE_URL: initialStatus.settings.modelBaseUrl,
+    LAC_MODEL_KEEP_ALIVE: initialModelKeepAlive,
     LAC_SUGGEST_STRATEGY: initialStatus.settings.suggestStrategy,
+    LAC_SYSTEM_PROMPT_STATIC: initialStatus.settings.systemPromptStatic,
     LAC_SOCKET_PATH: initialStatus.settings.socketPath,
     LAC_DB_PATH: initialStatus.settings.dbPath,
     LAC_SUGGEST_TIMEOUT_MS: String(initialStatus.settings.suggestTimeoutMs),
@@ -64,6 +99,7 @@ export function DaemonConsole({
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
+  const [lastSeenMemoryByModel, setLastSeenMemoryByModel] = useState<Record<string, LastSeenModelMemory>>({});
   const [installPrompt, setInstallPrompt] = useState<{
     modelName: string;
     pendingSave: boolean;
@@ -74,6 +110,7 @@ export function DaemonConsole({
   } | null>(null);
   const [logStreamKey, setLogStreamKey] = useState(0);
   const pollTimerRef = useRef<number | null>(null);
+  const runtimeRefreshTimerRef = useRef<number | null>(null);
   const pendingSaveAfterInstallRef = useRef(false);
   const pathRows = [
     { label: "State dir", value: status.settings.stateDir },
@@ -87,6 +124,46 @@ export function DaemonConsole({
       setLogText(payload.log || "");
     },
   );
+  const activeModelLabel = status.memory.modelName || status.health.modelName || status.settings.modelName;
+  const activeModelKey = normalizeModelMemoryKey(activeModelLabel);
+  const lastSeenMemory = activeModelKey ? lastSeenMemoryByModel[activeModelKey] || null : null;
+  const usingLastSeenMemory = status.memory.modelLoadedBytes === null && lastSeenMemory !== null;
+  const displayedModelLoadedBytes =
+    status.memory.modelLoadedBytes !== null
+      ? status.memory.modelLoadedBytes
+      : lastSeenMemory?.modelLoadedBytes ?? null;
+  const displayedModelVramBytes =
+    status.memory.modelVramBytes !== null
+      ? status.memory.modelVramBytes
+      : lastSeenMemory?.modelVramBytes ?? null;
+  const displayedTotalTrackedBytes =
+    status.memory.modelLoadedBytes !== null
+      ? status.memory.totalTrackedBytes
+      : lastSeenMemory?.totalTrackedBytes ?? status.memory.totalTrackedBytes;
+  const modelMemoryText = displayedModelLoadedBytes !== null
+    ? `${formatBytes(displayedModelLoadedBytes)} (${activeModelLabel})`
+    : status.health.ok
+      ? `${activeModelLabel} not currently loaded`
+      : "daemon offline";
+  const modelVramText = displayedModelVramBytes !== null
+    ? formatBytes(displayedModelVramBytes)
+    : status.health.ok
+      ? "model not loaded"
+      : "daemon offline";
+  const totalTrackedText = displayedTotalTrackedBytes !== null
+    ? usingLastSeenMemory
+      ? `${formatBytes(displayedTotalTrackedBytes)} last seen`
+      : status.memory.modelLoadedBytes !== null
+        ? formatBytes(displayedTotalTrackedBytes)
+        : `${formatBytes(displayedTotalTrackedBytes)} (daemon only)`
+    : "n/a";
+  const modelStateText = status.memory.modelLoadedBytes !== null
+    ? "Active now"
+    : lastSeenMemory
+      ? `Inactive - last seen ${formatTimestamp(lastSeenMemory.observedAtMs)}`
+      : status.health.ok
+        ? "Inactive"
+        : "Daemon offline";
 
   function findModelOption(modelName: string) {
     const normalized = modelName.trim();
@@ -112,30 +189,43 @@ export function DaemonConsole({
     setAvailableModels(data.models || []);
   }, []);
 
-  const refreshRuntime = useCallback(async () => {
-    const response = await fetch("/api/runtime");
+  const refreshDaemonLog = useCallback(async () => {
+    const response = await fetch("/api/runtime/log?lines=160", { cache: "no-store" });
+    const data = (await response.json()) as { log?: string; error?: string };
+    if (!response.ok) {
+      throw new Error(data.error || "Unable to refresh daemon log");
+    }
+    setLogText(data.log || "");
+  }, []);
+
+  const refreshRuntime = useCallback(async (syncSettings = true) => {
+    const response = await fetch("/api/runtime", { cache: "no-store" });
     const data = (await response.json()) as RuntimeStatus & { recentLog: string; error?: string };
     if (!response.ok) {
       throw new Error(data.error || "Unable to refresh runtime");
     }
     setStatus(data);
     setObservedAtMs(Date.now());
-    setLogText(data.recentLog);
-    setSettings({
-      LAC_MODEL_NAME: data.settings.modelName,
-      LAC_MODEL_BASE_URL: data.settings.modelBaseUrl,
-      LAC_SUGGEST_STRATEGY: data.settings.suggestStrategy,
-      LAC_SOCKET_PATH: data.settings.socketPath,
-      LAC_DB_PATH: data.settings.dbPath,
-      LAC_SUGGEST_TIMEOUT_MS: String(data.settings.suggestTimeoutMs),
-      LAC_PTY_CAPTURE_ALLOWLIST: data.settings.ptyCaptureAllowlist,
-    });
+    if (syncSettings) {
+      setSettings({
+        LAC_MODEL_NAME: data.settings.modelName,
+        LAC_MODEL_BASE_URL: data.settings.modelBaseUrl,
+        LAC_MODEL_KEEP_ALIVE: data.settings.modelKeepAlive || DEFAULT_MODEL_KEEP_ALIVE,
+        LAC_SUGGEST_STRATEGY: data.settings.suggestStrategy,
+        LAC_SYSTEM_PROMPT_STATIC: data.settings.systemPromptStatic,
+        LAC_SOCKET_PATH: data.settings.socketPath,
+        LAC_DB_PATH: data.settings.dbPath,
+        LAC_SUGGEST_TIMEOUT_MS: String(data.settings.suggestTimeoutMs),
+        LAC_PTY_CAPTURE_ALLOWLIST: data.settings.ptyCaptureAllowlist,
+      });
+    }
     return data;
   }, []);
 
   useEffect(() => {
     let cancelled = false;
     setObservedAtMs(Date.now());
+    setLastSeenMemoryByModel(readLastSeenModelMemory());
 
     async function syncFromRuntime() {
       try {
@@ -154,13 +244,73 @@ export function DaemonConsole({
 
     void syncFromRuntime();
 
+    const refreshStatusOnly = () => {
+      if (document.visibilityState !== "visible") {
+        return;
+      }
+      void refreshRuntime(false).catch((requestError) => {
+        if (!cancelled) {
+          setError(
+            requestError instanceof Error ? requestError.message : "Unable to refresh runtime",
+          );
+        }
+      });
+    };
+
+    runtimeRefreshTimerRef.current = window.setInterval(refreshStatusOnly, 5000);
+    window.addEventListener("focus", refreshStatusOnly);
+    document.addEventListener("visibilitychange", refreshStatusOnly);
+
     return () => {
       cancelled = true;
       if (pollTimerRef.current !== null) {
         window.clearTimeout(pollTimerRef.current);
       }
+      if (runtimeRefreshTimerRef.current !== null) {
+        window.clearInterval(runtimeRefreshTimerRef.current);
+      }
+      window.removeEventListener("focus", refreshStatusOnly);
+      document.removeEventListener("visibilitychange", refreshStatusOnly);
     };
   }, [refreshAvailableModels, refreshRuntime]);
+
+  useEffect(() => {
+    if (!activeModelKey || status.memory.modelLoadedBytes === null) {
+      return;
+    }
+
+    const nextSnapshot: LastSeenModelMemory = {
+      modelLoadedBytes: status.memory.modelLoadedBytes,
+      modelVramBytes: status.memory.modelVramBytes,
+      totalTrackedBytes: status.memory.totalTrackedBytes,
+      observedAtMs: observedAtMs || Date.now(),
+    };
+
+    setLastSeenMemoryByModel((current) => {
+      const existing = current[activeModelKey];
+      if (
+        existing?.modelLoadedBytes === nextSnapshot.modelLoadedBytes &&
+        existing?.modelVramBytes === nextSnapshot.modelVramBytes &&
+        existing?.totalTrackedBytes === nextSnapshot.totalTrackedBytes &&
+        existing?.observedAtMs === nextSnapshot.observedAtMs
+      ) {
+        return current;
+      }
+
+      const next = {
+        ...current,
+        [activeModelKey]: nextSnapshot,
+      };
+
+      try {
+        window.localStorage.setItem(LAST_SEEN_MEMORY_STORAGE_KEY, JSON.stringify(next));
+      } catch {
+        // Ignore persistence failures and keep the in-memory fallback.
+      }
+
+      return next;
+    });
+  }, [activeModelKey, observedAtMs, status.memory.modelLoadedBytes, status.memory.modelVramBytes, status.memory.totalTrackedBytes]);
 
   async function persistSettings(nextMessage = "Runtime settings saved to runtime.env.") {
     const response = await fetch("/api/runtime/settings", {
@@ -453,6 +603,45 @@ export function DaemonConsole({
               />
             </label>
             <label>
+              <span className="label-with-info">
+                Model Keep Alive
+                <span
+                  className="info-bubble"
+                  title="Passed through to Ollama as keep_alive on inference requests. Use values like 5m, 30m, 1h, or 0 to unload immediately after each request."
+                >
+                  <Info aria-hidden="true" />
+                </span>
+              </span>
+              <input
+                value={settings.LAC_MODEL_KEEP_ALIVE || DEFAULT_MODEL_KEEP_ALIVE}
+                onChange={(event) =>
+                  setSettings((current) => ({
+                    ...current,
+                    LAC_MODEL_KEEP_ALIVE: event.target.value,
+                  }))
+                }
+                placeholder="5m"
+              />
+            </label>
+            <label>
+              System Prompt Prefix
+              <textarea
+                value={settings.LAC_SYSTEM_PROMPT_STATIC}
+                onChange={(event) =>
+                  setSettings((current) => ({
+                    ...current,
+                    LAC_SYSTEM_PROMPT_STATIC: event.target.value,
+                  }))
+                }
+                rows={8}
+                placeholder="Optional static instructions prepended ahead of the built-in autosuggestion prompt."
+              />
+            </label>
+            <p className="helper-text">
+              Prepended verbatim before the built-in autosuggestion prompt on new daemon requests.
+              Save settings to persist it to runtime.env and restart the daemon.
+            </p>
+            <label>
               Socket Path
               <PathHoverActions
                 pathValue={settings.LAC_SOCKET_PATH}
@@ -539,6 +728,34 @@ export function DaemonConsole({
               <dd>{status.pid || "offline"}</dd>
             </div>
             <div>
+              <dt>Daemon RSS</dt>
+              <dd>{formatBytes(status.memory.daemonRssBytes)}</dd>
+            </div>
+            <div>
+              <dt>Model Memory</dt>
+              <dd className={usingLastSeenMemory ? "memory-value memory-value-stale" : "memory-value"}>
+                <span>{modelMemoryText}</span>
+              </dd>
+            </div>
+            <div>
+              <dt>Model VRAM</dt>
+              <dd className={usingLastSeenMemory ? "memory-value memory-value-stale" : "memory-value"}>
+                <span>{modelVramText}</span>
+              </dd>
+            </div>
+            <div>
+              <dt>Total Tracked</dt>
+              <dd className={usingLastSeenMemory ? "memory-value memory-value-stale" : "memory-value"}>
+                <span>{totalTrackedText}</span>
+              </dd>
+            </div>
+            <div>
+              <dt>Model State</dt>
+              <dd className={usingLastSeenMemory ? "memory-value memory-value-stale" : "memory-value memory-value-status"}>
+                <span>{modelStateText}</span>
+              </dd>
+            </div>
+            <div>
               <dt>Observed</dt>
               <dd>{observedAtMs ? formatTimestamp(observedAtMs) : "Waiting for client sync..."}</dd>
             </div>
@@ -558,7 +775,7 @@ export function DaemonConsole({
               className="button-secondary"
               onClick={() => {
                 setLogStreamKey((current) => current + 1);
-                void refreshRuntime();
+                void refreshDaemonLog();
               }}
             >
               Refresh Log

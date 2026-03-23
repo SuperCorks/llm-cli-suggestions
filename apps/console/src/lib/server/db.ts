@@ -5,6 +5,7 @@ import Database from "better-sqlite3";
 import { ensureStateDirs, getResolvedRuntimeSettings } from "@/lib/server/config";
 
 let database: Database.Database | null = null;
+let databasePath = "";
 
 function hasTable(db: Database.Database, tableName: string) {
   return Boolean(
@@ -83,13 +84,17 @@ function ensureConsoleTables(db: Database.Database) {
 }
 
 export function getDb() {
-  if (database) {
+  const settings = getResolvedRuntimeSettings();
+  if (database && databasePath === settings.dbPath) {
     return database;
   }
 
   ensureStateDirs();
-  const settings = getResolvedRuntimeSettings();
+  if (database) {
+    database.close();
+  }
   database = new Database(settings.dbPath);
+  databasePath = settings.dbPath;
   database.pragma("journal_mode = WAL");
   ensureConsoleTables(database);
   return database;

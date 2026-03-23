@@ -823,7 +823,7 @@ lac-accept-or-complete() {
     BUFFER="$accepted_command"
     CURSOR=${#BUFFER}
     _lac_feedback "accepted" "$accepted_command" ""
-    _lac_clear_suggestion
+    _lac_after_buffer_change
     zle redisplay
     return 0
   fi

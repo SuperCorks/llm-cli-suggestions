@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"sort"
@@ -19,12 +20,14 @@ import (
 )
 
 type Engine struct {
-	store           *db.Store
-	modelClient     model.Client
-	modelName       string
-	modelBaseURL    string
-	suggestStrategy string
-	suggestTimeout  time.Duration
+	store              *db.Store
+	modelClient        model.Client
+	modelName          string
+	modelBaseURL       string
+	modelKeepAlive     string
+	suggestStrategy    string
+	systemPromptStatic string
+	suggestTimeout     time.Duration
 }
 
 type rankedCandidate struct {
@@ -51,17 +54,26 @@ const (
 	recentOutputFetchLimit  = 20
 	recentOutputSelectLimit = 3
 	recentOutputPromptLimit = 220
+	minimumInspectTimeout   = 10 * time.Second
 )
 
-func New(store *db.Store, modelClient model.Client, modelName, modelBaseURL, suggestStrategy string, suggestTimeout time.Duration) *Engine {
+func New(store *db.Store, modelClient model.Client, modelName, modelBaseURL, modelKeepAlive, suggestStrategy string, suggestTimeout time.Duration) *Engine {
 	return &Engine{
-		store:           store,
-		modelClient:     modelClient,
-		modelName:       modelName,
-		modelBaseURL:    modelBaseURL,
-		suggestStrategy: config.NormalizeSuggestStrategy(suggestStrategy),
-		suggestTimeout:  suggestTimeout,
+		store:              store,
+		modelClient:        modelClient,
+		modelName:          modelName,
+		modelBaseURL:       modelBaseURL,
+		modelKeepAlive:     modelKeepAlive,
+		suggestStrategy:    config.NormalizeSuggestStrategy(suggestStrategy),
+		systemPromptStatic: "",
+		suggestTimeout:     suggestTimeout,
 	}
+}
+
+func NewWithSystemPrompt(store *db.Store, modelClient model.Client, modelName, modelBaseURL, modelKeepAlive, suggestStrategy, systemPromptStatic string, suggestTimeout time.Duration) *Engine {
+	engine := New(store, modelClient, modelName, modelBaseURL, modelKeepAlive, suggestStrategy, suggestTimeout)
+	engine.systemPromptStatic = systemPromptStatic
+	return engine
 }
 
 func (e *Engine) Suggest(ctx context.Context, request api.SuggestRequest) (api.SuggestResponse, error) {
@@ -86,7 +98,7 @@ func (e *Engine) Suggest(ctx context.Context, request api.SuggestRequest) (api.S
 		RecentCommands: recentCommands,
 		Strategy:       request.Strategy,
 		Limit:          8,
-	})
+	}, e.suggestTimeout)
 	if err != nil {
 		return api.SuggestResponse{}, err
 	}
@@ -114,14 +126,19 @@ func (e *Engine) Suggest(ctx context.Context, request api.SuggestRequest) (api.S
 }
 
 func (e *Engine) Inspect(ctx context.Context, request api.InspectRequest) (api.InspectResponse, error) {
-	result, err := e.inspectDetailed(ctx, request)
+	inspectTimeout := e.suggestTimeout
+	if inspectTimeout < minimumInspectTimeout {
+		inspectTimeout = minimumInspectTimeout
+	}
+
+	result, err := e.inspectDetailed(ctx, request, inspectTimeout)
 	if err != nil {
 		return api.InspectResponse{}, err
 	}
 	return result.response, nil
 }
 
-func (e *Engine) inspectDetailed(ctx context.Context, request api.InspectRequest) (inspectResult, error) {
+func (e *Engine) inspectDetailed(ctx context.Context, request api.InspectRequest, modelTimeout time.Duration) (inspectResult, error) {
 	if err := e.store.EnsureSession(ctx, request.SessionID); err != nil {
 		return inspectResult{}, err
 	}
@@ -136,7 +153,7 @@ func (e *Engine) inspectDetailed(ctx context.Context, request api.InspectRequest
 		limit = 8
 	}
 
-	resolvedSuggestRequest, recentCommands, lastContext, recentOutputContexts, err := e.resolveInspectContext(ctx, request)
+	resolvedSuggestRequest, recentCommands, lastContext, lastCommandContexts, recentOutputContexts, err := e.resolveInspectContext(ctx, request)
 	if err != nil {
 		return inspectResult{}, err
 	}
@@ -144,9 +161,11 @@ func (e *Engine) inspectDetailed(ctx context.Context, request api.InspectRequest
 
 	candidateMap := map[string]*rankedCandidate{}
 	historyCandidates := []db.CommandCandidate{}
-	strategy := config.NormalizeSuggestStrategy(request.Strategy)
+	strategy := strings.TrimSpace(request.Strategy)
 	if strategy == "" {
 		strategy = e.suggestStrategy
+	} else {
+		strategy = config.NormalizeSuggestStrategy(strategy)
 	}
 	useHistory := strategy != config.SuggestStrategyModelOnly
 	useModel := strategy != config.SuggestStrategyHistoryOnly
@@ -228,10 +247,12 @@ func (e *Engine) inspectDetailed(ctx context.Context, request api.InspectRequest
 
 	initialCandidates := sortedCandidates(candidateMap)
 	historyTrusted := useHistory && len(initialCandidates) > 0 && shouldTrustHistory(initialCandidates)
-	prompt := BuildPrompt(resolvedSuggestRequest, recentCommands, lastContext, selectedRecentOutput, retrievedContext)
+	inspectLastCommandContext := toInspectCommandContexts(lastCommandContexts)
+	prompt := BuildPrompt(e.systemPromptStatic, resolvedSuggestRequest, recentCommands, lastContext, inspectLastCommandContext, selectedRecentOutput, retrievedContext)
 
 	rawModelOutput := ""
 	cleanedModelOutput := ""
+	modelError := ""
 	activeModelName := e.modelName
 
 	if useModel && (strategy == config.SuggestStrategyModelOnly || !historyTrusted) {
@@ -241,12 +262,12 @@ func (e *Engine) inspectDetailed(ctx context.Context, request api.InspectRequest
 			if baseURL == "" {
 				baseURL = e.modelBaseURL
 			}
-			modelClient = ollama.New(baseURL, request.ModelName)
+			modelClient = ollama.New(baseURL, request.ModelName, e.modelKeepAlive)
 			activeModelName = request.ModelName
 		}
 
 		if modelClient != nil {
-			modelCtx, cancel := context.WithTimeout(ctx, e.suggestTimeout)
+			modelCtx, cancel := context.WithTimeout(ctx, modelTimeout)
 			startedAt := time.Now()
 			rawSuggestion, modelErr := modelClient.Suggest(modelCtx, prompt)
 			cancel()
@@ -268,7 +289,13 @@ func (e *Engine) inspectDetailed(ctx context.Context, request api.InspectRequest
 					candidate.LatencyMS = time.Since(startedAt).Milliseconds()
 					candidate.ModelScore = scoreModelCandidate(cleanedModelOutput, resolvedSuggestRequest, recentCommands, lastContext)
 					candidate.Score = max(candidate.Score, candidate.ModelScore)
+				} else if strings.TrimSpace(rawSuggestion) == "" {
+					modelError = fmt.Sprintf("%s returned an empty response.", activeModelName)
+				} else {
+					modelError = fmt.Sprintf("%s returned output that did not start with the current buffer %q.", activeModelName, buffer)
 				}
+			} else {
+				modelError = formatInspectModelError(activeModelName, modelTimeout, modelErr)
 			}
 		}
 	}
@@ -277,6 +304,7 @@ func (e *Engine) inspectDetailed(ctx context.Context, request api.InspectRequest
 		return inspectResult{response: api.InspectResponse{
 			ModelName:           activeModelName,
 			HistoryTrusted:      historyTrusted,
+			ModelError:          modelError,
 			Prompt:              prompt,
 			RawModelOutput:      rawModelOutput,
 			CleanedModelOutput:  cleanedModelOutput,
@@ -284,6 +312,7 @@ func (e *Engine) inspectDetailed(ctx context.Context, request api.InspectRequest
 			LastCommand:         lastContext.Command,
 			LastStdoutExcerpt:   lastContext.StdoutExcerpt,
 			LastStderrExcerpt:   lastContext.StderrExcerpt,
+			LastCommandContext:  inspectLastCommandContext,
 			RecentOutputContext: selectedRecentOutput,
 			RetrievedContext:    retrievedContext,
 			Candidates:          []api.InspectCandidate{},
@@ -336,6 +365,7 @@ func (e *Engine) inspectDetailed(ctx context.Context, request api.InspectRequest
 	response := api.InspectResponse{
 		ModelName:           activeModelName,
 		HistoryTrusted:      historyTrusted,
+		ModelError:          modelError,
 		Prompt:              prompt,
 		RawModelOutput:      rawModelOutput,
 		CleanedModelOutput:  cleanedModelOutput,
@@ -343,6 +373,7 @@ func (e *Engine) inspectDetailed(ctx context.Context, request api.InspectRequest
 		LastCommand:         lastContext.Command,
 		LastStdoutExcerpt:   lastContext.StdoutExcerpt,
 		LastStderrExcerpt:   lastContext.StderrExcerpt,
+		LastCommandContext:  inspectLastCommandContext,
 		RecentOutputContext: selectedRecentOutput,
 		RetrievedContext:    retrievedContext,
 		Candidates:          inspectCandidates,
@@ -353,7 +384,7 @@ func (e *Engine) inspectDetailed(ctx context.Context, request api.InspectRequest
 	return inspectResult{response: response, resolvedRequest: resolvedSuggestRequest}, nil
 }
 
-func (e *Engine) resolveInspectContext(ctx context.Context, request api.InspectRequest) (api.SuggestRequest, []string, db.CommandContext, []db.RecentOutputContext, error) {
+func (e *Engine) resolveInspectContext(ctx context.Context, request api.InspectRequest) (api.SuggestRequest, []string, db.CommandContext, []db.RecentCommandContext, []db.RecentOutputContext, error) {
 	resolved := api.SuggestRequest{
 		SessionID: request.SessionID,
 		Buffer:    request.Buffer,
@@ -364,6 +395,7 @@ func (e *Engine) resolveInspectContext(ctx context.Context, request api.InspectR
 	}
 	recentCommands := request.RecentCommands
 	lastContext := db.CommandContext{}
+	lastCommandContexts := []db.RecentCommandContext{}
 	recentOutputContexts := []db.RecentOutputContext{}
 
 	if request.SessionID != "" {
@@ -395,11 +427,24 @@ func (e *Engine) resolveInspectContext(ctx context.Context, request api.InspectR
 				recentOutputContexts = outputs
 				return nil
 			},
+			func() error {
+				contexts, queryErr := e.store.GetRecentCommandContexts(ctx, request.SessionID, 3)
+				if queryErr != nil {
+					return queryErr
+				}
+				lastCommandContexts = contexts
+				return nil
+			},
 		); err != nil {
-			return api.SuggestRequest{}, nil, db.CommandContext{}, nil, err
+			return api.SuggestRequest{}, nil, db.CommandContext{}, nil, nil, err
 		}
 		if resolved.CWD == "" {
 			resolved.CWD = lastContext.CWD
+		}
+		if resolved.CWD != "" {
+			if err := e.fillContextGapsFromCWD(ctx, resolved.CWD, &recentCommands, &lastContext, &lastCommandContexts, &recentOutputContexts); err != nil {
+				return api.SuggestRequest{}, nil, db.CommandContext{}, nil, nil, err
+			}
 		}
 		if resolved.RepoRoot == "" {
 			resolved.RepoRoot = lastContext.RepoRoot
@@ -428,8 +473,27 @@ func (e *Engine) resolveInspectContext(ctx context.Context, request api.InspectR
 				recentCommands = commands
 				return nil
 			},
+			func() error {
+				outputs, queryErr := e.store.GetRecentOutputContextsByCWD(ctx, resolved.CWD, recentOutputFetchLimit)
+				if queryErr != nil {
+					return queryErr
+				}
+				recentOutputContexts = outputs
+				return nil
+			},
+			func() error {
+				contexts, queryErr := e.store.GetRecentCommandContextsByCWD(ctx, resolved.CWD, 3)
+				if queryErr != nil {
+					return queryErr
+				}
+				lastCommandContexts = contexts
+				return nil
+			},
 		); err != nil {
-			return api.SuggestRequest{}, nil, db.CommandContext{}, nil, err
+			return api.SuggestRequest{}, nil, db.CommandContext{}, nil, nil, err
+		}
+		if isZeroCommandContext(lastContext) && len(lastCommandContexts) > 0 {
+			lastContext = commandContextFromRecent(lastCommandContexts[0])
 		}
 		if resolved.RepoRoot == "" {
 			resolved.RepoRoot = lastContext.RepoRoot
@@ -459,7 +523,117 @@ func (e *Engine) resolveInspectContext(ctx context.Context, request api.InspectR
 		recentCommands = []string{}
 	}
 
-	return resolved, recentCommands, lastContext, recentOutputContexts, nil
+	return resolved, recentCommands, lastContext, lastCommandContexts, recentOutputContexts, nil
+}
+
+func (e *Engine) fillContextGapsFromCWD(
+	ctx context.Context,
+	cwd string,
+	recentCommands *[]string,
+	lastContext *db.CommandContext,
+	lastCommandContexts *[]db.RecentCommandContext,
+	recentOutputContexts *[]db.RecentOutputContext,
+) error {
+	if strings.TrimSpace(cwd) == "" {
+		return nil
+	}
+	if len(*recentCommands) != 0 && !isZeroCommandContext(*lastContext) && len(*lastCommandContexts) != 0 && len(*recentOutputContexts) != 0 {
+		return nil
+	}
+
+	var cwdCommands []string
+	var cwdContext db.CommandContext
+	var cwdCommandContexts []db.RecentCommandContext
+	var cwdOutputContexts []db.RecentOutputContext
+
+	if err := runParallel(
+		func() error {
+			if len(*recentCommands) != 0 {
+				return nil
+			}
+			commands, queryErr := e.store.GetRecentCommandsByCWD(ctx, cwd, 12)
+			if queryErr != nil {
+				return queryErr
+			}
+			cwdCommands = commands
+			return nil
+		},
+		func() error {
+			if !isZeroCommandContext(*lastContext) {
+				return nil
+			}
+			contextValue, queryErr := e.store.GetLastCommandContextByCWD(ctx, cwd)
+			if queryErr != nil {
+				return queryErr
+			}
+			cwdContext = contextValue
+			return nil
+		},
+		func() error {
+			if len(*lastCommandContexts) != 0 {
+				return nil
+			}
+			contexts, queryErr := e.store.GetRecentCommandContextsByCWD(ctx, cwd, 3)
+			if queryErr != nil {
+				return queryErr
+			}
+			cwdCommandContexts = contexts
+			return nil
+		},
+		func() error {
+			if len(*recentOutputContexts) != 0 {
+				return nil
+			}
+			outputs, queryErr := e.store.GetRecentOutputContextsByCWD(ctx, cwd, recentOutputFetchLimit)
+			if queryErr != nil {
+				return queryErr
+			}
+			cwdOutputContexts = outputs
+			return nil
+		},
+	); err != nil {
+		return err
+	}
+
+	if len(*recentCommands) == 0 {
+		*recentCommands = cwdCommands
+	}
+	if isZeroCommandContext(*lastContext) {
+		*lastContext = cwdContext
+	}
+	if len(*lastCommandContexts) == 0 {
+		*lastCommandContexts = cwdCommandContexts
+		if isZeroCommandContext(*lastContext) && len(cwdCommandContexts) > 0 {
+			*lastContext = commandContextFromRecent(cwdCommandContexts[0])
+		}
+	}
+	if len(*recentOutputContexts) == 0 {
+		*recentOutputContexts = cwdOutputContexts
+	}
+
+	return nil
+}
+
+func commandContextFromRecent(value db.RecentCommandContext) db.CommandContext {
+	return db.CommandContext{
+		CWD:           value.CWD,
+		RepoRoot:      value.RepoRoot,
+		Branch:        value.Branch,
+		ExitCode:      value.ExitCode,
+		Command:       value.Command,
+		StdoutExcerpt: value.StdoutExcerpt,
+		StderrExcerpt: value.StderrExcerpt,
+	}
+}
+
+func isZeroCommandContext(value db.CommandContext) bool {
+	return value.CWD == "" &&
+		value.RepoRoot == "" &&
+		value.Branch == "" &&
+		value.ExitCode == 0 &&
+		value.Command == "" &&
+		value.StdoutExcerpt == "" &&
+		value.StderrExcerpt == ""
 }
 
 func inferGitContext(ctx context.Context, cwd string) (string, string) {
@@ -525,6 +699,7 @@ func marshalSuggestionContext(inspection inspectResult) string {
 		HistoryTrusted      bool                             `json:"historyTrusted"`
 		RecentCommands      []string                         `json:"recentCommands"`
 		LastContext         db.CommandContext                `json:"lastContext"`
+		LastCommandContext  []api.InspectCommandContext      `json:"lastCommandContext"`
 		RecentOutputContext []api.InspectRecentOutputContext `json:"recentOutputContext"`
 		RetrievedContext    api.InspectRetrievedContext      `json:"retrievedContext"`
 	}{}
@@ -548,6 +723,7 @@ func marshalSuggestionContext(inspection inspectResult) string {
 		StdoutExcerpt: inspection.response.LastStdoutExcerpt,
 		StderrExcerpt: inspection.response.LastStderrExcerpt,
 	}
+	payload.LastCommandContext = inspection.response.LastCommandContext
 	payload.RecentOutputContext = inspection.response.RecentOutputContext
 	payload.RetrievedContext = inspection.response.RetrievedContext
 
@@ -559,13 +735,19 @@ func marshalSuggestionContext(inspection inspectResult) string {
 }
 
 func BuildPrompt(
+	systemPromptStatic string,
 	request api.SuggestRequest,
 	recentCommands []string,
 	lastContext db.CommandContext,
+	lastCommandContext []api.InspectCommandContext,
 	recentOutputContext []api.InspectRecentOutputContext,
 	retrievedContext api.InspectRetrievedContext,
 ) string {
 	var builder strings.Builder
+	if strings.TrimSpace(systemPromptStatic) != "" {
+		builder.WriteString(strings.TrimSpace(systemPromptStatic))
+		builder.WriteString("\n\n")
+	}
 	builder.WriteString("You are a shell autosuggestion engine.\n")
 	builder.WriteString("Complete the current shell command with the single most likely next command.\n")
 	builder.WriteString("Return exactly one shell command on one line.\n")
@@ -581,19 +763,12 @@ func BuildPrompt(
 	builder.WriteString(fmt.Sprintf("branch: %s\n", request.Branch))
 	builder.WriteString(fmt.Sprintf("last_exit_code: %d\n", request.LastExitCode))
 	builder.WriteString(fmt.Sprintf("current_token: %s\n", retrievedContext.CurrentToken))
-	if lastContext.Command != "" {
+	if len(lastCommandContext) > 0 {
+		builder.WriteString(fmt.Sprintf("last_command: %s\n", lastCommandContext[0].Command))
+	} else if lastContext.Command != "" {
 		builder.WriteString(fmt.Sprintf("last_command: %s\n", lastContext.Command))
 	}
-	if lastContext.StdoutExcerpt != "" {
-		builder.WriteString("last_stdout_excerpt:\n")
-		builder.WriteString(lastContext.StdoutExcerpt)
-		builder.WriteString("\n")
-	}
-	if lastContext.StderrExcerpt != "" {
-		builder.WriteString("last_stderr_excerpt:\n")
-		builder.WriteString(lastContext.StderrExcerpt)
-		builder.WriteString("\n")
-	}
+	appendLastCommandContext(&builder, lastCommandContext)
 	builder.WriteString("recent_commands:\n")
 	for _, command := range recentCommands {
 		builder.WriteString("- ")
@@ -610,6 +785,53 @@ func BuildPrompt(
 	builder.WriteString(request.Buffer)
 	builder.WriteString("\n")
 	return builder.String()
+}
+
+func appendLastCommandContext(builder *strings.Builder, contexts []api.InspectCommandContext) {
+	if len(contexts) == 0 {
+		return
+	}
+
+	builder.WriteString("last_command_context:\n")
+	for _, context := range contexts {
+		builder.WriteString("- command: ")
+		builder.WriteString(context.Command)
+		builder.WriteString("\n")
+		builder.WriteString(fmt.Sprintf("  exit_code: %d\n", context.ExitCode))
+		if context.StdoutExcerpt != "" {
+			builder.WriteString("  stdout_excerpt:\n")
+			for _, line := range strings.Split(context.StdoutExcerpt, "\n") {
+				builder.WriteString("    ")
+				builder.WriteString(line)
+				builder.WriteString("\n")
+			}
+		}
+		if context.StderrExcerpt != "" {
+			builder.WriteString("  stderr_excerpt:\n")
+			for _, line := range strings.Split(context.StderrExcerpt, "\n") {
+				builder.WriteString("    ")
+				builder.WriteString(line)
+				builder.WriteString("\n")
+			}
+		}
+	}
+}
+
+func toInspectCommandContexts(values []db.RecentCommandContext) []api.InspectCommandContext {
+	result := make([]api.InspectCommandContext, 0, len(values))
+	for _, value := range values {
+		result = append(result, api.InspectCommandContext{
+			Command:       value.Command,
+			ExitCode:      value.ExitCode,
+			StdoutExcerpt: value.StdoutExcerpt,
+			StderrExcerpt: value.StderrExcerpt,
+			CWD:           value.CWD,
+			RepoRoot:      value.RepoRoot,
+			Branch:        value.Branch,
+			FinishedAtMS:  value.FinishedAtMS,
+		})
+	}
+	return result
 }
 
 func appendRecentOutputContext(builder *strings.Builder, snippets []api.InspectRecentOutputContext) {
@@ -857,6 +1079,18 @@ func CleanSuggestion(prefix, raw string) string {
 		return line
 	}
 	return ""
+}
+
+func formatInspectModelError(modelName string, timeout time.Duration, err error) string {
+	if err == nil {
+		return ""
+	}
+
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Sprintf("%s timed out after %s. Increase Suggest Timeout on the Daemon page or warm the model first.", modelName, timeout.Round(time.Millisecond))
+	}
+
+	return fmt.Sprintf("%s request failed: %v", modelName, err)
 }
 
 func sortedCandidates(candidateMap map[string]*rankedCandidate) []*rankedCandidate {

@@ -33,6 +33,7 @@ type InspectCandidate = {
 type InspectResponse = {
   model_name: string;
   history_trusted: boolean;
+  model_error: string;
   prompt: string;
   raw_model_output: string;
   cleaned_model_output: string;
@@ -40,6 +41,16 @@ type InspectResponse = {
   last_command: string;
   last_stdout_excerpt: string;
   last_stderr_excerpt: string;
+  last_command_context: Array<{
+    command: string;
+    exit_code: number;
+    stdout_excerpt: string;
+    stderr_excerpt: string;
+    cwd: string;
+    repo_root: string;
+    branch: string;
+    finished_at_ms: number;
+  }>;
   recent_output_context: Array<{
     command: string;
     exit_code: number;
@@ -138,6 +149,7 @@ function normalizeInspectResponse(
   return {
     model_name: input.model_name || "",
     history_trusted: Boolean(input.history_trusted),
+    model_error: input.model_error || "",
     prompt: input.prompt || "",
     raw_model_output: input.raw_model_output || "",
     cleaned_model_output: input.cleaned_model_output || "",
@@ -147,6 +159,22 @@ function normalizeInspectResponse(
     last_command: input.last_command || "",
     last_stdout_excerpt: input.last_stdout_excerpt || "",
     last_stderr_excerpt: input.last_stderr_excerpt || "",
+    last_command_context: Array.isArray(input.last_command_context)
+      ? input.last_command_context.map((entry) => ({
+          command: entry?.command || "",
+          exit_code:
+            typeof entry?.exit_code === "number" ? entry.exit_code : 0,
+          stdout_excerpt: entry?.stdout_excerpt || "",
+          stderr_excerpt: entry?.stderr_excerpt || "",
+          cwd: entry?.cwd || "",
+          repo_root: entry?.repo_root || "",
+          branch: entry?.branch || "",
+          finished_at_ms:
+            typeof entry?.finished_at_ms === "number"
+              ? entry.finished_at_ms
+              : 0,
+        }))
+      : [],
     recent_output_context: Array.isArray(input.recent_output_context)
       ? input.recent_output_context.map((entry) => ({
           command: entry?.command || "",
@@ -419,6 +447,9 @@ export function RankingInspector({
               Model: <code>{response.model_name}</code> · History trusted:{" "}
               <strong>{response.history_trusted ? "yes" : "no"}</strong>
             </p>
+            {response.model_error ? (
+              <p className="error-text">{response.model_error}</p>
+            ) : null}
           </div>
 
           <div className="detail-block">
@@ -476,6 +507,10 @@ export function RankingInspector({
                   <dd>{response.recent_commands.length || 0}</dd>
                 </div>
                 <div>
+                  <dt>Last command contexts</dt>
+                  <dd>{response.last_command_context.length || 0}</dd>
+                </div>
+                <div>
                   <dt>Current token</dt>
                   <dd>{response.retrieved_context.current_token || "n/a"}</dd>
                 </div>
@@ -495,6 +530,26 @@ export function RankingInspector({
                 {response.raw_model_output || "No raw model output."}
               </pre>
             </div>
+          </div>
+
+          <div className="detail-block">
+            <h3>Last Command Context</h3>
+            <pre className="code-block">
+              {response.last_command_context.length > 0
+                ? response.last_command_context
+                    .map((entry, index) =>
+                      [
+                        `${index + 1}. ${entry.command || "n/a"}`,
+                        `exit: ${entry.exit_code}`,
+                        entry.stdout_excerpt ? `stdout:\n${entry.stdout_excerpt}` : "",
+                        entry.stderr_excerpt ? `stderr:\n${entry.stderr_excerpt}` : "",
+                      ]
+                        .filter(Boolean)
+                        .join("\n"),
+                    )
+                    .join("\n\n")
+                : "No last command context."}
+            </pre>
           </div>
 
           <div className="grid two-up">

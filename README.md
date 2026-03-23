@@ -170,6 +170,8 @@ The daemon uses sensible defaults:
 | Database | `~/Library/Application Support/llm-cli-suggestions/autocomplete.sqlite` | `LAC_DB_PATH` |
 | Model | `qwen2.5-coder:7b` | `LAC_MODEL_NAME` |
 | Ollama URL | `http://127.0.0.1:11434` | `LAC_MODEL_BASE_URL` |
+| Ollama keep alive | `5m` | `LAC_MODEL_KEEP_ALIVE` |
+| Static System Prompt Prefix | empty | `LAC_SYSTEM_PROMPT_STATIC` |
 | Suggest timeout | `1200ms` | `LAC_SUGGEST_TIMEOUT_MS` |
 
 Settings saved from the control app persist to `runtime.env` and are picked up by new shells automatically.
@@ -187,6 +189,10 @@ npm run dev
 ```
 
 Open the local URL shown by Next.js to access the dashboard, suggestions, signals, inspector, models, model lab, and daemon controls.
+
+The console app resolves its runtime paths from the standard state directory and persisted `runtime.env` by default, so it does not accidentally inherit stale `LAC_*` variables from the shell used to launch `next dev`. If you intentionally want to run the console against an alternate state dir or SQLite file through process env, also set `LAC_CONSOLE_USE_PROCESS_ENV_OVERRIDES=1`.
+
+The Daemon page also lets you edit a static system-prompt prefix that is prepended verbatim ahead of the built-in autosuggestion prompt, along with the Ollama `keep_alive` value used to keep models warm between requests.
 
 For a production build: `npm run build`. Run the e2e smoke suite with `npm run e2e`.
 

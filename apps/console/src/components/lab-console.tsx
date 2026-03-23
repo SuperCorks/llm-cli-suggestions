@@ -35,6 +35,8 @@ interface LabConsoleProps {
   };
 }
 
+type InventorySummary = LabConsoleProps["inventorySummary"];
+
 export function LabConsole({
   initialRuns,
   defaultModel,
@@ -42,6 +44,8 @@ export function LabConsole({
   availableModels,
   inventorySummary,
 }: LabConsoleProps) {
+  const [modelOptions, setModelOptions] = useState(availableModels);
+  const [modelInventory, setModelInventory] = useState<InventorySummary>(inventorySummary);
   const [runtimeDefaults, setRuntimeDefaults] = useState({
     model: defaultModel,
     suggestStrategy: defaultSuggestStrategy,
@@ -185,6 +189,31 @@ export function LabConsole({
           return;
         }
         setRuntimeDefaults(nextDefaults);
+        try {
+          const inventoryResponse = await fetch(
+            `/api/ollama/models?baseUrl=${encodeURIComponent(data.settings.modelBaseUrl)}`,
+          );
+          if (inventoryResponse.ok) {
+            const inventoryData = (await inventoryResponse.json()) as {
+              models?: OllamaModelOption[];
+              installedCount?: number;
+              libraryCount?: number;
+              installedError?: string;
+              libraryError?: string;
+            };
+            if (!cancelled) {
+              setModelOptions(inventoryData.models || []);
+              setModelInventory({
+                installedCount: inventoryData.installedCount || 0,
+                libraryCount: inventoryData.libraryCount || 0,
+                installedError: inventoryData.installedError,
+                libraryError: inventoryData.libraryError,
+              });
+            }
+          }
+        } catch {
+          // Keep the server-provided inventory when the browser refresh is unavailable.
+        }
         setRunForm((current) => ({
           ...current,
           models:
@@ -265,7 +294,7 @@ export function LabConsole({
       }
       if (
         nextSelected &&
-        nextSelected.status === "completed" &&
+        (nextSelected.status === "completed" || nextSelected.status === "failed") &&
         (!selectedRun || selectedRun.run.finishedAtMs !== nextSelected.finishedAtMs)
       ) {
         void loadRun(selectedRunId);
@@ -467,7 +496,7 @@ export function LabConsole({
               }
               requireKnownOption
               placeholder="Pick an installed model"
-              helperText={`${inventorySummary.installedCount} installed locally · ${inventorySummary.libraryCount} available to download`}
+              helperText={`${modelInventory.installedCount} installed locally · ${modelInventory.libraryCount} available to download`}
               emptyMessage={
                 <>
                   No matching installed models. Download additional models from the{" "}
@@ -549,7 +578,7 @@ export function LabConsole({
               label="Models"
               selected={testForm.models}
               inputValue={testModelInput}
-              options={availableModels}
+              options={modelOptions}
               installedOnly
               onInputChange={setTestModelInput}
               onAdd={(value) => addModel("test", value)}
@@ -563,8 +592,8 @@ export function LabConsole({
               requireKnownOption
               placeholder="Pick or type a model"
               helperText={
-                inventorySummary.installedError || inventorySummary.libraryError
-                  ? [inventorySummary.installedError, inventorySummary.libraryError]
+                modelInventory.installedError || modelInventory.libraryError
+                  ? [modelInventory.installedError, modelInventory.libraryError]
                       .filter(Boolean)
                       .join(" · ")
                   : "Pick one or more installed Ollama models. The saved runtime strategy is used by default, but you can override it here for this test."
@@ -812,6 +841,9 @@ export function LabConsole({
               <p className="muted-text">
                 Status: {selectedRunMeta?.status || selectedRun.run.status} · Models: {selectedRun.run.models.join(", ")}
               </p>
+              {selectedRunMeta?.errorText || selectedRun.run.errorText ? (
+                <p className="error-text">{selectedRunMeta?.errorText || selectedRun.run.errorText}</p>
+              ) : null}
             </div>
             <button
               type="button"

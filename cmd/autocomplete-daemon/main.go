@@ -24,6 +24,7 @@ func main() {
 	dbPath := flag.String("db", cfg.DBPath, "sqlite database path")
 	modelName := flag.String("model", cfg.ModelName, "local model name")
 	modelBaseURL := flag.String("model-url", cfg.ModelBaseURL, "local model base URL")
+	modelKeepAlive := flag.String("model-keep-alive", cfg.ModelKeepAlive, "ollama keep_alive value")
 	suggestStrategy := flag.String("strategy", cfg.SuggestStrategy, "suggestion strategy")
 	flag.Parse()
 
@@ -31,6 +32,7 @@ func main() {
 	cfg.DBPath = *dbPath
 	cfg.ModelName = *modelName
 	cfg.ModelBaseURL = *modelBaseURL
+	cfg.ModelKeepAlive = *modelKeepAlive
 	cfg.SuggestStrategy = config.NormalizeSuggestStrategy(*suggestStrategy)
 
 	store, err := db.NewStore(cfg.DBPath)
@@ -43,8 +45,8 @@ func main() {
 		}
 	}()
 
-	modelClient := ollama.New(cfg.ModelBaseURL, cfg.ModelName)
-	eng := engine.New(store, modelClient, cfg.ModelName, cfg.ModelBaseURL, cfg.SuggestStrategy, cfg.SuggestTimeout)
+	modelClient := ollama.New(cfg.ModelBaseURL, cfg.ModelName, cfg.ModelKeepAlive)
+	eng := engine.NewWithSystemPrompt(store, modelClient, cfg.ModelName, cfg.ModelBaseURL, cfg.ModelKeepAlive, cfg.SuggestStrategy, cfg.SystemPromptStatic, cfg.SuggestTimeout)
 	srv := server.New(&cfg, eng, store)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

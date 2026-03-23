@@ -101,9 +101,21 @@ type InspectRecentOutputContext struct {
 	Score         int    `json:"score"`
 }
 
+type InspectCommandContext struct {
+	Command       string `json:"command"`
+	ExitCode      int    `json:"exit_code"`
+	StdoutExcerpt string `json:"stdout_excerpt"`
+	StderrExcerpt string `json:"stderr_excerpt"`
+	CWD           string `json:"cwd"`
+	RepoRoot      string `json:"repo_root"`
+	Branch        string `json:"branch"`
+	FinishedAtMS  int64  `json:"finished_at_ms"`
+}
+
 type InspectResponse struct {
 	ModelName           string                       `json:"model_name"`
 	HistoryTrusted      bool                         `json:"history_trusted"`
+	ModelError          string                       `json:"model_error,omitempty"`
 	Prompt              string                       `json:"prompt"`
 	RawModelOutput      string                       `json:"raw_model_output"`
 	CleanedModelOutput  string                       `json:"cleaned_model_output"`
@@ -111,6 +123,7 @@ type InspectResponse struct {
 	LastCommand         string                       `json:"last_command"`
 	LastStdoutExcerpt   string                       `json:"last_stdout_excerpt"`
 	LastStderrExcerpt   string                       `json:"last_stderr_excerpt"`
+	LastCommandContext  []InspectCommandContext      `json:"last_command_context"`
 	RecentOutputContext []InspectRecentOutputContext `json:"recent_output_context"`
 	RetrievedContext    InspectRetrievedContext      `json:"retrieved_context"`
 	Winner              *InspectCandidate            `json:"winner"`

@@ -28,3 +28,21 @@ export function formatCompactNumber(value: number) {
     maximumFractionDigits: 1,
   }).format(value);
 }
+
+export function formatBytes(value?: number | null) {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return "n/a";
+  }
+
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let size = value;
+  let unitIndex = 0;
+
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+
+  const fractionDigits = size >= 100 || unitIndex === 0 ? 0 : size >= 10 ? 1 : 2;
+  return `${size.toFixed(fractionDigits)} ${units[unitIndex]}`;
+}

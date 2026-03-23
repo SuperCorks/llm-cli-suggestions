@@ -83,6 +83,45 @@ function updateRunSummary(db, runId, summary) {
   );
 }
 
+function readResults(outputJson) {
+  if (!outputJson || !fs.existsSync(outputJson)) {
+    return [];
+  }
+
+  const parsed = JSON.parse(fs.readFileSync(outputJson, "utf8"));
+  return Array.isArray(parsed) ? parsed : [];
+}
+
+function persistResults(db, runId, rows) {
+  const insert = db.prepare(`
+    INSERT INTO benchmark_results(
+      run_id, model_name, case_name, run_number, latency_ms,
+      suggestion_text, valid_prefix, accepted, error_text, created_at_ms
+    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  const now = Date.now();
+  const transaction = db.transaction((results) => {
+    db.prepare("DELETE FROM benchmark_results WHERE run_id = ?").run(runId);
+    for (const row of results) {
+      insert.run(
+        runId,
+        row.model || "",
+        row.case_name || "",
+        Number(row.run || 0),
+        Number(row.latency_ms || 0),
+        row.suggestion || "",
+        row.valid_prefix ? 1 : 0,
+        row.accepted ? 1 : 0,
+        row.error || "",
+        now,
+      );
+    }
+  });
+
+  transaction(rows);
+}
+
 async function main() {
   const dbPath = argValue("--db");
   const runId = Number(argValue("--run-id"));
@@ -111,6 +150,7 @@ async function main() {
     runId,
   );
 
+  let runError = null;
   try {
     await new Promise((resolve, reject) => {
       const child = spawn(
@@ -183,39 +223,44 @@ async function main() {
         reject(new Error(stderr || `model-bench exited with code ${code}`));
       });
     });
+  } catch (error) {
+    runError = error instanceof Error ? error : new Error("benchmark failed");
+  }
 
-    const results = JSON.parse(fs.readFileSync(outputJson, "utf8"));
-    const insert = db.prepare(`
-      INSERT INTO benchmark_results(
-        run_id, model_name, case_name, run_number, latency_ms,
-        suggestion_text, valid_prefix, accepted, error_text, created_at_ms
-      ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
+  const results = readResults(outputJson);
+  persistResults(db, runId, results);
 
-    const now = Date.now();
-    const transaction = db.transaction((rows) => {
-      db.prepare("DELETE FROM benchmark_results WHERE run_id = ?").run(runId);
-      for (const row of rows) {
-        insert.run(
-          runId,
-          row.model || "",
-          row.case_name || "",
-          Number(row.run || 0),
-          Number(row.latency_ms || 0),
-          row.suggestion || "",
-          row.valid_prefix ? 1 : 0,
-          row.accepted ? 1 : 0,
-          row.error || "",
-          now,
-        );
-      }
-    });
-    transaction(results);
+  const lastResult = results.at(-1);
+  const completed = results.length;
+  const total = progress.total > 0 ? progress.total : completed;
+  progress = {
+    ...progress,
+    completed,
+    total,
+    percent: total > 0 ? Math.round((completed / total) * 100) : 0,
+    status: runError ? "failed" : "completed",
+    currentModel: lastResult?.model || progress.currentModel,
+    currentCase: lastResult?.case_name || progress.currentCase,
+    currentRun: Number(lastResult?.run || progress.currentRun || 0),
+  };
 
+  if (runError) {
+    db.prepare(
+      `UPDATE benchmark_runs
+       SET status = ?, error_text = ?, finished_at_ms = ?, summary_json = ?
+       WHERE id = ?`,
+    ).run(
+      "failed",
+      runError.message,
+      Date.now(),
+      JSON.stringify({ progress, models: summarize(results) }),
+      runId,
+    );
+  } else {
     progress = {
       ...progress,
-      completed: results.length,
-      total: results.length,
+      completed,
+      total: completed,
       percent: 100,
       status: "completed",
     };
@@ -230,25 +275,9 @@ async function main() {
       Date.now(),
       runId,
     );
-  } catch (error) {
-    progress = {
-      ...progress,
-      status: "failed",
-    };
-    db.prepare(
-      `UPDATE benchmark_runs
-       SET status = ?, error_text = ?, finished_at_ms = ?, summary_json = ?
-       WHERE id = ?`,
-    ).run(
-      "failed",
-      error instanceof Error ? error.message : "benchmark failed",
-      Date.now(),
-      JSON.stringify({ progress, models: {} }),
-      runId,
-    );
-  } finally {
-    db.close();
   }
+
+  db.close();
 }
 
 main().catch((error) => {

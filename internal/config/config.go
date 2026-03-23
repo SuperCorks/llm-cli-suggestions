@@ -11,14 +11,16 @@ import (
 )
 
 type Config struct {
-	StateDir       string
-	RuntimeEnvPath string
-	SocketPath     string
-	DBPath         string
-	ModelBaseURL   string
-	ModelName      string
-	SuggestStrategy string
-	SuggestTimeout time.Duration
+	StateDir           string
+	RuntimeEnvPath     string
+	SocketPath         string
+	DBPath             string
+	ModelBaseURL       string
+	ModelName          string
+	ModelKeepAlive     string
+	SuggestStrategy    string
+	SystemPromptStatic string
+	SuggestTimeout     time.Duration
 }
 
 const (
@@ -44,11 +46,13 @@ func Load() (Config, error) {
 	dbPath := firstNonEmpty(os.Getenv("LAC_DB_PATH"), runtimeValues["LAC_DB_PATH"], filepath.Join(stateDir, "autocomplete.sqlite"))
 	modelBaseURL := firstNonEmpty(os.Getenv("LAC_MODEL_BASE_URL"), runtimeValues["LAC_MODEL_BASE_URL"], "http://127.0.0.1:11434")
 	modelName := firstNonEmpty(os.Getenv("LAC_MODEL_NAME"), runtimeValues["LAC_MODEL_NAME"], "qwen2.5-coder:7b")
+	modelKeepAlive := firstNonEmpty(os.Getenv("LAC_MODEL_KEEP_ALIVE"), runtimeValues["LAC_MODEL_KEEP_ALIVE"], "5m")
 	suggestStrategy := NormalizeSuggestStrategy(firstNonEmpty(
 		os.Getenv("LAC_SUGGEST_STRATEGY"),
 		runtimeValues["LAC_SUGGEST_STRATEGY"],
 		SuggestStrategyHistoryModel,
 	))
+	systemPromptStatic := firstNonEmpty(os.Getenv("LAC_SYSTEM_PROMPT_STATIC"), runtimeValues["LAC_SYSTEM_PROMPT_STATIC"])
 	suggestTimeoutMS := firstNonEmptyInt(os.Getenv("LAC_SUGGEST_TIMEOUT_MS"), runtimeValues["LAC_SUGGEST_TIMEOUT_MS"], 1200)
 
 	if err := os.MkdirAll(stateDir, 0o755); err != nil {
@@ -56,14 +60,16 @@ func Load() (Config, error) {
 	}
 
 	return Config{
-		StateDir:       stateDir,
-		RuntimeEnvPath: runtimeEnvPath,
-		SocketPath:     socketPath,
-		DBPath:         dbPath,
-		ModelBaseURL:   modelBaseURL,
-		ModelName:      modelName,
-		SuggestStrategy: suggestStrategy,
-		SuggestTimeout: time.Duration(suggestTimeoutMS) * time.Millisecond,
+		StateDir:           stateDir,
+		RuntimeEnvPath:     runtimeEnvPath,
+		SocketPath:         socketPath,
+		DBPath:             dbPath,
+		ModelBaseURL:       modelBaseURL,
+		ModelName:          modelName,
+		ModelKeepAlive:     modelKeepAlive,
+		SuggestStrategy:    suggestStrategy,
+		SystemPromptStatic: systemPromptStatic,
+		SuggestTimeout:     time.Duration(suggestTimeoutMS) * time.Millisecond,
 	}, nil
 }
 

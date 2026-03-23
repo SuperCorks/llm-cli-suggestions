@@ -35,6 +35,7 @@ export default async function ModelsPage() {
           initialModels={inventory.models}
           initialInstalledCount={inventory.installedCount}
           initialLibraryCount={inventory.libraryCount}
+          initialRemoteLibraryCount={inventory.remoteLibraryCount}
           initialInstalledError={inventory.installedError}
           initialLibraryError={inventory.libraryError}
         />

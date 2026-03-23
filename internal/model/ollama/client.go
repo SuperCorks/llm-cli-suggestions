@@ -12,13 +12,15 @@ import (
 type Client struct {
 	baseURL    string
 	modelName  string
+	keepAlive  string
 	httpClient *http.Client
 }
 
-func New(baseURL, modelName string) *Client {
+func New(baseURL, modelName, keepAlive string) *Client {
 	return &Client{
 		baseURL:    strings.TrimRight(baseURL, "/"),
 		modelName:  modelName,
+		keepAlive:  strings.TrimSpace(keepAlive),
 		httpClient: &http.Client{},
 	}
 }
@@ -28,6 +30,9 @@ func (c *Client) Suggest(ctx context.Context, prompt string) (string, error) {
 		"model":  c.modelName,
 		"prompt": prompt,
 		"stream": false,
+	}
+	if c.keepAlive != "" {
+		payload["keep_alive"] = c.keepAlive
 	}
 
 	body, err := json.Marshal(payload)

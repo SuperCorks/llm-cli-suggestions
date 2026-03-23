@@ -20,6 +20,8 @@ type retrievalCandidate struct {
 	Score   int
 }
 
+const maxProjectTasks = 64
+
 func buildRetrievedContext(ctx context.Context, request api.SuggestRequest, historyCandidates []db.CommandCandidate) (api.InspectRetrievedContext, []retrievalCandidate) {
 	result, candidates := buildStaticRetrievedContext(ctx, request)
 	result.HistoryMatches = historyMatchesForCandidates(request.Buffer, historyCandidates)
@@ -331,7 +333,7 @@ func detectProjectTaskContext(buffer string) (string, string, bool) {
 }
 
 func loadProjectTasks(cwd, repoRoot string) []string {
-	result := make([]string, 0, 24)
+	result := make([]string, 0, maxProjectTasks)
 	seen := map[string]struct{}{}
 	appendUnique := func(values []string) {
 		for _, value := range values {
@@ -343,21 +345,21 @@ func loadProjectTasks(cwd, repoRoot string) []string {
 			}
 			seen[value] = struct{}{}
 			result = append(result, value)
-			if len(result) >= 24 {
+			if len(result) >= maxProjectTasks {
 				return
 			}
 		}
 	}
 
 	appendUnique(loadPackageScripts(cwd, repoRoot))
-	if len(result) < 24 {
+	if len(result) < maxProjectTasks {
 		appendUnique(loadMakeTargets(cwd, repoRoot))
 	}
-	if len(result) < 24 {
+	if len(result) < maxProjectTasks {
 		appendUnique(loadJustTargets(cwd, repoRoot))
 	}
-	if len(result) > 24 {
-		return result[:24]
+	if len(result) > maxProjectTasks {
+		return result[:maxProjectTasks]
 	}
 	return result
 }

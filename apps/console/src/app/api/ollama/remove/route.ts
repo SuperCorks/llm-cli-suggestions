@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { removeOllamaModel } from "@/lib/server/ollama";
+import { startOllamaRemove } from "@/lib/server/ollama-install";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,16 +21,6 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  try {
-    await removeOllamaModel(baseUrl, model);
-    return NextResponse.json({ ok: true });
-  } catch (error) {
-    return NextResponse.json(
-      {
-        error:
-          error instanceof Error ? error.message : "Unable to remove model from Ollama",
-      },
-      { status: 500 },
-    );
-  }
+  const job = startOllamaRemove(model, baseUrl);
+  return NextResponse.json({ job });
 }

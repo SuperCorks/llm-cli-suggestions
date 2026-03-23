@@ -22,6 +22,24 @@ export type PersistedSuggestionContext = {
     stdoutExcerpt: string;
     stderrExcerpt: string;
   };
+  lastCommandContext: Array<{
+    command: string;
+    exitCode: number;
+    stdoutExcerpt: string;
+    stderrExcerpt: string;
+    cwd: string;
+    repoRoot: string;
+    branch: string;
+    finishedAtMs: number;
+  }>;
+  recentOutputContext: Array<{
+    command: string;
+    exitCode: number;
+    stdoutExcerpt: string;
+    stderrExcerpt: string;
+    finishedAtMs: number;
+    score: number;
+  }>;
   retrievedContext: {
     currentToken: string;
     historyMatches: string[];
@@ -49,6 +67,62 @@ export type SuggestionContextSnapshot = {
 
 function normalizeStringArray(value: unknown) {
   return Array.isArray(value) ? value.map((entry) => String(entry || "")).filter(Boolean) : [];
+}
+
+function normalizeNumber(value: unknown) {
+  return typeof value === "number" ? value : 0;
+}
+
+function recordValue(value: unknown) {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+}
+
+function pickValue(record: Record<string, unknown>, ...keys: string[]) {
+  for (const key of keys) {
+    const value = record[key];
+    if (value !== undefined && value !== null) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function normalizeLastCommandContext(value: unknown) {
+  if (!Array.isArray(value)) {
+    return [] as PersistedSuggestionContext["lastCommandContext"];
+  }
+
+  return value.map((entry) => {
+    const row = recordValue(entry);
+    return {
+      command: String(pickValue(row, "command", "Command") || ""),
+      exitCode: normalizeNumber(pickValue(row, "exitCode", "exit_code", "ExitCode")),
+      stdoutExcerpt: String(pickValue(row, "stdoutExcerpt", "stdout_excerpt", "StdoutExcerpt") || ""),
+      stderrExcerpt: String(pickValue(row, "stderrExcerpt", "stderr_excerpt", "StderrExcerpt") || ""),
+      cwd: String(pickValue(row, "cwd", "CWD") || ""),
+      repoRoot: String(pickValue(row, "repoRoot", "repo_root", "RepoRoot") || ""),
+      branch: String(pickValue(row, "branch", "Branch") || ""),
+      finishedAtMs: normalizeNumber(pickValue(row, "finishedAtMs", "finished_at_ms", "FinishedAtMS")),
+    };
+  });
+}
+
+function normalizeRecentOutputContext(value: unknown) {
+  if (!Array.isArray(value)) {
+    return [] as PersistedSuggestionContext["recentOutputContext"];
+  }
+
+  return value.map((entry) => {
+    const row = recordValue(entry);
+    return {
+      command: String(pickValue(row, "command", "Command") || ""),
+      exitCode: normalizeNumber(pickValue(row, "exitCode", "exit_code", "ExitCode")),
+      stdoutExcerpt: String(pickValue(row, "stdoutExcerpt", "stdout_excerpt", "StdoutExcerpt") || ""),
+      stderrExcerpt: String(pickValue(row, "stderrExcerpt", "stderr_excerpt", "StderrExcerpt") || ""),
+      finishedAtMs: normalizeNumber(pickValue(row, "finishedAtMs", "finished_at_ms", "FinishedAtMS")),
+      score: normalizeNumber(pickValue(row, "score", "Score")),
+    };
+  });
 }
 
 function shortPath(value: string) {
@@ -82,6 +156,8 @@ export function buildSuggestionContextSnapshot(row: SuggestionRow): SuggestionCo
       stdoutExcerpt: "",
       stderrExcerpt: "",
     },
+    lastCommandContext: [],
+    recentOutputContext: [],
     retrievedContext: {
       currentToken: "",
       historyMatches: [],
@@ -96,46 +172,59 @@ export function buildSuggestionContextSnapshot(row: SuggestionRow): SuggestionCo
   if (row.structuredContextJson.trim()) {
     try {
       const parsed = JSON.parse(row.structuredContextJson) as Record<string, unknown>;
-      const request = (parsed.request as Record<string, unknown> | undefined) || {};
-      const lastContext = (parsed.lastContext as Record<string, unknown> | undefined) || {};
-      const retrievedContext =
-        (parsed.retrievedContext as Record<string, unknown> | undefined) || {};
+      const request = recordValue(parsed.request);
+      const lastContext = recordValue(parsed.lastContext || parsed.last_context);
+      const lastCommandContext = normalizeLastCommandContext(parsed.lastCommandContext || parsed.last_command_context);
+      const recentOutputContext = normalizeRecentOutputContext(parsed.recentOutputContext || parsed.recent_output_context);
+      const retrievedContext = recordValue(parsed.retrievedContext || parsed.retrieved_context);
 
       structuredContext = {
         request: {
-          sessionId: String(request.sessionId || fallback.request.sessionId),
-          buffer: String(request.buffer || fallback.request.buffer),
-          cwd: String(request.cwd || fallback.request.cwd),
-          repoRoot: String(request.repoRoot || fallback.request.repoRoot),
-          branch: String(request.branch || fallback.request.branch),
-          lastExitCode:
-            typeof request.lastExitCode === "number"
-              ? request.lastExitCode
-              : fallback.request.lastExitCode,
-          strategy: String(request.strategy || ""),
+          sessionId: String(pickValue(request, "sessionId", "session_id") || fallback.request.sessionId),
+          buffer: String(pickValue(request, "buffer") || fallback.request.buffer),
+          cwd: String(pickValue(request, "cwd", "CWD") || fallback.request.cwd),
+          repoRoot: String(pickValue(request, "repoRoot", "repo_root", "RepoRoot") || fallback.request.repoRoot),
+          branch: String(pickValue(request, "branch", "Branch") || fallback.request.branch),
+          lastExitCode: normalizeNumber(pickValue(request, "lastExitCode", "last_exit_code", "LastExitCode")) || fallback.request.lastExitCode,
+          strategy: String(pickValue(request, "strategy") || ""),
         },
-        modelName: String(parsed.modelName || fallback.modelName),
-        historyTrusted: Boolean(parsed.historyTrusted),
-        recentCommands: normalizeStringArray(parsed.recentCommands),
+        modelName: String(parsed.modelName || parsed.model_name || fallback.modelName),
+        historyTrusted: Boolean(parsed.historyTrusted || parsed.history_trusted),
+        recentCommands: normalizeStringArray(parsed.recentCommands || parsed.recent_commands),
         lastContext: {
-          cwd: String(lastContext.cwd || fallback.lastContext.cwd),
-          repoRoot: String(lastContext.repoRoot || fallback.lastContext.repoRoot),
-          branch: String(lastContext.branch || fallback.lastContext.branch),
-          exitCode:
-            typeof lastContext.exitCode === "number"
-              ? lastContext.exitCode
-              : fallback.lastContext.exitCode,
-          command: String(lastContext.command || ""),
-          stdoutExcerpt: String(lastContext.stdoutExcerpt || ""),
-          stderrExcerpt: String(lastContext.stderrExcerpt || ""),
+          cwd: String(pickValue(lastContext, "cwd", "CWD") || fallback.lastContext.cwd),
+          repoRoot: String(pickValue(lastContext, "repoRoot", "repo_root", "RepoRoot") || fallback.lastContext.repoRoot),
+          branch: String(pickValue(lastContext, "branch", "Branch") || fallback.lastContext.branch),
+          exitCode: normalizeNumber(pickValue(lastContext, "exitCode", "exit_code", "ExitCode")) || fallback.lastContext.exitCode,
+          command: String(pickValue(lastContext, "command", "Command") || ""),
+          stdoutExcerpt: String(pickValue(lastContext, "stdoutExcerpt", "stdout_excerpt", "StdoutExcerpt") || ""),
+          stderrExcerpt: String(pickValue(lastContext, "stderrExcerpt", "stderr_excerpt", "StderrExcerpt") || ""),
         },
+        lastCommandContext:
+          lastCommandContext.length > 0
+            ? lastCommandContext
+            : String(pickValue(lastContext, "command", "Command") || "") ||
+                String(pickValue(lastContext, "stdoutExcerpt", "stdout_excerpt", "StdoutExcerpt") || "") ||
+                String(pickValue(lastContext, "stderrExcerpt", "stderr_excerpt", "StderrExcerpt") || "")
+              ? [{
+                  command: String(pickValue(lastContext, "command", "Command") || ""),
+                  exitCode: normalizeNumber(pickValue(lastContext, "exitCode", "exit_code", "ExitCode")) || fallback.lastContext.exitCode,
+                  stdoutExcerpt: String(pickValue(lastContext, "stdoutExcerpt", "stdout_excerpt", "StdoutExcerpt") || ""),
+                  stderrExcerpt: String(pickValue(lastContext, "stderrExcerpt", "stderr_excerpt", "StderrExcerpt") || ""),
+                  cwd: String(pickValue(lastContext, "cwd", "CWD") || fallback.lastContext.cwd),
+                  repoRoot: String(pickValue(lastContext, "repoRoot", "repo_root", "RepoRoot") || fallback.lastContext.repoRoot),
+                  branch: String(pickValue(lastContext, "branch", "Branch") || fallback.lastContext.branch),
+                  finishedAtMs: 0,
+                }]
+              : [],
+        recentOutputContext: recentOutputContext,
         retrievedContext: {
-          currentToken: String(retrievedContext.currentToken || ""),
-          historyMatches: normalizeStringArray(retrievedContext.historyMatches),
-          pathMatches: normalizeStringArray(retrievedContext.pathMatches),
-          gitBranchMatches: normalizeStringArray(retrievedContext.gitBranchMatches),
-          projectTasks: normalizeStringArray(retrievedContext.projectTasks),
-          projectTaskMatches: normalizeStringArray(retrievedContext.projectTaskMatches),
+          currentToken: String(pickValue(retrievedContext, "currentToken", "current_token") || ""),
+          historyMatches: normalizeStringArray(pickValue(retrievedContext, "historyMatches", "history_matches")),
+          pathMatches: normalizeStringArray(pickValue(retrievedContext, "pathMatches", "path_matches")),
+          gitBranchMatches: normalizeStringArray(pickValue(retrievedContext, "gitBranchMatches", "git_branch_matches")),
+          projectTasks: normalizeStringArray(pickValue(retrievedContext, "projectTasks", "project_tasks")),
+          projectTaskMatches: normalizeStringArray(pickValue(retrievedContext, "projectTaskMatches", "project_task_matches")),
         },
       };
     } catch {
@@ -197,6 +286,9 @@ export function buildSuggestionContextSnapshot(row: SuggestionRow): SuggestionCo
       : "",
     structuredContext.retrievedContext.historyMatches.length > 0
       ? `${structuredContext.retrievedContext.historyMatches.length} history`
+      : "",
+    structuredContext.lastCommandContext.length > 0
+      ? `${structuredContext.lastCommandContext.length} context`
       : "",
     structuredContext.request.branch || shortPath(structuredContext.request.cwd),
   ]

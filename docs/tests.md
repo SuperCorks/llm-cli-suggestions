@@ -46,12 +46,12 @@ The Playwright suite currently covers a seeded local happy path for:
 - inspector resilience when the daemon returns `null` prompt-context fields
 - inspector validation states, payload wiring, inferred-context form contract, and API error handling
 - inspector strategy override coverage for `history-only`, `history+model`, and `model-only`
-- inspector `model-only` states for both successful raw model output and empty-output fallback rendering
+- inspector `model-only` states for successful raw model output, empty-output fallback rendering, and surfaced model timeout diagnostics
 - model lab guardrails, default state, and reset flows
 - model lab sync against live runtime defaults for current model and saved suggestion strategy
-- model lab benchmark queueing, running-progress indicators, refreshed run lists, closable detail views, and stricter picker validation
+- model lab benchmark queueing, running-progress indicators, refreshed run lists, fail-fast failed-run handling with partial results, closable detail views, and stricter picker validation
 - model lab ad-hoc multi-model test results, strategy overrides, session-or-cwd context wiring, picker interactions, and clear-results flow
-- models page download, removal, available-catalog pagination, and capability-display flows for local Ollama inventory management
+- models page concurrent download, tracked removal, refresh-safe operation hydration, automatic completed-job cleanup, stalled-job cancellation, dismissed cancelled jobs, available-catalog pagination, and capability-display flows for local Ollama inventory management
 - overview live activity stream updates through the browser EventSource client
 - daemon page settings save flow, shared model-picker interactions, live log rendering, and danger-zone ordering below the log section
 - daemon runtime strategy persistence through the shared settings form
@@ -78,11 +78,15 @@ go test ./...
 This now verifies both package integrity and a first slice of focused engine behavior. The current Go tests cover:
 
 - project-task retrieval for commands like `npm run d`
+- Ollama request payload wiring for configured `keep_alive` values
 - filesystem retrieval for path-oriented buffers like `git add s`
 - git branch retrieval for branch-oriented buffers like `git switch fea`
 - retrieved history matches surfacing in inspect context and prompts
+- cwd fallback for recent commands and recent output context when a session is new or has no recorded commands yet
+- inspect responses exposing the last three command contexts, including their output excerpts
 - recent-output selection that prefers relevant failure and branch context over unrelated session noise
 - inspect responses and prompts that expose selected recent output context
+- prompt construction with a configured static system-prompt prefix
 - prompt construction that includes retrieved local context
 
 There is also a focused engine microbenchmark for a mixed `git checkout fea` workload that exercises session context hydration, history lookup, path retrieval, and git branch retrieval together:
@@ -113,6 +117,7 @@ It currently checks:
 - the daemon can be started and passed a health check
 - a recorded command can be suggested back from history
 - accepting a suggestion updates the buffer correctly
+- accepting a suggestion re-enters the shell buffer-change flow so a follow-up suggestion can be requested from the accepted prefix
 - rejecting a suggestion logs feedback correctly
 - non-allowlisted commands remain uncaptured by default
 - allowlisted PTY capture records command output without stripping terminal behavior
@@ -156,13 +161,15 @@ or:
 ./bin/model-bench -models qwen2.5-coder:7b
 ```
 
-This is not a pass/fail test. It is a measurement tool for:
+This is primarily a measurement tool for:
 
 - latency
 - valid prefix completion rate
 - acceptable suggestion rate
 
 It is useful for comparing local models and prompt changes against a fixed case list.
+
+The CLI now fails fast by default when a model request errors. That stops wasting time on the rest of the matrix, writes whatever partial results have already been collected, and exits non-zero so the saved benchmark job can be marked failed instead of completed.
 
 ## Manual Validation We Have Used
 

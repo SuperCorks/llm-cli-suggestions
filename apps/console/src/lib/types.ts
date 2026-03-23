@@ -19,7 +19,9 @@ export interface RuntimeSettings {
   dbPath: string;
   modelName: string;
   modelBaseUrl: string;
+  modelKeepAlive: string;
   suggestStrategy: SuggestStrategy;
+  systemPromptStatic: string;
   suggestTimeoutMs: number;
   ptyCaptureAllowlist: string;
 }
@@ -29,12 +31,14 @@ export interface OllamaModelOption {
   installed: boolean;
   source: "installed" | "library";
   capabilities?: string[];
+  remoteOnly?: boolean;
 }
 
 export interface OllamaInstallJob {
   id: string;
   model: string;
-  status: "pending" | "running" | "completed" | "failed";
+  action: "install" | "remove";
+  status: "pending" | "running" | "completed" | "failed" | "cancelled";
   message: string;
   progressPercent: number;
   completed: number;
@@ -43,6 +47,14 @@ export interface OllamaInstallJob {
   startedAtMs: number;
   updatedAtMs: number;
   finishedAtMs: number;
+}
+
+export interface RuntimeMemoryStatus {
+  daemonRssBytes: number | null;
+  modelLoadedBytes: number | null;
+  modelVramBytes: number | null;
+  totalTrackedBytes: number | null;
+  modelName: string | null;
 }
 
 export interface RuntimeStatus {
@@ -56,6 +68,7 @@ export interface RuntimeStatus {
   logPath: string;
   pidPath: string;
   pid: number | null;
+  memory: RuntimeMemoryStatus;
 }
 
 export interface ActivitySignal {

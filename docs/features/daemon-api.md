@@ -14,6 +14,8 @@ The Go daemon is the local service that coordinates suggestions, logging, and st
 
 Returns daemon health plus model and socket information.
 
+The daemon runtime itself is configured from `runtime.env` values such as model name, Ollama base URL, suggestion strategy, timeout, and Ollama `keep_alive`.
+
 ### `POST /suggest`
 
 Accepts a suggestion request containing:

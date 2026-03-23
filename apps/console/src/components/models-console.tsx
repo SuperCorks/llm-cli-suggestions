@@ -1,7 +1,8 @@
 "use client";
 
 import { Download } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { ModelPicker } from "@/components/model-picker";
 import type {
@@ -15,8 +16,27 @@ interface ModelsConsoleProps {
   initialModels: OllamaModelOption[];
   initialInstalledCount: number;
   initialLibraryCount: number;
+  initialRemoteLibraryCount: number;
   initialInstalledError?: string;
   initialLibraryError?: string;
+}
+
+function isActiveOperation(status: OllamaInstallJob["status"]) {
+  return status === "pending" || status === "running";
+}
+
+function operationTitle(job: OllamaInstallJob) {
+  return `${job.action === "install" ? "Download" : "Removal"} ${job.model}`;
+}
+
+function operationStatusClass(job: OllamaInstallJob) {
+  if (job.status === "failed" || job.status === "cancelled") {
+    return "status-pill status-pill-warning";
+  }
+  if (job.status === "completed") {
+    return "status-pill status-pill-completed";
+  }
+  return "status-pill status-pill-running";
 }
 
 export function ModelsConsole({
@@ -24,6 +44,7 @@ export function ModelsConsole({
   initialModels,
   initialInstalledCount,
   initialLibraryCount,
+  initialRemoteLibraryCount,
   initialInstalledError = "",
   initialLibraryError = "",
 }: ModelsConsoleProps) {
@@ -33,20 +54,16 @@ export function ModelsConsole({
   const [inventorySummary, setInventorySummary] = useState({
     installedCount: initialInstalledCount,
     libraryCount: initialLibraryCount,
+    remoteLibraryCount: initialRemoteLibraryCount,
     installedError: initialInstalledError,
     libraryError: initialLibraryError,
   });
   const [downloadModel, setDownloadModel] = useState("");
   const [search, setSearch] = useState("");
-  const [message, setMessage] = useState("");
   const [error, setError] = useState("");
-  const [busy, setBusy] = useState("");
-  const [installPrompt, setInstallPrompt] = useState<string | null>(null);
-  const [installState, setInstallState] = useState<OllamaInstallJob | null>(null);
-  const [removePrompt, setRemovePrompt] = useState<string | null>(null);
+  const [operationJobs, setOperationJobs] = useState<OllamaInstallJob[]>([]);
   const [availablePage, setAvailablePage] = useState(1);
   const [hydrated, setHydrated] = useState(false);
-  const pollTimerRef = useRef<number | null>(null);
 
   const configuredModel = runtime.settings.modelName;
   const modelIsLive = runtime.health.ok && runtime.health.modelName === configuredModel;
@@ -79,8 +96,32 @@ export function ModelsConsole({
     [downloadModel, models],
   );
 
+  const activeOperationByModel = useMemo(() => {
+    const byModel = new Map<string, OllamaInstallJob>();
+    for (const job of operationJobs) {
+      if (!isActiveOperation(job.status) || byModel.has(job.model)) {
+        continue;
+      }
+      byModel.set(job.model, job);
+    }
+    return byModel;
+  }, [operationJobs]);
+
+  const activeOperations = useMemo(
+    () => operationJobs.filter((job) => isActiveOperation(job.status)),
+    [operationJobs],
+  );
+
+  const recentOperations = useMemo(
+    () => operationJobs.filter((job) => !isActiveOperation(job.status)).slice(0, 6),
+    [operationJobs],
+  );
+
   const canDownload =
-    Boolean(selectedDownloadOption) && !selectedDownloadOption?.installed && busy === "";
+    Boolean(selectedDownloadOption) &&
+    !selectedDownloadOption?.installed &&
+    !selectedDownloadOption?.remoteOnly &&
+    !activeOperationByModel.has(selectedDownloadOption?.name || "");
 
   const refreshRuntime = useCallback(async () => {
     const response = await fetch("/api/runtime", { cache: "no-store" });
@@ -101,6 +142,7 @@ export function ModelsConsole({
       models?: OllamaModelOption[];
       installedCount?: number;
       libraryCount?: number;
+      remoteLibraryCount?: number;
       installedError?: string;
       libraryError?: string;
       error?: string;
@@ -112,9 +154,25 @@ export function ModelsConsole({
     setInventorySummary({
       installedCount: data.installedCount || 0,
       libraryCount: data.libraryCount || 0,
+      remoteLibraryCount: data.remoteLibraryCount || 0,
       installedError: data.installedError || "",
       libraryError: data.libraryError || "",
     });
+  }, []);
+
+  const refreshOperations = useCallback(async (baseUrl: string) => {
+    const response = await fetch(
+      `/api/ollama/operations?baseUrl=${encodeURIComponent(baseUrl)}`,
+      { cache: "no-store" },
+    );
+    const data = (await response.json()) as {
+      jobs?: OllamaInstallJob[];
+      error?: string;
+    };
+    if (!response.ok) {
+      throw new Error(data.error || "Unable to refresh model operations");
+    }
+    setOperationJobs(data.jobs || []);
   }, []);
 
   useEffect(() => {
@@ -128,7 +186,10 @@ export function ModelsConsole({
       try {
         const nextRuntime = await refreshRuntime();
         if (!cancelled) {
-          await refreshModels(nextRuntime.settings.modelBaseUrl);
+          await Promise.all([
+            refreshModels(nextRuntime.settings.modelBaseUrl),
+            refreshOperations(nextRuntime.settings.modelBaseUrl),
+          ]);
         }
       } catch (requestError) {
         if (!cancelled) {
@@ -145,11 +206,8 @@ export function ModelsConsole({
 
     return () => {
       cancelled = true;
-      if (pollTimerRef.current !== null) {
-        window.clearTimeout(pollTimerRef.current);
-      }
     };
-  }, [refreshModels, refreshRuntime]);
+  }, [refreshModels, refreshOperations, refreshRuntime]);
 
   useEffect(() => {
     setAvailablePage(1);
@@ -161,59 +219,37 @@ export function ModelsConsole({
     }
   }, [availablePage, availableTotalPages]);
 
-  function scheduleInstallPoll(jobId: string) {
-    if (pollTimerRef.current !== null) {
-      window.clearTimeout(pollTimerRef.current);
+  useEffect(() => {
+    if (activeOperations.length === 0) {
+      return;
     }
-    pollTimerRef.current = window.setTimeout(() => {
-      void pollInstallStatus(jobId);
+
+    const timer = window.setTimeout(() => {
+      void Promise.all([
+        refreshOperations(runtime.settings.modelBaseUrl),
+        refreshModels(runtime.settings.modelBaseUrl),
+      ]).catch((requestError) => {
+        setError(
+          requestError instanceof Error
+            ? requestError.message
+            : "Unable to refresh model operations",
+        );
+      });
     }, 700);
-  }
 
-  async function pollInstallStatus(jobId: string) {
-    try {
-      const response = await fetch(`/api/ollama/install/${jobId}`, { cache: "no-store" });
-      const data = (await response.json()) as {
-        job?: OllamaInstallJob;
-        error?: string;
-      };
-      if (!response.ok || !data.job) {
-        throw new Error(data.error || "Unable to fetch install progress");
-      }
-
-      setInstallState(data.job);
-
-      if (data.job.status === "pending" || data.job.status === "running") {
-        scheduleInstallPoll(jobId);
-        return;
-      }
-
-      pollTimerRef.current = null;
-      await refreshModels(runtime.settings.modelBaseUrl);
-      await refreshRuntime();
-
-      if (data.job.status === "completed") {
-        setMessage(`${data.job.model} downloaded from Ollama.`);
-        setDownloadModel("");
-        return;
-      }
-
-      setError(data.job.error || `${data.job.model} download failed.`);
-    } catch (requestError) {
-      setError(
-        requestError instanceof Error ? requestError.message : "Unable to fetch install progress",
-      );
-    } finally {
-      setBusy("");
-    }
-  }
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [activeOperations.length, refreshModels, refreshOperations, runtime.settings.modelBaseUrl]);
 
   async function startDownload(modelName: string) {
-    setBusy("download");
-    setInstallPrompt(null);
-    setMessage("");
     setError("");
     try {
+      const model = models.find((candidate) => candidate.name === modelName) || null;
+      if (model?.remoteOnly) {
+        throw new Error("Cloud and remote-only Ollama models cannot be downloaded locally.");
+      }
+
       const response = await fetch("/api/ollama/install", {
         method: "POST",
         headers: {
@@ -231,10 +267,13 @@ export function ModelsConsole({
       if (!response.ok || !data.job) {
         throw new Error(data.error || "Unable to start model download");
       }
-      setInstallState(data.job);
-      scheduleInstallPoll(data.job.id);
+
+      await Promise.all([
+        refreshOperations(runtime.settings.modelBaseUrl),
+        refreshModels(runtime.settings.modelBaseUrl),
+      ]);
+      setDownloadModel("");
     } catch (requestError) {
-      setBusy("");
       setError(
         requestError instanceof Error ? requestError.message : "Unable to start model download",
       );
@@ -242,9 +281,6 @@ export function ModelsConsole({
   }
 
   async function removeModel(modelName: string) {
-    setBusy(`remove:${modelName}`);
-    setRemovePrompt(null);
-    setMessage("");
     setError("");
     try {
       const response = await fetch("/api/ollama/remove", {
@@ -257,20 +293,53 @@ export function ModelsConsole({
           baseUrl: runtime.settings.modelBaseUrl,
         }),
       });
-      const data = (await response.json()) as { error?: string };
-      if (!response.ok) {
+      const data = (await response.json()) as { job?: OllamaInstallJob; error?: string };
+      if (!response.ok || !data.job) {
         throw new Error(data.error || "Unable to remove model");
       }
-      await refreshModels(runtime.settings.modelBaseUrl);
-      await refreshRuntime();
-      setMessage(`${modelName} removed from local Ollama storage.`);
+
+      await Promise.all([
+        refreshOperations(runtime.settings.modelBaseUrl),
+        refreshModels(runtime.settings.modelBaseUrl),
+      ]);
       if (downloadModel === modelName) {
         setDownloadModel("");
       }
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Unable to remove model");
-    } finally {
-      setBusy("");
+    }
+  }
+
+  async function updateOperation(jobId: string, action: "cancel" | "dismiss") {
+    setError("");
+    try {
+      const response = await fetch("/api/ollama/operations", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          jobId,
+          action,
+          baseUrl: runtime.settings.modelBaseUrl,
+        }),
+      });
+      const data = (await response.json()) as {
+        jobs?: OllamaInstallJob[];
+        error?: string;
+      };
+      if (!response.ok) {
+        throw new Error(data.error || `Unable to ${action} model operation`);
+      }
+
+      setOperationJobs(data.jobs || []);
+      await refreshModels(runtime.settings.modelBaseUrl);
+    } catch (requestError) {
+      setError(
+        requestError instanceof Error
+          ? requestError.message
+          : `Unable to ${action} model operation`,
+      );
     }
   }
 
@@ -296,14 +365,13 @@ export function ModelsConsole({
           <span>Available To Download</span>
           <strong>{inventorySummary.libraryCount}</strong>
         </li>
+        <li>
+          <span>Remote / Cloud Only</span>
+          <strong>{inventorySummary.remoteLibraryCount}</strong>
+        </li>
       </ul>
 
-      {(message || error) ? (
-        <div className="inline-actions">
-          {message ? <p className="success-text">{message}</p> : null}
-          {error ? <p className="error-text">{error}</p> : null}
-        </div>
-      ) : null}
+      {error ? <p className="error-text">{error}</p> : null}
 
       <div className="grid two-up">
         <div className="detail-block">
@@ -325,7 +393,11 @@ export function ModelsConsole({
               onSelect={(value) => setDownloadModel(value)}
               placeholder="Select or type an Ollama model"
               helperText={
-                inventorySummary.installedError || inventorySummary.libraryError
+                selectedDownloadOption?.remoteOnly
+                  ? "Cloud and remote-only models stay visible in the catalog but cannot be downloaded into local Ollama storage."
+                  : activeOperationByModel.has(selectedDownloadOption?.name || "")
+                    ? activeOperationByModel.get(selectedDownloadOption?.name || "")?.message || "Operation in progress."
+                  : inventorySummary.installedError || inventorySummary.libraryError
                   ? [inventorySummary.installedError, inventorySummary.libraryError]
                       .filter(Boolean)
                       .join(" ")
@@ -338,7 +410,7 @@ export function ModelsConsole({
                 disabled={!canDownload}
                 onClick={() => {
                   if (selectedDownloadOption?.name) {
-                    setInstallPrompt(selectedDownloadOption.name);
+                    void startDownload(selectedDownloadOption.name);
                   }
                 }}
               >
@@ -347,8 +419,12 @@ export function ModelsConsole({
               <button
                 type="button"
                 className="button-secondary"
-                disabled={busy !== ""}
-                onClick={() => void refreshModels(runtime.settings.modelBaseUrl)}
+                onClick={() =>
+                  void Promise.all([
+                    refreshModels(runtime.settings.modelBaseUrl),
+                    refreshOperations(runtime.settings.modelBaseUrl),
+                  ])
+                }
               >
                 Refresh Inventory
               </button>
@@ -386,11 +462,74 @@ export function ModelsConsole({
               </p>
             </div>
           </div>
+          <div className="model-operations-panel">
+            <div className="detail-block-header model-operations-header">
+              <div>
+                <h4>Model Operations</h4>
+                <p className="helper-text">
+                  Downloads and removals continue here across page refreshes while the console server stays running.
+                </p>
+              </div>
+            </div>
+            {operationJobs.length > 0 ? (
+              <div className="model-operation-list">
+                {[...activeOperations, ...recentOperations].map((job) => (
+                  <div key={job.id} className="model-operation-item">
+                    <div className="model-operation-head">
+                      <strong>{operationTitle(job)}</strong>
+                      <span className={operationStatusClass(job)}>
+                        {job.status}
+                      </span>
+                    </div>
+                    <p
+                      className={
+                        job.status === "failed" ? "error-text" : "helper-text"
+                      }
+                    >
+                      {job.error || job.message}
+                    </p>
+                    <div className="toast-progress model-operation-progress">
+                      <div
+                        className="toast-progress-fill"
+                        style={{ width: `${Math.max(6, job.progressPercent)}%` }}
+                      />
+                    </div>
+                    <div className="model-operation-meta">
+                      <span>{job.progressPercent}%</span>
+                      <span>{job.model}</span>
+                    </div>
+                    <div className="model-operation-actions">
+                      {isActiveOperation(job.status) ? (
+                        <button
+                          type="button"
+                          className="button-secondary"
+                          onClick={() => void updateOperation(job.id, "cancel")}
+                        >
+                          Cancel
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          className="button-secondary"
+                          onClick={() => void updateOperation(job.id, "dismiss")}
+                        >
+                          Dismiss
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="helper-text">No model downloads or removals need attention.</p>
+            )}
+          </div>
           <div className="model-catalog-list">
             {installedModels.length > 0 ? (
               installedModels.map((model) => {
                 const isConfigured = model.name === configuredModel;
                 const isLive = modelIsLive && model.name === configuredModel;
+                const activeJob = activeOperationByModel.get(model.name) || null;
                 return (
                   <div key={model.name} className="model-catalog-item">
                     <div className="model-catalog-item-header">
@@ -407,13 +546,23 @@ export function ModelsConsole({
                       <button
                         type="button"
                         className="button-danger"
-                        disabled={busy !== "" || isConfigured}
-                        onClick={() => setRemovePrompt(model.name)}
+                        disabled={Boolean(activeJob) || isConfigured}
+                        onClick={() => void removeModel(model.name)}
                       >
-                        Remove
+                        {activeJob?.action === "remove" ? "Removing" : "Remove"}
                       </button>
                       {isConfigured ? (
-                        <span className="helper-text">Change the daemon setting before removing.</span>
+                        <span className="helper-text">
+                          {hydrated ? (
+                            <>
+                              Change the <Link href="/daemon">daemon settings</Link> before removing.
+                            </>
+                          ) : (
+                            "Change the daemon settings before removing."
+                          )}
+                        </span>
+                      ) : activeJob ? (
+                        <span className="helper-text">{activeJob.message}</span>
                       ) : null}
                     </div>
                   </div>
@@ -467,12 +616,29 @@ export function ModelsConsole({
             {availableModels.length > 0 ? (
               pagedAvailableModels.map((model) => {
                 const isConfigured = model.name === configuredModel;
+                const isRemoteOnly = Boolean(model.remoteOnly);
+                const activeJob = activeOperationByModel.get(model.name) || null;
                 return (
-                  <div key={model.name} className="model-catalog-item">
+                  <div
+                    key={model.name}
+                    className={
+                      isRemoteOnly
+                        ? "model-catalog-item model-catalog-item-remote"
+                        : "model-catalog-item"
+                    }
+                  >
                     <div className="model-catalog-item-header">
                       <code>{model.name}</code>
                       <div className="model-catalog-badges">
-                        <span className="model-status-chip model-status-chip-available">available</span>
+                        <span
+                          className={
+                            isRemoteOnly
+                              ? "model-status-chip model-status-chip-remote"
+                              : "model-status-chip model-status-chip-available"
+                          }
+                        >
+                          {isRemoteOnly ? "remote" : "available"}
+                        </span>
                         {isConfigured ? (
                           <span className="status-pill status-pill-running">configured</span>
                         ) : null}
@@ -490,12 +656,27 @@ export function ModelsConsole({
                     <div className="model-catalog-item-actions">
                       <button
                         type="button"
-                        disabled={busy !== ""}
-                        onClick={() => setInstallPrompt(model.name)}
+                        disabled={Boolean(activeJob) || isRemoteOnly}
+                        onClick={() => {
+                          if (!isRemoteOnly && !activeJob) {
+                            void startDownload(model.name);
+                          }
+                        }}
                       >
                         <Download aria-hidden="true" />
-                        Download
+                        {isRemoteOnly
+                          ? "Remote Only"
+                          : activeJob?.action === "install"
+                            ? "Downloading"
+                            : "Download"}
                       </button>
+                      {isRemoteOnly ? (
+                        <span className="helper-text">
+                          Remote/cloud model. Visible for reference, but local installation is disabled.
+                        </span>
+                      ) : activeJob ? (
+                        <span className="helper-text">{activeJob.message}</span>
+                      ) : null}
                     </div>
                   </div>
                 );
@@ -538,95 +719,6 @@ export function ModelsConsole({
         </div>
       </div>
 
-      <div className="toast-stack" aria-live="polite">
-        {installPrompt ? (
-          <div className="toast toast-warning" role="status">
-            <div className="toast-title">Download {installPrompt}?</div>
-            <p className="toast-body">
-              This model will be pulled into your local Ollama store.
-            </p>
-            <div className="toast-actions">
-              <button type="button" onClick={() => void startDownload(installPrompt)}>
-                Download Model
-              </button>
-              <button
-                type="button"
-                className="button-secondary"
-                onClick={() => setInstallPrompt(null)}
-              >
-                Not now
-              </button>
-            </div>
-          </div>
-        ) : null}
-
-        {removePrompt ? (
-          <div className="toast toast-error" role="status">
-            <div className="toast-title">Remove {removePrompt}?</div>
-            <p className="toast-body">
-              This removes the downloaded model from local Ollama storage.
-            </p>
-            <div className="toast-actions">
-              <button
-                type="button"
-                className="button-danger"
-                onClick={() => void removeModel(removePrompt)}
-              >
-                Remove Model
-              </button>
-              <button
-                type="button"
-                className="button-secondary"
-                onClick={() => setRemovePrompt(null)}
-              >
-                Keep installed
-              </button>
-            </div>
-          </div>
-        ) : null}
-
-        {installState ? (
-          <div
-            className={
-              installState.status === "failed"
-                ? "toast toast-error"
-                : installState.status === "completed"
-                  ? "toast toast-success"
-                  : "toast"
-            }
-            role="status"
-          >
-            <div className="toast-title">
-              {installState.status === "completed"
-                ? `${installState.model} ready`
-                : installState.status === "failed"
-                  ? `${installState.model} failed`
-                  : `Downloading ${installState.model}`}
-            </div>
-            <p className="toast-body">{installState.error || installState.message}</p>
-            <div className="toast-progress">
-              <div
-                className="toast-progress-fill"
-                style={{ width: `${Math.max(6, installState.progressPercent)}%` }}
-              />
-            </div>
-            <div className="toast-footer">
-              <span>
-                {installState.status === "completed" ? "100%" : `${installState.progressPercent}%`}
-              </span>
-              {installState.status === "completed" || installState.status === "failed" ? (
-                <button
-                  type="button"
-                  className="button-secondary"
-                  onClick={() => setInstallState(null)}
-                >
-                  Dismiss
-                </button>
-              ) : null}
-            </div>
-          </div>
-        ) : null}
-      </div>
     </div>
   );
 }

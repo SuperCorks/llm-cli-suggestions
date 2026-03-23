@@ -124,7 +124,8 @@ test("overview and daemon panels apply streamed updates", async ({ page }) => {
 test("suggestions and commands pages render seeded history", async ({ page }) => {
   await page.goto("/suggestions");
 
-  await expect(page.getByRole("heading", { name: "Suggestions" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Suggestions", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Show Filters" }).click();
   await page.getByLabel("Query").fill("git st");
   await page.getByLabel("Outcome").selectOption("accepted");
   await page.getByRole("button", { name: "Apply Filters" }).click();
@@ -134,7 +135,7 @@ test("suggestions and commands pages render seeded history", async ({ page }) =>
   await expect(page.getByText("No suggestions matched the selected filters.")).toHaveCount(0);
 
   await page.goto("/commands");
-  await expect(page.getByRole("heading", { name: "Commands & Feedback" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Commands & Feedback", exact: true })).toBeVisible();
   await expect(page.getByText("session-alpha").first()).toBeVisible();
   await expect(page.getByText("npm run build").first()).toBeVisible();
   await expect(page.getByText("git status").nth(0)).toBeVisible();
@@ -160,15 +161,16 @@ test("suggestions page supports sorting, pagination, structured context, and gra
   await expect(page.getByText("Page 2")).toBeVisible();
 
   await page.goto("/suggestions?query=git%20commit%20-m");
+  await page.getByRole("button", { name: "Show Filters" }).click();
   const gradedRow = page.locator("tbody tr").filter({
     has: page.getByText('git commit -m "ship console"'),
   });
   await gradedRow.getByRole("button", { name: "Good" }).click();
   await expect(gradedRow.getByRole("button", { name: "Clear" })).toBeVisible();
 
-  await gradedRow.getByRole("button", { name: /no branch|main/i }).hover();
-  await expect(page.getByText("Structured Context")).toBeVisible();
-  const copyButton = page.getByRole("button", { name: /Copy|Copied/ });
+  await gradedRow.getByRole("button", { name: /no branch|main/i }).click();
+  await expect(page.getByRole("heading", { name: "Retrieved Context", exact: true })).toBeVisible();
+  const copyButton = page.getByRole("button", { name: /Copy Context|Copied/ });
   await expect(copyButton).toBeVisible();
 
   await page.reload();
@@ -177,6 +179,7 @@ test("suggestions page supports sorting, pagination, structured context, and gra
   });
   await expect(reloadedRow.getByRole("button", { name: "Clear" })).toBeVisible();
 
+  await page.getByRole("button", { name: "Show Filters" }).click();
   await page.getByLabel("Quality Label").selectOption("good");
   await page.getByRole("button", { name: "Apply Filters" }).click();
   await expect(page.getByText('git commit -m "ship console"').first()).toBeVisible();
@@ -271,13 +274,13 @@ test("ranking inspector shows a mocked winner", async ({ page }) => {
     page.waitForResponse((response) =>
       response.url().includes("/api/ranking") && response.request().method() === "POST",
     ),
-    page.getByRole("button", { name: "Inspect" }).click(),
+    page.getByRole("button", { name: "Inspect", exact: true }).click(),
   ]);
 
   await expect(page.getByText("Winning candidate")).toBeVisible();
   await expect(page.getByText("git status --short").first()).toBeVisible();
   await expect(page.getByText("mock prompt")).toBeVisible();
-  await expect(page.getByText("Retrieved Context")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Retrieved Context", exact: true })).toBeVisible();
   await expect(page.getByText("src/")).toBeVisible();
   await expect(page.getByText("stable")).toBeVisible();
 });
@@ -308,7 +311,7 @@ test("ranking inspector tolerates null prompt context fields", async ({ page }) 
     page.waitForResponse((response) =>
       response.url().includes("/api/ranking") && response.request().method() === "POST",
     ),
-    page.getByRole("button", { name: "Inspect" }).click(),
+    page.getByRole("button", { name: "Inspect", exact: true }).click(),
   ]);
 
   await expect(page.getByText("No suggestion")).toBeVisible();
@@ -378,7 +381,7 @@ test("ranking inspector validates form state and forwards edited context", async
 
   await page.goto("/inspector");
 
-  const submit = page.getByRole("button", { name: "Inspect" });
+  const submit = page.getByRole("button", { name: "Inspect", exact: true });
   await page.getByLabel("Buffer").fill("");
   await expect(submit).toBeDisabled();
   await expect(page.getByText("Buffer is required.")).toBeVisible();
@@ -487,7 +490,7 @@ test("ranking inspector renders model-only results with raw model output", async
     page.waitForResponse((response) =>
       response.url().includes("/api/ranking") && response.request().method() === "POST",
     ),
-    page.getByRole("button", { name: "Inspect" }).click(),
+    page.getByRole("button", { name: "Inspect", exact: true }).click(),
   ]);
 
   await expect(page.getByText("git status --short").first()).toBeVisible();
@@ -506,6 +509,8 @@ test("ranking inspector surfaces empty model-only output state", async ({ page }
       body: JSON.stringify({
         model_name: "qwen2.5-coder:7b",
         history_trusted: false,
+        model_error:
+          "qwen2.5-coder:7b timed out after 2s. Increase Suggest Timeout on the Daemon page or warm the model first.",
         prompt: "model-only empty-output prompt",
         raw_model_output: "",
         cleaned_model_output: "",
@@ -527,10 +532,15 @@ test("ranking inspector surfaces empty model-only output state", async ({ page }
     page.waitForResponse((response) =>
       response.url().includes("/api/ranking") && response.request().method() === "POST",
     ),
-    page.getByRole("button", { name: "Inspect" }).click(),
+    page.getByRole("button", { name: "Inspect", exact: true }).click(),
   ]);
 
   await expect(page.getByText("No suggestion")).toBeVisible();
+  await expect(
+    page.getByText(
+      "qwen2.5-coder:7b timed out after 2s. Increase Suggest Timeout on the Daemon page or warm the model first.",
+    ),
+  ).toBeVisible();
   await expect(page.getByText("No raw model output.")).toBeVisible();
   await expect(page.getByText("model-only empty-output prompt")).toBeVisible();
   await expect(
@@ -610,12 +620,12 @@ test("ranking inspector clears stale results and shows api errors", async ({ pag
 
   await page.goto("/inspector");
 
-  await page.getByRole("button", { name: "Inspect" }).click();
+  await page.getByRole("button", { name: "Inspect", exact: true }).click();
   await expect(page.getByText("Winning candidate")).toBeVisible();
   await expect(page.getByText("git status").first()).toBeVisible();
 
   await page.getByLabel("Buffer").fill("broken");
-  await page.getByRole("button", { name: "Inspect" }).click();
+  await page.getByRole("button", { name: "Inspect", exact: true }).click();
 
   await expect(page.getByText("daemon inspect failed")).toBeVisible();
   await expect(page.getByText("Winning candidate")).toHaveCount(0);
@@ -640,13 +650,32 @@ test("model lab guardrails and defaults work with local fixtures", async ({ page
           dbPath: "/tmp/lac/autocomplete.sqlite",
           modelName: "qwen2.5-coder:7b",
           modelBaseUrl: "http://127.0.0.1:11434",
+          modelKeepAlive: "5m",
           suggestStrategy: "history+model",
+          systemPromptStatic: "",
           suggestTimeoutMs: 1200,
+          ptyCaptureAllowlist: "",
         },
         logPath: "/tmp/lac/daemon.log",
         pidPath: "/tmp/lac/daemon.pid",
         pid: 12345,
         recentLog: "",
+      }),
+    });
+  });
+
+  await page.route("**/api/ollama/models?*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        models: [
+          { name: "qwen2.5-coder:7b", installed: true, source: "installed" },
+          { name: "mistral-small", installed: true, source: "installed" },
+          { name: "phi4", installed: true, source: "installed" },
+        ],
+        installedCount: 3,
+        libraryCount: 0,
       }),
     });
   });
@@ -707,13 +736,32 @@ test("model lab benchmark flow works with local fixtures", async ({ page }) => {
           dbPath: "/tmp/lac/autocomplete.sqlite",
           modelName: "qwen2.5-coder:7b",
           modelBaseUrl: "http://127.0.0.1:11434",
+          modelKeepAlive: "5m",
           suggestStrategy: "history+model",
+          systemPromptStatic: "",
           suggestTimeoutMs: 1200,
+          ptyCaptureAllowlist: "",
         },
         logPath: "/tmp/lac/daemon.log",
         pidPath: "/tmp/lac/daemon.pid",
         pid: 12345,
         recentLog: "",
+      }),
+    });
+  });
+
+  await page.route("**/api/ollama/models?*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        models: [
+          { name: "qwen2.5-coder:7b", installed: true, source: "installed" },
+          { name: "mistral-small", installed: true, source: "installed" },
+          { name: "phi4", installed: true, source: "installed" },
+        ],
+        installedCount: 3,
+        libraryCount: 0,
       }),
     });
   });
@@ -882,10 +930,8 @@ test("model lab benchmark flow works with local fixtures", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Benchmark Run #77" })).toHaveCount(0);
 });
 
-test("model lab ad-hoc flow works with local fixtures", async ({ page }) => {
-  let rankingRequestCount = 0;
-  const seenStrategies = new Set<string>();
-  const capturedPayloads: Array<Record<string, unknown>> = [];
+test("model lab benchmark runs fail early and preserve partial results", async ({ page }) => {
+  let benchmarkListRequests = 0;
 
   await page.route("**/api/runtime", async (route) => {
     await route.fulfill({
@@ -911,6 +957,212 @@ test("model lab ad-hoc flow works with local fixtures", async ({ page }) => {
         pidPath: "/tmp/lac/daemon.pid",
         pid: 12345,
         recentLog: "",
+      }),
+    });
+  });
+
+  await page.route("**/api/benchmarks/run", async (route) => {
+    await route.fulfill({
+      status: 202,
+      contentType: "application/json",
+      body: JSON.stringify({
+        runId: 88,
+      }),
+    });
+  });
+
+  await page.route("**/api/benchmarks", async (route) => {
+    benchmarkListRequests += 1;
+    const failedRun = {
+      id: 88,
+      status: "failed",
+      models: ["nemotron-mini:4b", "qwen3-coder:latest"],
+      repeatCount: 4,
+      timeoutMs: 5000,
+      outputJsonPath: "/tmp/run-88.json",
+      summary: {
+        progress: {
+          completed: 1,
+          total: 72,
+          percent: 1,
+          status: "failed",
+          currentModel: "nemotron-mini:4b",
+          currentCase: "docker_compose_logs",
+          currentRun: 1,
+        },
+        models: {
+          "nemotron-mini:4b": {
+            total: 1,
+            validPrefixRate: 0,
+            acceptedRate: 0,
+            avgLatencyMs: 5000,
+          },
+        },
+      },
+      errorText:
+        "benchmark failed early: model nemotron-mini:4b failed on docker_compose_logs run 1: call ollama: Post \"http://127.0.0.1:11434/api/generate\": context deadline exceeded",
+      createdAtMs: Date.now(),
+      startedAtMs: Date.now() - 2000,
+      finishedAtMs: Date.now() - 1000,
+    };
+
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        runs: [
+          benchmarkListRequests === 1
+            ? {
+                ...failedRun,
+                status: "running",
+                summary: {
+                  progress: {
+                    completed: 0,
+                    total: 72,
+                    percent: 0,
+                    status: "running",
+                    currentModel: "",
+                    currentCase: "",
+                    currentRun: 0,
+                  },
+                  models: {},
+                },
+                errorText: "",
+                finishedAtMs: 0,
+              }
+            : failedRun,
+        ],
+      }),
+    });
+  });
+
+  await page.route("**/api/benchmarks/88", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        run: {
+          id: 88,
+          status: "failed",
+          models: ["nemotron-mini:4b", "qwen3-coder:latest"],
+          repeatCount: 4,
+          timeoutMs: 5000,
+          outputJsonPath: "/tmp/run-88.json",
+          summary: {
+            progress: {
+              completed: 1,
+              total: 72,
+              percent: 1,
+              status: "failed",
+              currentModel: "nemotron-mini:4b",
+              currentCase: "docker_compose_logs",
+              currentRun: 1,
+            },
+            models: {
+              "nemotron-mini:4b": {
+                total: 1,
+                validPrefixRate: 0,
+                acceptedRate: 0,
+                avgLatencyMs: 5000,
+              },
+            },
+          },
+          errorText:
+            "benchmark failed early: model nemotron-mini:4b failed on docker_compose_logs run 1: call ollama: Post \"http://127.0.0.1:11434/api/generate\": context deadline exceeded",
+          createdAtMs: Date.now(),
+          startedAtMs: Date.now() - 2000,
+          finishedAtMs: Date.now() - 1000,
+        },
+        results: [
+          {
+            id: 8801,
+            runId: 88,
+            modelName: "nemotron-mini:4b",
+            caseName: "docker_compose_logs",
+            runNumber: 1,
+            latencyMs: 5000,
+            suggestionText: "",
+            validPrefix: false,
+            accepted: false,
+            errorText:
+              "call ollama: Post \"http://127.0.0.1:11434/api/generate\": context deadline exceeded",
+            createdAtMs: Date.now(),
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.goto("/lab");
+
+  const benchmarkPanel = getDetailBlock(page, "Run Saved Benchmarks");
+  await Promise.all([
+    page.waitForResponse((response) =>
+      response.url().includes("/api/benchmarks/run") && response.request().method() === "POST",
+    ),
+    benchmarkPanel.getByRole("button", { name: "Queue Benchmark" }).click(),
+  ]);
+
+  await expect(page.getByText("Benchmark queued as run #88.")).toBeVisible();
+  await expect(page.getByText("1 benchmark run active")).toBeVisible();
+  await expect.poll(() => benchmarkListRequests).toBeGreaterThan(1);
+  await expect(page.getByRole("cell", { name: "#88" })).toBeVisible();
+  await expect(page.getByText("failed").first()).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Benchmark Run #88" })).toBeVisible();
+  await expect(page.getByText("1/72 benchmark checks complete")).toBeVisible();
+  await expect(page.getByText(/benchmark failed early:/)).toBeVisible();
+  await expect(page.getByText("docker_compose_logs").first()).toBeVisible();
+  await expect(page.getByText(/context deadline exceeded/).first()).toBeVisible();
+});
+
+test("model lab ad-hoc flow works with local fixtures", async ({ page }) => {
+  let rankingRequestCount = 0;
+  const seenStrategies = new Set<string>();
+  const capturedPayloads: Array<Record<string, unknown>> = [];
+
+  await page.route("**/api/runtime", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        health: {
+          ok: true,
+          modelName: "qwen2.5-coder:7b",
+          socket: "/tmp/daemon.sock",
+        },
+        settings: {
+          stateDir: "/tmp/lac",
+          runtimeEnvPath: "/tmp/lac/runtime.env",
+          socketPath: "/tmp/daemon.sock",
+          dbPath: "/tmp/lac/autocomplete.sqlite",
+          modelName: "qwen2.5-coder:7b",
+          modelBaseUrl: "http://127.0.0.1:11434",
+          modelKeepAlive: "5m",
+          suggestStrategy: "history+model",
+          systemPromptStatic: "",
+          suggestTimeoutMs: 1200,
+          ptyCaptureAllowlist: "",
+        },
+        logPath: "/tmp/lac/daemon.log",
+        pidPath: "/tmp/lac/daemon.pid",
+        pid: 12345,
+        recentLog: "",
+      }),
+    });
+  });
+
+  await page.route("**/api/ollama/models?*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        models: [
+          { name: "qwen2.5-coder:7b", installed: true, source: "installed" },
+          { name: "mistral-small", installed: true, source: "installed" },
+          { name: "phi4", installed: true, source: "installed" },
+        ],
+        installedCount: 3,
+        libraryCount: 0,
       }),
     });
   });
@@ -1011,15 +1263,21 @@ test("daemon runtime settings and downloads work with local fixtures", async ({ 
   let openPathCalls = 0;
   let savedSuggestStrategy = "history+model";
   let savedModelName = "qwen2.5-coder:7b";
+  let savedSystemPromptStatic = "";
+  let savedModelKeepAlive = "5m";
   let phi4Installed = false;
 
   await page.route("**/api/runtime/settings", async (route) => {
     const payload = route.request().postDataJSON() as {
       LAC_MODEL_NAME?: string;
       LAC_SUGGEST_STRATEGY?: string;
+      LAC_MODEL_KEEP_ALIVE?: string;
+      LAC_SYSTEM_PROMPT_STATIC?: string;
     };
     savedModelName = payload.LAC_MODEL_NAME || savedModelName;
     savedSuggestStrategy = payload.LAC_SUGGEST_STRATEGY || savedSuggestStrategy;
+    savedModelKeepAlive = payload.LAC_MODEL_KEEP_ALIVE || savedModelKeepAlive;
+    savedSystemPromptStatic = payload.LAC_SYSTEM_PROMPT_STATIC || savedSystemPromptStatic;
 
     await route.fulfill({
       status: 200,
@@ -1031,8 +1289,11 @@ test("daemon runtime settings and downloads work with local fixtures", async ({ 
         dbPath: "/tmp/lac/autocomplete.sqlite",
         modelName: savedModelName,
         modelBaseUrl: "http://127.0.0.1:11434",
+        modelKeepAlive: savedModelKeepAlive,
         suggestStrategy: savedSuggestStrategy,
+        systemPromptStatic: savedSystemPromptStatic,
         suggestTimeoutMs: 1200,
+        ptyCaptureAllowlist: "",
       }),
     });
   });
@@ -1054,12 +1315,22 @@ test("daemon runtime settings and downloads work with local fixtures", async ({ 
           dbPath: "/tmp/lac/autocomplete.sqlite",
           modelName: savedModelName,
           modelBaseUrl: "http://127.0.0.1:11434",
+          modelKeepAlive: savedModelKeepAlive,
           suggestStrategy: savedSuggestStrategy,
+          systemPromptStatic: savedSystemPromptStatic,
           suggestTimeoutMs: 1200,
+          ptyCaptureAllowlist: "",
         },
         logPath: "/tmp/lac/daemon.log",
         pidPath: "/tmp/lac/daemon.pid",
         pid: 43210,
+        memory: {
+          daemonRssBytes: 134217728,
+          modelLoadedBytes: null,
+          modelVramBytes: null,
+          totalTrackedBytes: 134217728,
+          modelName: savedModelName,
+        },
       }),
     });
   });
@@ -1081,13 +1352,33 @@ test("daemon runtime settings and downloads work with local fixtures", async ({ 
           dbPath: "/tmp/lac/autocomplete.sqlite",
           modelName: savedModelName,
           modelBaseUrl: "http://127.0.0.1:11434",
+          modelKeepAlive: savedModelKeepAlive,
           suggestStrategy: savedSuggestStrategy,
+          systemPromptStatic: savedSystemPromptStatic,
           suggestTimeoutMs: 1200,
+          ptyCaptureAllowlist: "",
         },
         logPath: "/tmp/lac/daemon.log",
         pidPath: "/tmp/lac/daemon.pid",
         pid: 43210,
         recentLog: "Model warmed up in 146ms",
+        memory: {
+          daemonRssBytes: 134217728,
+          modelLoadedBytes: null,
+          modelVramBytes: null,
+          totalTrackedBytes: 134217728,
+          modelName: savedModelName,
+        },
+      }),
+    });
+  });
+
+  await page.route("**/api/runtime/log?*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        log: "Model warmed up in 146ms",
       }),
     });
   });
@@ -1174,11 +1465,13 @@ test("daemon runtime settings and downloads work with local fixtures", async ({ 
   expect(detailHeadings.indexOf("Recent Daemon Log")).toBeLessThan(
     detailHeadings.indexOf("Danger Zone"),
   );
+  await page.getByRole("button", { name: "Refresh Log" }).click();
   await expect(page.getByText("Model warmed up in 146ms")).toBeVisible();
   const runtimeSettingsPanel = getDetailBlock(page, "Runtime Settings");
   await expect(runtimeSettingsPanel.getByLabel("Model Name")).toHaveValue("qwen2.5-coder:7b");
   await expect(runtimeSettingsPanel.locator(".chip-list")).toHaveCount(0);
   await expect(runtimeSettingsPanel.getByLabel("Suggestion Strategy")).toHaveValue("history+model");
+  await runtimeSettingsPanel.getByLabel("System Prompt Prefix").fill("Always prefer concise safe commands.");
   await runtimeSettingsPanel.getByLabel("Suggestion Strategy").selectOption("history-only");
   await expect(
     runtimeSettingsPanel.getByText(
@@ -1186,19 +1479,24 @@ test("daemon runtime settings and downloads work with local fixtures", async ({ 
       { exact: false },
     ),
   ).toBeVisible();
-  await page.getByLabel("Model Name").fill("phi");
-  await page.getByRole("option", { name: /phi4/i }).click();
+  await runtimeSettingsPanel.getByLabel("Model Name").fill("phi4");
+  await runtimeSettingsPanel.getByRole("button", { name: "Save Settings" }).click();
   await expect(page.getByText("Download phi4?")).toBeVisible();
   await page.getByRole("button", { name: "Download Model" }).click();
   await expect(page.getByText("phi4 ready")).toBeVisible();
-  await page.getByRole("button", { name: "Save Settings" }).click();
-  await expect(page.getByText("Runtime settings saved and daemon restarted.")).toBeVisible();
+  await expect(page.getByText("phi4 downloaded. Runtime settings saved and applied.")).toBeVisible();
   await expect(runtimeSettingsPanel.getByLabel("Suggestion Strategy")).toHaveValue("history-only");
+  await expect(runtimeSettingsPanel.getByLabel("System Prompt Prefix")).toHaveValue(
+    "Always prefer concise safe commands.",
+  );
   await expect(page.getByText("Model warmed up in 146ms")).toBeVisible();
 
   await page.reload();
   await expect(runtimeSettingsPanel.getByLabel("Model Name")).toHaveValue("phi4");
   await expect(runtimeSettingsPanel.getByLabel("Suggestion Strategy")).toHaveValue("history-only");
+  await expect(runtimeSettingsPanel.getByLabel("System Prompt Prefix")).toHaveValue(
+    "Always prefer concise safe commands.",
+  );
 
   const pathRow = page.locator(".path-row").filter({ has: page.getByText("State dir") });
   await pathRow.hover();
@@ -1207,14 +1505,105 @@ test("daemon runtime settings and downloads work with local fixtures", async ({ 
 });
 
 test("models page manages installed and downloadable Ollama models", async ({ page }) => {
-  let installPollCount = 0;
   let gemmaInstalled = false;
+  let phiInstalled = false;
   let llamaInstalled = true;
   const extraLibraryModels = Array.from({ length: 28 }, (_, index) => ({
     name: `catalog-model-${String(index + 1).padStart(2, "0")}`,
     installed: false,
     source: "library" as const,
   }));
+  type MockJob = {
+    id: string;
+    action: "install" | "remove";
+    model: string;
+    status: "pending" | "running" | "completed" | "failed" | "cancelled";
+    message: string;
+    progressPercent: number;
+    completed: number;
+    total: number;
+    error: string;
+    startedAtMs: number;
+    updatedAtMs: number;
+    finishedAtMs: number;
+    polls: number;
+    targetPolls: number;
+  };
+  const jobs = new Map<string, MockJob>();
+
+  jobs.set("stalled-download:latest", {
+    id: "install-stalled-download-latest",
+    action: "install",
+    model: "stalled-download:latest",
+    status: "running",
+    message: "pulling layers",
+    progressPercent: 36,
+    completed: 36,
+    total: 100,
+    error: "",
+    startedAtMs: Date.now(),
+    updatedAtMs: Date.now(),
+    finishedAtMs: 0,
+    polls: 0,
+    targetPolls: 999,
+  });
+
+  function serializeJob(job: MockJob) {
+    return {
+      id: job.id,
+      action: job.action,
+      model: job.model,
+      status: job.status,
+      message: job.message,
+      progressPercent: job.progressPercent,
+      completed: job.completed,
+      total: job.total,
+      error: job.error,
+      startedAtMs: job.startedAtMs,
+      updatedAtMs: job.updatedAtMs,
+      finishedAtMs: job.finishedAtMs,
+    };
+  }
+
+  function advanceJobs() {
+    for (const job of jobs.values()) {
+      if (
+        job.status === "completed" ||
+        job.status === "failed" ||
+        job.status === "cancelled"
+      ) {
+        continue;
+      }
+
+      job.status = "running";
+      job.polls += 1;
+      job.updatedAtMs = Date.now();
+
+      if (job.polls >= job.targetPolls) {
+        job.status = "completed";
+        job.progressPercent = 100;
+        job.completed = job.total;
+        job.finishedAtMs = Date.now();
+        job.message = job.action === "install" ? "Download complete" : "Removal complete";
+
+        if (job.model === "gemma3:4b") {
+          gemmaInstalled = true;
+        }
+        if (job.model === "phi4") {
+          phiInstalled = true;
+        }
+        if (job.model === "llama3.2:latest") {
+          llamaInstalled = false;
+        }
+        continue;
+      }
+
+      const step = Math.min(92, 18 + job.polls * 28);
+      job.progressPercent = step;
+      job.completed = step;
+      job.message = job.action === "install" ? "pulling layers" : "removing local layers";
+    }
+  }
 
   await page.route("**/api/runtime", async (route) => {
     await route.fulfill({
@@ -1251,86 +1640,144 @@ test("models page manages installed and downloadable Ollama models", async ({ pa
       body: JSON.stringify({
         models: [
           { name: "qwen2.5-coder:7b", installed: true, source: "installed" },
-          { name: "llama3.2:latest", installed: llamaInstalled, source: llamaInstalled ? "installed" : "library" },
+          {
+            name: "llama3.2:latest",
+            installed: llamaInstalled,
+            source: llamaInstalled ? "installed" : "library",
+          },
           {
             name: "gemma3:4b",
             installed: gemmaInstalled,
             source: gemmaInstalled ? "installed" : "library",
             capabilities: ["vision", "tools"],
           },
+          {
+            name: "phi4",
+            installed: phiInstalled,
+            source: phiInstalled ? "installed" : "library",
+          },
           ...extraLibraryModels,
         ],
-        installedCount: 1 + Number(llamaInstalled) + Number(gemmaInstalled),
+        installedCount: 1 + Number(llamaInstalled) + Number(gemmaInstalled) + Number(phiInstalled),
         libraryCount:
-          Number(!llamaInstalled) + Number(!gemmaInstalled) + extraLibraryModels.length,
+          Number(!llamaInstalled) +
+          Number(!gemmaInstalled) +
+          Number(!phiInstalled) +
+          extraLibraryModels.length,
+        remoteLibraryCount: 0,
       }),
     });
   });
 
-  await page.route("**/api/ollama/install", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        job: {
-          id: "install-gemma3",
-          model: "gemma3:4b",
-          status: "running",
-          message: "pulling manifest",
-          progressPercent: 14,
-          completed: 14,
-          total: 100,
-          error: "",
-          startedAtMs: Date.now(),
-          updatedAtMs: Date.now(),
-          finishedAtMs: 0,
-        },
-      }),
-    });
-  });
+  await page.route("**/api/ollama/operations*", async (route) => {
+    if (route.request().method() === "POST") {
+      const payload = route.request().postDataJSON() as {
+        jobId?: string;
+        action?: "cancel" | "dismiss";
+      };
+      const entry = payload.jobId ? [...jobs.values()].find((job) => job.id === payload.jobId) : null;
 
-  await page.route("**/api/ollama/install/install-gemma3", async (route) => {
-    installPollCount += 1;
-    const complete = installPollCount > 1;
-    if (complete) {
-      gemmaInstalled = true;
+      if (payload.action === "cancel" && entry) {
+        entry.status = "cancelled";
+        entry.message = entry.action === "install" ? "Download cancelled" : "Removal cancelled";
+        entry.finishedAtMs = Date.now();
+        entry.updatedAtMs = entry.finishedAtMs;
+      }
+
+      if (payload.action === "dismiss" && entry && entry.status !== "running" && entry.status !== "pending") {
+        jobs.delete(entry.model);
+      }
+
+      await route.fulfill({
+        status: entry || payload.action === "dismiss" ? 200 : 404,
+        contentType: "application/json",
+        body: JSON.stringify({
+          jobs: [...jobs.values()]
+            .filter((job) => job.status !== "completed")
+            .map(serializeJob),
+        }),
+      });
+      return;
+    }
+
+    advanceJobs();
+    for (const job of [...jobs.values()]) {
+      if (job.status === "completed") {
+        jobs.delete(job.model);
+      }
     }
     await route.fulfill({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        job: {
-          id: "install-gemma3",
-          model: "gemma3:4b",
-          status: complete ? "completed" : "running",
-          message: complete ? "Download complete" : "pulling layers",
-          progressPercent: complete ? 100 : 62,
-          completed: complete ? 100 : 62,
-          total: 100,
-          error: "",
-          startedAtMs: Date.now(),
-          updatedAtMs: Date.now(),
-          finishedAtMs: complete ? Date.now() : 0,
-        },
+        jobs: [...jobs.values()].map(serializeJob),
+      }),
+    });
+  });
+
+  await page.route("**/api/ollama/install", async (route) => {
+    const payload = route.request().postDataJSON() as { model?: string };
+    const model = payload.model || "unknown";
+    const existing = jobs.get(model);
+    if (!existing) {
+      jobs.set(model, {
+        id: `install-${model.replace(/[^a-z0-9]+/gi, "-")}`,
+        action: "install",
+        model,
+        status: "running",
+        message: "pulling manifest",
+        progressPercent: 14,
+        completed: 14,
+        total: 100,
+        error: "",
+        startedAtMs: Date.now(),
+        updatedAtMs: Date.now(),
+        finishedAtMs: 0,
+        polls: 0,
+        targetPolls: 4,
+      });
+    }
+
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        job: serializeJob(jobs.get(model)!),
       }),
     });
   });
 
   await page.route("**/api/ollama/remove", async (route) => {
     const payload = route.request().postDataJSON() as { model?: string };
-    if (payload.model === "llama3.2:latest") {
-      llamaInstalled = false;
+    const model = payload.model || "unknown";
+    if (!jobs.has(model)) {
+      jobs.set(model, {
+        id: `remove-${model.replace(/[^a-z0-9]+/gi, "-")}`,
+        action: "remove",
+        model,
+        status: "running",
+        message: "removing local layers",
+        progressPercent: 12,
+        completed: 12,
+        total: 100,
+        error: "",
+        startedAtMs: Date.now(),
+        updatedAtMs: Date.now(),
+        finishedAtMs: 0,
+        polls: 0,
+        targetPolls: 2,
+      });
     }
+
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ ok: true }),
+      body: JSON.stringify({ job: serializeJob(jobs.get(model)!) }),
     });
   });
 
   await page.goto("/models");
   await expect(page.getByRole("heading", { name: "Models" })).toBeVisible();
-  await expect(page.getByText("Configured In Daemon")).toBeVisible();
   await expect(page.getByText("qwen2.5-coder:7b").first()).toBeVisible();
 
   const qwenRow = page.locator(".model-catalog-item").filter({
@@ -1354,21 +1801,49 @@ test("models page manages installed and downloadable Ollama models", async ({ pa
   await expect(page.getByText("tools")).toBeVisible();
 
   const downloadBlock = getDetailBlock(page, "Download Model");
+  const installedBlock = getDetailBlock(page, "Installed Locally");
   await downloadBlock.getByLabel("Model").fill("gemma");
   await page.getByRole("option", { name: /gemma3:4b/i }).click();
   await downloadBlock.getByRole("button", { name: "Download", exact: true }).click();
-  await expect(page.getByText("Download gemma3:4b?")).toBeVisible();
-  await page.getByRole("button", { name: "Download Model" }).click();
-  await expect(page.getByText("gemma3:4b ready")).toBeVisible();
+  await downloadBlock.getByLabel("Model").fill("phi");
+  await page.getByRole("option", { name: /phi4/i }).click();
+  await downloadBlock.getByRole("button", { name: "Download", exact: true }).click();
+  await expect(installedBlock.getByText("Model Operations")).toBeVisible();
+  await expect(installedBlock.getByText("Download stalled-download:latest")).toBeVisible();
+  await expect(installedBlock.getByText("Download gemma3:4b")).toBeVisible();
+  await expect(installedBlock.getByText("Download phi4")).toBeVisible();
+
+  await page.reload();
+  await expect(installedBlock.getByText("Download stalled-download:latest")).toBeVisible();
+  await expect.poll(async () => {
+    return await installedBlock.locator(".model-catalog-item code").filter({
+      hasText: "gemma3:4b",
+    }).count();
+  }).toBe(1);
+  await expect.poll(async () => {
+    return await installedBlock.locator(".model-catalog-item code").filter({
+      hasText: "phi4",
+    }).count();
+  }).toBe(1);
+  await expect(installedBlock.getByText("Download gemma3:4b")).toHaveCount(0);
+  await expect(installedBlock.getByText("Download phi4")).toHaveCount(0);
+
+  const stalledOperation = installedBlock.locator(".model-operation-item").filter({
+    has: page.getByText("Download stalled-download:latest"),
+  });
+  await stalledOperation.getByRole("button", { name: "Cancel" }).click();
+  await expect(stalledOperation.getByRole("button", { name: "Dismiss" })).toBeVisible();
+  await stalledOperation.getByRole("button", { name: "Dismiss" }).click();
+  await expect(stalledOperation).toHaveCount(0);
+
   await page.getByRole("textbox", { name: "Search" }).fill("");
 
-  const llamaRow = page.locator(".model-catalog-item").filter({
+  const llamaRow = installedBlock.locator(".model-catalog-item").filter({
     has: page.getByText("llama3.2:latest"),
   });
   await llamaRow.getByRole("button", { name: "Remove" }).click();
-  await expect(page.getByText("Remove llama3.2:latest?")).toBeVisible();
-  await page.getByRole("button", { name: "Remove Model" }).click();
-  await expect(page.getByText("llama3.2:latest removed from local Ollama storage.")).toBeVisible();
+  await expect(installedBlock.getByText("Removal llama3.2:latest")).toBeVisible();
+  await expect.poll(async () => await llamaRow.count()).toBe(0);
 });
 
 test("daemon runtime controls surface readiness and restart failures", async ({ page }) => {
@@ -1389,12 +1864,22 @@ test("daemon runtime controls surface readiness and restart failures", async ({ 
           dbPath: "/tmp/lac/autocomplete.sqlite",
           modelName: "qwen2.5-coder:7b",
           modelBaseUrl: "http://127.0.0.1:11434",
+          modelKeepAlive: "5m",
           suggestStrategy: "history+model",
+          systemPromptStatic: "",
           suggestTimeoutMs: 1200,
+          ptyCaptureAllowlist: "",
         },
         logPath: "/tmp/lac/daemon.log",
         pidPath: "/tmp/lac/daemon.pid",
         pid: 43210,
+        memory: {
+          daemonRssBytes: 134217728,
+          modelLoadedBytes: null,
+          modelVramBytes: null,
+          totalTrackedBytes: 134217728,
+          modelName: "qwen2.5-coder:7b",
+        },
       }),
     });
   });
@@ -1426,19 +1911,30 @@ test("daemon runtime controls surface readiness and restart failures", async ({ 
           dbPath: "/tmp/lac/autocomplete.sqlite",
           modelName: "qwen2.5-coder:7b",
           modelBaseUrl: "http://127.0.0.1:11434",
+          modelKeepAlive: "5m",
           suggestStrategy: "history+model",
+          systemPromptStatic: "",
           suggestTimeoutMs: 1200,
+          ptyCaptureAllowlist: "",
         },
         logPath: "/tmp/lac/daemon.log",
         pidPath: "/tmp/lac/daemon.pid",
         pid: 43210,
         recentLog: "daemon ready",
+        memory: {
+          daemonRssBytes: 134217728,
+          modelLoadedBytes: null,
+          modelVramBytes: null,
+          totalTrackedBytes: 134217728,
+          modelName: "qwen2.5-coder:7b",
+        },
       }),
     });
   });
 
   await page.goto("/daemon");
 
+  await expect(page.getByText("Healthy")).toBeVisible();
   await page.getByRole("button", { name: "Start", exact: true }).click();
   await expect(page.getByText("Daemon started.")).toBeVisible();
   await expect(page.getByText("Healthy")).toBeVisible();

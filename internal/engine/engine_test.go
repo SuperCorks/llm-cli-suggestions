@@ -2,15 +2,27 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SuperCorks/llm-cli-suggestions/internal/api"
+	"github.com/SuperCorks/llm-cli-suggestions/internal/config"
 	"github.com/SuperCorks/llm-cli-suggestions/internal/db"
 )
+
+type stubModelClient struct {
+	suggest func(ctx context.Context, prompt string) (string, error)
+}
+
+func (s stubModelClient) Suggest(ctx context.Context, prompt string) (string, error) {
+	return s.suggest(ctx, prompt)
+}
 
 func TestSuggestUsesProjectTaskRetrieval(t *testing.T) {
 	t.Parallel()
@@ -98,6 +110,40 @@ func TestInspectIncludesProjectTasksInPromptWithoutTaskSpecificBuffer(t *testing
 	}
 }
 
+func TestLoadProjectTasksIncludesExpandedPackageScriptList(t *testing.T) {
+	t.Parallel()
+
+	cwd := t.TempDir()
+	scripts := map[string]string{
+		"build": "next build",
+		"dev":   "next dev",
+		"lint":  "eslint",
+		"start": "next start",
+		"test":  "vitest",
+	}
+	for index := 0; index < 40; index++ {
+		scripts[fmt.Sprintf("task-%02d", index)] = "echo ok"
+	}
+
+	payload, err := json.Marshal(struct {
+		Scripts map[string]string `json:"scripts"`
+	}{Scripts: scripts})
+	if err != nil {
+		t.Fatalf("marshal package.json: %v", err)
+	}
+	writeFile(t, filepath.Join(cwd, "package.json"), string(payload))
+
+	projectTasks := loadProjectTasks(cwd, cwd)
+	if len(projectTasks) != len(scripts) {
+		t.Fatalf("expected %d project tasks, got %d (%#v)", len(scripts), len(projectTasks), projectTasks)
+	}
+	for _, want := range []string{"build", "dev", "lint", "start", "test", "task-39"} {
+		if !containsString(projectTasks, want) {
+			t.Fatalf("expected project tasks to include %q, got %#v", want, projectTasks)
+		}
+	}
+}
+
 func TestInspectIncludesHistoryMatchesInRetrievedContext(t *testing.T) {
 	t.Parallel()
 
@@ -141,6 +187,59 @@ func TestInspectIncludesHistoryMatchesInRetrievedContext(t *testing.T) {
 	}
 	if !strings.Contains(response.Prompt, "matching_history:") {
 		t.Fatalf("expected prompt to include matching history, got %q", response.Prompt)
+	}
+}
+
+func TestInspectFallsBackToCWDContextWhenSessionIsEmpty(t *testing.T) {
+	t.Parallel()
+
+	engine := newTestEngine(t)
+	recordTestCommand(t, engine.store, db.CommandRecord{
+		SessionID:     "older-session",
+		Command:       `copilot --prompt "hi"`,
+		CWD:           "/tmp/hoptech",
+		ExitCode:      0,
+		DurationMS:    40,
+		StartedAtMS:   1000,
+		FinishedAtMS:  1040,
+		StdoutExcerpt: "hello",
+	})
+	recordTestCommand(t, engine.store, db.CommandRecord{
+		SessionID:    "older-session",
+		Command:      "ls",
+		CWD:          "/tmp/hoptech",
+		ExitCode:     0,
+		DurationMS:   20,
+		StartedAtMS:  1100,
+		FinishedAtMS: 1120,
+	})
+
+	response, err := engine.Inspect(context.Background(), api.InspectRequest{
+		SessionID: "fresh-session",
+		Buffer:    `copilot --prompt "what is the best`,
+		CWD:       "/tmp/hoptech",
+	})
+	if err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+
+	if len(response.RecentCommands) == 0 {
+		t.Fatalf("expected cwd fallback recent commands, got none")
+	}
+	if !containsString(response.RecentCommands, "ls") {
+		t.Fatalf("expected ls in recent commands, got %#v", response.RecentCommands)
+	}
+	if response.LastCommand != "ls" {
+		t.Fatalf("expected cwd fallback last command ls, got %q", response.LastCommand)
+	}
+	if len(response.RecentOutputContext) == 0 {
+		t.Fatalf("expected cwd fallback recent output context")
+	}
+	if !containsRecentOutputCommand(response.RecentOutputContext, `copilot --prompt "hi"`) {
+		t.Fatalf("expected cwd fallback output context for copilot prompt, got %#v", response.RecentOutputContext)
+	}
+	if !strings.Contains(response.Prompt, "recent_commands:") {
+		t.Fatalf("expected prompt to include recent commands, got %q", response.Prompt)
 	}
 }
 
@@ -269,6 +368,7 @@ func TestBuildPromptIncludesRecentOutputContext(t *testing.T) {
 	t.Parallel()
 
 	prompt := BuildPrompt(
+		"",
 		api.SuggestRequest{
 			Buffer:       "git checkout fea",
 			CWD:          "/tmp/project",
@@ -278,6 +378,13 @@ func TestBuildPromptIncludesRecentOutputContext(t *testing.T) {
 		},
 		[]string{"git status", "git branch"},
 		db.CommandContext{Command: "git branch"},
+		[]api.InspectCommandContext{
+			{
+				Command:       "git branch",
+				ExitCode:      0,
+				StdoutExcerpt: "* main\n  feature/demo",
+			},
+		},
 		[]api.InspectRecentOutputContext{
 			{
 				Command:       "git branch",
@@ -295,6 +402,252 @@ func TestBuildPromptIncludesRecentOutputContext(t *testing.T) {
 	if !strings.Contains(prompt, "feature/demo") {
 		t.Fatalf("expected prompt to include selected output text, got %q", prompt)
 	}
+	if !strings.Contains(prompt, "last_command_context:") {
+		t.Fatalf("expected prompt to include last_command_context block, got %q", prompt)
+	}
+}
+
+func TestBuildPromptPrependsStaticSystemPrompt(t *testing.T) {
+	t.Parallel()
+
+	prompt := BuildPrompt(
+		"Always prefer conservative completions.",
+		api.SuggestRequest{Buffer: "git st"},
+		nil,
+		db.CommandContext{},
+		nil,
+		nil,
+		api.InspectRetrievedContext{},
+	)
+
+	if !strings.HasPrefix(prompt, "Always prefer conservative completions.\n\nYou are a shell autosuggestion engine.") {
+		t.Fatalf("expected custom system prompt prefix, got %q", prompt)
+	}
+}
+
+func TestInspectReturnsLastThreeCommandContexts(t *testing.T) {
+	t.Parallel()
+
+	engine := newTestEngine(t)
+	for index, command := range []string{"git status", "git branch", "git diff", "git log --oneline"} {
+		recordTestCommand(t, engine.store, db.CommandRecord{
+			SessionID:     "test-session",
+			Command:       command,
+			CWD:           "/tmp/project",
+			RepoRoot:      "/tmp/project",
+			Branch:        "main",
+			ExitCode:      0,
+			DurationMS:    40,
+			StartedAtMS:   int64(1000 + index*100),
+			FinishedAtMS:  int64(1040 + index*100),
+			StdoutExcerpt: command + " output",
+		})
+	}
+
+	response, err := engine.Inspect(context.Background(), api.InspectRequest{
+		SessionID: "test-session",
+		Buffer:    "git ch",
+		CWD:       "/tmp/project",
+		RepoRoot:  "/tmp/project",
+		Branch:    "main",
+	})
+	if err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+
+	if len(response.LastCommandContext) != 3 {
+		t.Fatalf("expected 3 last command contexts, got %#v", response.LastCommandContext)
+	}
+	if response.LastCommandContext[0].Command != "git log --oneline" {
+		t.Fatalf("expected most recent command first, got %#v", response.LastCommandContext)
+	}
+	if !strings.Contains(response.Prompt, "git diff output") {
+		t.Fatalf("expected prompt to include output from the last three commands, got %q", response.Prompt)
+	}
+}
+
+func TestInspectUsesEngineDefaultStrategyWhenRequestStrategyEmpty(t *testing.T) {
+	t.Parallel()
+
+	cwd := t.TempDir()
+	writeFile(t, filepath.Join(cwd, "package.json"), `{"scripts":{"dev":"next dev"}}`)
+
+	store, err := db.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	engine := NewWithSystemPrompt(
+		store,
+		nil,
+		"qwen2.5-coder:7b",
+		"http://127.0.0.1:11434",
+		"5m",
+		config.SuggestStrategyModelOnly,
+		"",
+		0,
+	)
+
+	result, err := engine.inspectDetailed(context.Background(), api.InspectRequest{
+		SessionID: "test-session",
+		Buffer:    "npm run d",
+		CWD:       cwd,
+		RepoRoot:  cwd,
+	}, 0)
+	if err != nil {
+		t.Fatalf("inspectDetailed: %v", err)
+	}
+
+	if result.resolvedRequest.Strategy != config.SuggestStrategyModelOnly {
+		t.Fatalf("expected default strategy %q, got %q", config.SuggestStrategyModelOnly, result.resolvedRequest.Strategy)
+	}
+	if result.response.HistoryTrusted {
+		t.Fatalf("expected history not to be trusted in model-only mode")
+	}
+}
+
+func TestInspectSurfacesModelTimeoutError(t *testing.T) {
+	t.Parallel()
+
+	store, err := db.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	engine := NewWithSystemPrompt(
+		store,
+		stubModelClient{suggest: func(ctx context.Context, prompt string) (string, error) {
+			return "", context.DeadlineExceeded
+		}},
+		"qwen3-coder:latest",
+		"http://127.0.0.1:11434",
+		"5m",
+		config.SuggestStrategyModelOnly,
+		"",
+		2*time.Second,
+	)
+
+	response, err := engine.Inspect(context.Background(), api.InspectRequest{
+		SessionID: "test-session",
+		Buffer:    "git st",
+		Strategy:  config.SuggestStrategyModelOnly,
+	})
+	if err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+
+	if response.Winner != nil {
+		t.Fatalf("expected no winner, got %#v", response.Winner)
+	}
+	if len(response.Candidates) != 0 {
+		t.Fatalf("expected no candidates, got %#v", response.Candidates)
+	}
+	if !strings.Contains(response.ModelError, "timed out after 10s") {
+		t.Fatalf("expected timeout model error, got %q", response.ModelError)
+	}
+	if response.RawModelOutput != "" {
+		t.Fatalf("expected empty raw model output, got %q", response.RawModelOutput)
+	}
+}
+
+func TestInspectSurfacesRejectedModelOutput(t *testing.T) {
+	t.Parallel()
+
+	store, err := db.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	engine := NewWithSystemPrompt(
+		store,
+		stubModelClient{suggest: func(ctx context.Context, prompt string) (string, error) {
+			return "status --short", nil
+		}},
+		"qwen3-coder:latest",
+		"http://127.0.0.1:11434",
+		"5m",
+		config.SuggestStrategyModelOnly,
+		"",
+		2*time.Second,
+	)
+
+	response, err := engine.Inspect(context.Background(), api.InspectRequest{
+		SessionID: "test-session",
+		Buffer:    "git st",
+		Strategy:  config.SuggestStrategyModelOnly,
+	})
+	if err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+
+	if response.Winner != nil {
+		t.Fatalf("expected no winner, got %#v", response.Winner)
+	}
+	if response.RawModelOutput != "status --short" {
+		t.Fatalf("expected raw model output to be preserved, got %q", response.RawModelOutput)
+	}
+	if response.CleanedModelOutput != "" {
+		t.Fatalf("expected cleaned model output to be empty, got %q", response.CleanedModelOutput)
+	}
+	if !strings.Contains(response.ModelError, "did not start with the current buffer") {
+		t.Fatalf("expected cleaned-output model error, got %q", response.ModelError)
+	}
+}
+
+func TestInspectUsesLongerTimeoutThanLiveSuggestions(t *testing.T) {
+	t.Parallel()
+
+	store, err := db.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	var observedDeadline time.Duration
+	engine := NewWithSystemPrompt(
+		store,
+		stubModelClient{suggest: func(ctx context.Context, prompt string) (string, error) {
+			deadline, ok := ctx.Deadline()
+			if !ok {
+				t.Fatal("expected inspect context deadline")
+			}
+			observedDeadline = time.Until(deadline)
+			return "git status", nil
+		}},
+		"qwen3-coder:latest",
+		"http://127.0.0.1:11434",
+		"5m",
+		config.SuggestStrategyModelOnly,
+		"",
+		2*time.Second,
+	)
+
+	response, err := engine.Inspect(context.Background(), api.InspectRequest{
+		SessionID: "test-session",
+		Buffer:    "git st",
+		Strategy:  config.SuggestStrategyModelOnly,
+	})
+	if err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+
+	if response.Winner == nil || response.Winner.Command != "git status" {
+		t.Fatalf("expected git status winner, got %#v", response.Winner)
+	}
+	if observedDeadline < 9*time.Second {
+		t.Fatalf("expected inspect timeout near 10s, got %s", observedDeadline)
+	}
 }
 
 func newTestEngine(t testing.TB) *Engine {
@@ -308,7 +661,7 @@ func newTestEngine(t testing.TB) *Engine {
 		_ = store.Close()
 	})
 
-	return New(store, nil, "qwen2.5-coder:7b", "http://127.0.0.1:11434", "history+model", 0)
+	return NewWithSystemPrompt(store, nil, "qwen2.5-coder:7b", "http://127.0.0.1:11434", "5m", "history+model", "", 0)
 }
 
 func initGitRepo(t testing.TB, root string) {

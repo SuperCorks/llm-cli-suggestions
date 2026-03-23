@@ -26,6 +26,7 @@ export default defineConfig({
     cwd: rootDir,
     env: {
       ...process.env,
+      LAC_CONSOLE_USE_PROCESS_ENV_OVERRIDES: "1",
       LAC_STATE_DIR: stateDir,
       LAC_DB_PATH: dbPath,
       LAC_SOCKET_PATH: path.join(stateDir, "daemon.sock"),

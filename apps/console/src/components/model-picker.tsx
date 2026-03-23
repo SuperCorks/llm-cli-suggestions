@@ -42,7 +42,10 @@ export function ModelPicker(props: ModelPickerProps) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const inputId = useId();
   const selectableOptions = useMemo(
-    () => (props.installedOnly ? props.options.filter((option) => option.installed) : props.options),
+    () =>
+      props.installedOnly
+        ? props.options.filter((option) => option.installed)
+        : props.options.filter((option) => !option.remoteOnly),
     [props.installedOnly, props.options],
   );
   const filteredOptions = useMemo(() => {
@@ -251,10 +254,12 @@ export function ModelPicker(props: ModelPickerProps) {
                   className={
                     option.installed
                       ? "model-status-chip model-status-chip-installed"
+                      : option.remoteOnly
+                        ? "model-status-chip model-status-chip-remote"
                       : "model-status-chip model-status-chip-available"
                   }
                 >
-                  {option.installed ? "installed" : "available"}
+                  {option.installed ? "installed" : option.remoteOnly ? "remote" : "available"}
                 </span>
               </button>
             ))}

@@ -1,6 +1,6 @@
 "use client";
 
-import { Copy, X } from "lucide-react";
+import { ChevronDown, Copy, X } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
@@ -92,6 +92,40 @@ function outcomeClassName(row: SuggestionRow) {
   return "feed-badge";
 }
 
+function describeActiveFilters(filters: SuggestionsPageShellProps["filters"]) {
+  const items: string[] = [];
+
+  if (filters.query) {
+    items.push(`Query: ${filters.query}`);
+  }
+  if (filters.outcome !== "all") {
+    items.push(`Outcome: ${filters.outcome}`);
+  }
+  if (filters.quality !== "all") {
+    items.push(`Quality: ${filters.quality}`);
+  }
+  if (filters.source) {
+    items.push(`Source: ${filters.source}`);
+  }
+  if (filters.model) {
+    items.push(`Model: ${filters.model}`);
+  }
+  if (filters.session) {
+    items.push(`Session: ${filters.session}`);
+  }
+  if (filters.cwd) {
+    items.push(`CWD: ${filters.cwd}`);
+  }
+  if (filters.sort !== "newest") {
+    items.push(`Sort: ${SORT_OPTIONS.find((option) => option.value === filters.sort)?.label || filters.sort}`);
+  }
+  if (filters.pageSize !== "25") {
+    items.push(`Page Size: ${filters.pageSize} rows`);
+  }
+
+  return items;
+}
+
 export function SuggestionsPageShell({
   rows,
   total,
@@ -106,11 +140,13 @@ export function SuggestionsPageShell({
 }: SuggestionsPageShellProps) {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [copied, setCopied] = useState(false);
+  const [filtersCollapsed, setFiltersCollapsed] = useState(true);
 
   const entries = useMemo(
     () => rows.map((row) => ({ row, snapshot: buildSuggestionContextSnapshot(row) })),
     [rows],
   );
+  const activeFilterSummary = describeActiveFilters(filters);
 
   const selectedEntry = entries.find((entry) => entry.row.id === selectedId) || null;
 
@@ -154,83 +190,122 @@ export function SuggestionsPageShell({
         <Panel
           title="Filters & Sort"
           subtitle="Filter server-side from SQLite, then sort and page through the suggestion history."
+          actions={
+            <button
+              type="button"
+              className="panel-toggle-button"
+              aria-expanded={!filtersCollapsed}
+              aria-controls="suggestions-filters-panel-content"
+              onClick={() => setFiltersCollapsed((value) => !value)}
+            >
+              {filtersCollapsed ? "Show Filters" : "Hide Filters"}
+              <span
+                className={
+                  filtersCollapsed ? "panel-toggle-icon" : "panel-toggle-icon panel-toggle-icon-open"
+                }
+              >
+                <ChevronDown aria-hidden="true" />
+              </span>
+            </button>
+          }
         >
-          <form className="stack-md" method="get">
-            <div className="form-grid">
-              <label>
-                Query
-                <input name="query" defaultValue={filters.query} placeholder="git status" />
-              </label>
-              <label>
-                Outcome
-                <select name="outcome" defaultValue={filters.outcome}>
-                  <option value="all">All</option>
-                  <option value="accepted">Accepted</option>
-                  <option value="rejected">Rejected</option>
-                  <option value="unreviewed">Unreviewed</option>
-                </select>
-              </label>
-              <label>
-                Quality Label
-                <select name="quality" defaultValue={filters.quality}>
-                  <option value="all">All</option>
-                  <option value="good">Good</option>
-                  <option value="bad">Bad</option>
-                  <option value="unlabeled">Unlabeled</option>
-                </select>
-              </label>
-              <label>
-                Sort
-                <select name="sort" defaultValue={filters.sort}>
-                  {SORT_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Source
-                <select name="source" defaultValue={filters.source}>
-                  <option value="">All sources</option>
-                  {sourceOptions.map((source) => (
-                    <option key={source} value={source}>
-                      {source}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Model
-                <input name="model" defaultValue={filters.model} placeholder="qwen2.5-coder:7b" />
-              </label>
-              <label>
-                Session
-                <input name="session" defaultValue={filters.session} />
-              </label>
-              <label>
-                CWD
-                <PathHoverActions pathValue={filters.cwd} label="Suggestions filter cwd" variant="input">
-                  <input name="cwd" defaultValue={filters.cwd} />
-                </PathHoverActions>
-              </label>
-              <label>
-                Page Size
-                <select name="pageSize" defaultValue={filters.pageSize}>
-                  <option value="25">25 rows</option>
-                  <option value="50">50 rows</option>
-                  <option value="100">100 rows</option>
-                </select>
-              </label>
-            </div>
-            <input type="hidden" name="page" value="1" />
-            <div className="inline-actions">
-              <button type="submit">Apply Filters</button>
-              <a className="button-link" href="/suggestions">
-                Clear
-              </a>
-            </div>
-          </form>
+          <div id="suggestions-filters-panel-content">
+            {filtersCollapsed ? (
+              <div className="filters-collapsed-state stack-sm">
+                <p className="helper-text">
+                  {activeFilterSummary.length === 0
+                    ? "No extra filters applied. Using newest first and 25 rows per page."
+                    : `${activeFilterSummary.length} active ${activeFilterSummary.length === 1 ? "setting" : "settings"}.`}
+                </p>
+                {activeFilterSummary.length > 0 ? (
+                  <div className="filters-collapsed-chips">
+                    {activeFilterSummary.map((item) => (
+                      <span key={item} className="filter-summary-chip">
+                        {item}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            ) : (
+              <form className="stack-md" method="get">
+                <div className="form-grid">
+                  <label>
+                    Query
+                    <input name="query" defaultValue={filters.query} placeholder="git status" />
+                  </label>
+                  <label>
+                    Outcome
+                    <select name="outcome" defaultValue={filters.outcome}>
+                      <option value="all">All</option>
+                      <option value="accepted">Accepted</option>
+                      <option value="rejected">Rejected</option>
+                      <option value="unreviewed">Unreviewed</option>
+                    </select>
+                  </label>
+                  <label>
+                    Quality Label
+                    <select name="quality" defaultValue={filters.quality}>
+                      <option value="all">All</option>
+                      <option value="good">Good</option>
+                      <option value="bad">Bad</option>
+                      <option value="unlabeled">Unlabeled</option>
+                    </select>
+                  </label>
+                  <label>
+                    Sort
+                    <select name="sort" defaultValue={filters.sort}>
+                      {SORT_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Source
+                    <select name="source" defaultValue={filters.source}>
+                      <option value="">All sources</option>
+                      {sourceOptions.map((source) => (
+                        <option key={source} value={source}>
+                          {source}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Model
+                    <input name="model" defaultValue={filters.model} placeholder="qwen2.5-coder:7b" />
+                  </label>
+                  <label>
+                    Session
+                    <input name="session" defaultValue={filters.session} />
+                  </label>
+                  <label>
+                    CWD
+                    <PathHoverActions pathValue={filters.cwd} label="Suggestions filter cwd" variant="input">
+                      <input name="cwd" defaultValue={filters.cwd} />
+                    </PathHoverActions>
+                  </label>
+                  <label>
+                    Page Size
+                    <select name="pageSize" defaultValue={filters.pageSize}>
+                      <option value="25">25 rows</option>
+                      <option value="50">50 rows</option>
+                      <option value="100">100 rows</option>
+                    </select>
+                  </label>
+                </div>
+                <input type="hidden" name="page" value="1" />
+                <div className="inline-actions">
+                  <button type="submit">Apply Filters</button>
+                  <a className="button-link" href="/suggestions">
+                    Clear
+                  </a>
+                </div>
+              </form>
+            )}
+          </div>
         </Panel>
 
         <Panel
@@ -384,6 +459,59 @@ export function SuggestionsPageShell({
                   </dd>
                 </div>
               </dl>
+            </div>
+
+            <div className="detail-block">
+              <h3>Last Command Context</h3>
+              <dl className="meta-list">
+                <div>
+                  <dt>Commands</dt>
+                  <dd>{selectedEntry.snapshot.structuredContext.lastCommandContext.length}</dd>
+                </div>
+              </dl>
+              <pre className="code-block suggestion-sidebar-pre">
+                {selectedEntry.snapshot.structuredContext.lastCommandContext.length > 0
+                  ? selectedEntry.snapshot.structuredContext.lastCommandContext
+                      .map((entry, index) =>
+                        [
+                          `${index + 1}. ${entry.command || "n/a"}`,
+                          `exit: ${entry.exitCode}`,
+                          entry.stdoutExcerpt ? `stdout:\n${entry.stdoutExcerpt}` : "",
+                          entry.stderrExcerpt ? `stderr:\n${entry.stderrExcerpt}` : "",
+                        ]
+                          .filter(Boolean)
+                          .join("\n"),
+                      )
+                      .join("\n\n")
+                  : "No last command context recorded."}
+              </pre>
+            </div>
+
+            <div className="detail-block">
+              <h3>Recent Output Context</h3>
+              <dl className="meta-list">
+                <div>
+                  <dt>Entries</dt>
+                  <dd>{selectedEntry.snapshot.structuredContext.recentOutputContext.length}</dd>
+                </div>
+              </dl>
+              <pre className="code-block suggestion-sidebar-pre">
+                {selectedEntry.snapshot.structuredContext.recentOutputContext.length > 0
+                  ? selectedEntry.snapshot.structuredContext.recentOutputContext
+                      .map((entry, index) =>
+                        [
+                          `${index + 1}. ${entry.command || "n/a"}`,
+                          `exit: ${entry.exitCode}`,
+                          `score: ${entry.score}`,
+                          entry.stdoutExcerpt ? `stdout:\n${entry.stdoutExcerpt}` : "",
+                          entry.stderrExcerpt ? `stderr:\n${entry.stderrExcerpt}` : "",
+                        ]
+                          .filter(Boolean)
+                          .join("\n"),
+                      )
+                      .join("\n\n")
+                  : "No recent output context recorded."}
+              </pre>
             </div>
 
             <div className="detail-block">

@@ -18,7 +18,9 @@ export async function POST(request: NextRequest) {
   const settings = await saveRuntimeSettings({
     LAC_MODEL_NAME: payload.LAC_MODEL_NAME,
     LAC_MODEL_BASE_URL: payload.LAC_MODEL_BASE_URL,
+    LAC_MODEL_KEEP_ALIVE: payload.LAC_MODEL_KEEP_ALIVE,
     LAC_SUGGEST_STRATEGY: payload.LAC_SUGGEST_STRATEGY,
+    LAC_SYSTEM_PROMPT_STATIC: payload.LAC_SYSTEM_PROMPT_STATIC,
     LAC_SOCKET_PATH: payload.LAC_SOCKET_PATH,
     LAC_DB_PATH: payload.LAC_DB_PATH,
     LAC_SUGGEST_TIMEOUT_MS: payload.LAC_SUGGEST_TIMEOUT_MS,

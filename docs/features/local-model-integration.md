@@ -8,6 +8,7 @@ The app is designed to keep inference local.
 - adapter: `internal/model/ollama`
 - default base URL: `http://127.0.0.1:11434`
 - default model: `qwen2.5-coder:7b`
+- default keep alive: `5m`
 
 ## Request Style
 
@@ -24,6 +25,8 @@ The daemon sends a single prompt that includes:
 - a small selected set of recent session output snippets when they look relevant to the current buffer
 
 The model is asked to return exactly one shell command on one line.
+
+Each Ollama request also forwards the configured `keep_alive` value so the model can stay loaded between suggestions instead of paying a cold load on every idle gap.
 
 ## Why The Backend Boundary Is Useful
 

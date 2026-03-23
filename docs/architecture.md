@@ -102,6 +102,7 @@ For inspect requests, the daemon now resolves missing context before scoring:
 
 - if a `session_id` is present, it pulls the latest recorded command context and recent commands for that session
 - if a `session_id` is present, it also pulls recent output-bearing commands from that session for prompt and scoring context
+- if a session is new or sparse but `cwd` is present, it fills context gaps from the most recent commands seen in that working directory
 - if a `cwd` is present, it can pull the most recent command context seen in that working directory
 - if database context is incomplete but `cwd` is available, it falls back to lightweight local git inspection to infer repo root and branch
 
@@ -159,17 +160,20 @@ Suggestion rows now also persist the exact prompt text and a structured context 
 
 Runtime settings now have a persisted local layer through `runtime.env` in the state directory.
 
-The precedence is:
+For the daemon and shell plugin, the precedence is:
 
 1. explicit environment variables
 2. persisted values from `runtime.env`
 3. code defaults
+
+The control app is more defensive by default: it resolves from the standard state directory and persisted `runtime.env` instead of inheriting ambient `LAC_*` shell variables from whatever terminal launched Next. That avoids the console silently reading a stale socket or SQLite path when a development shell still exports older repo-specific values. For isolated runs like end-to-end tests, the console can opt back into process-environment overrides with `LAC_CONSOLE_USE_PROCESS_ENV_OVERRIDES=1`.
 
 The control app writes this file, and the `zsh` plugin reads it before launching the daemon in `fancy` mode. That gives the app a durable way to control:
 
 - model name
 - model base URL
 - suggestion strategy
+- a static system-prompt prefix prepended ahead of the built-in autosuggestion prompt
 - socket path
 - SQLite path
 - suggest timeout
@@ -181,7 +185,7 @@ The current strategy modes are:
 - `history+model`
 - `model-only`
 
-The daemon uses the persisted runtime strategy for live shell suggestions, while the inspector can override it per inspect request for debugging and comparison.
+The daemon uses the persisted runtime strategy for live shell suggestions, while the inspector can override it per inspect request for debugging and comparison. Inspector requests also enforce a higher minimum model timeout than live shell suggestions because they are manual debug flows rather than latency-sensitive ghost-text updates.
 
 ## Local Model Layer
 

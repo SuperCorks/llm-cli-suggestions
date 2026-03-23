@@ -19,3 +19,6 @@ Current backlog topics:
 
 ## To refine
 - Use the llm to parse previous outputs like copilot/codex --prompt into the next command, even if it's not in the history
+- Toggle between blocklist, allowlist and all for the TTY console + extensive testing with interactive apps
+- Wakeup model when we run `fancy` to accelerate cold starts
+- 

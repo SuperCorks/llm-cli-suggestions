@@ -33,11 +33,25 @@ type runResult struct {
 	Error       string `json:"error,omitempty"`
 }
 
+type suggestClient interface {
+	Suggest(ctx context.Context, prompt string) (string, error)
+}
+
+type benchmarkConfig struct {
+	models    []string
+	repeat    int
+	timeout   time.Duration
+	failFast  bool
+	newClient func(modelName string) suggestClient
+	cases     []benchmarkCase
+}
+
 func main() {
 	modelsFlag := flag.String("models", "llama3.2:latest", "comma-separated list of models to benchmark")
 	baseURL := flag.String("model-url", "http://127.0.0.1:11434", "local model base URL")
 	repeat := flag.Int("repeat", 1, "runs per test case")
 	timeoutMS := flag.Int("timeout-ms", 5000, "timeout per model request in milliseconds")
+	failFast := flag.Bool("fail-fast", true, "stop the benchmark run after the first model request error")
 	outputJSON := flag.String("output-json", "", "optional path to write raw benchmark results as json")
 	flag.Parse()
 
@@ -46,23 +60,54 @@ func main() {
 		fatalf("no models provided")
 	}
 
-	cases := benchmarkCases()
-	results := make([]runResult, 0, len(models)*len(cases)*(*repeat))
+	results, runErr := runBenchmarks(benchmarkConfig{
+		models:   models,
+		repeat:   *repeat,
+		timeout:  time.Duration(*timeoutMS) * time.Millisecond,
+		failFast: *failFast,
+		newClient: func(modelName string) suggestClient {
+			return ollama.New(*baseURL, modelName, "")
+		},
+	})
 
-	fmt.Printf("Benchmarking %d model(s) across %d case(s), repeat=%d\n", len(models), len(cases), *repeat)
+	fmt.Println()
+	printSummary(results)
 
-	for _, modelName := range models {
-		client := ollama.New(*baseURL, modelName)
+	if *outputJSON != "" {
+		if err := writeJSON(*outputJSON, results); err != nil {
+			fatalf("write benchmark results: %v", err)
+		}
+		fmt.Printf("\nWrote raw results to %s\n", *outputJSON)
+	}
+
+	if runErr != nil {
+		fatalf("benchmark failed early: %v", runErr)
+	}
+}
+
+func runBenchmarks(config benchmarkConfig) ([]runResult, error) {
+	cases := config.cases
+	if len(cases) == 0 {
+		cases = benchmarkCases()
+	}
+
+	results := make([]runResult, 0, len(config.models)*len(cases)*config.repeat)
+	fmt.Printf("Benchmarking %d model(s) across %d case(s), repeat=%d\n", len(config.models), len(cases), config.repeat)
+
+	for _, modelName := range config.models {
+		client := config.newClient(modelName)
 		for _, testCase := range cases {
-			for run := 1; run <= *repeat; run++ {
+			for run := 1; run <= config.repeat; run++ {
 				prompt := engine.BuildPrompt(
+					"",
 					testCase.Request,
 					testCase.Request.RecentCommands,
 					db.CommandContext{},
 					nil,
+					nil,
 					api.InspectRetrievedContext{},
 				)
-				ctx, cancel := context.WithTimeout(context.Background(), time.Duration(*timeoutMS)*time.Millisecond)
+				ctx, cancel := context.WithTimeout(context.Background(), config.timeout)
 				startedAt := time.Now()
 				raw, err := client.Suggest(ctx, prompt)
 				cancel()
@@ -83,19 +128,21 @@ func main() {
 
 				results = append(results, result)
 				printRun(result)
+
+				if result.Error != "" && config.failFast {
+					return results, fmt.Errorf(
+						"model %s failed on %s run %d: %s",
+						modelName,
+						testCase.Name,
+						run,
+						result.Error,
+					)
+				}
 			}
 		}
 	}
 
-	fmt.Println()
-	printSummary(results)
-
-	if *outputJSON != "" {
-		if err := writeJSON(*outputJSON, results); err != nil {
-			fatalf("write benchmark results: %v", err)
-		}
-		fmt.Printf("\nWrote raw results to %s\n", *outputJSON)
-	}
+	return results, nil
 }
 
 func benchmarkCases() []benchmarkCase {

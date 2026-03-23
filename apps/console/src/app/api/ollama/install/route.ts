@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { startOllamaInstall } from "@/lib/server/ollama-install";
+import { isRemoteLibraryModelName } from "@/lib/server/ollama";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -17,6 +18,13 @@ export async function POST(request: NextRequest) {
   if (!model || !baseUrl) {
     return NextResponse.json(
       { error: "model and baseUrl are required" },
+      { status: 400 },
+    );
+  }
+
+  if (isRemoteLibraryModelName(model)) {
+    return NextResponse.json(
+      { error: "Cloud and remote-only Ollama models cannot be downloaded locally." },
       { status: 400 },
     );
   }

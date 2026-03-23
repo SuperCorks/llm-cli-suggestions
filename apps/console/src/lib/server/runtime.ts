@@ -14,6 +14,7 @@ import {
   type PersistedKey,
   writePersistedRuntimeSettings,
 } from "@/lib/server/config";
+import { getLoadedOllamaModelUsage } from "@/lib/server/ollama";
 import type { RuntimeStatus } from "@/lib/types";
 
 function getDaemonBinaryPath() {
@@ -26,6 +27,7 @@ export function getRuntimeStatus() {
   const logPath = getDaemonLogPath();
   const candidatePids = findDaemonPids(settings.socketPath);
   const pid = resolveDaemonPid(pidPath, candidatePids);
+  const daemonRssBytes = readProcessRSSBytes(pid);
 
   return {
     settings,
@@ -36,6 +38,13 @@ export function getRuntimeStatus() {
       ok: false,
       modelName: settings.modelName,
       socket: settings.socketPath,
+    },
+    memory: {
+      daemonRssBytes,
+      modelLoadedBytes: null,
+      modelVramBytes: null,
+      totalTrackedBytes: null,
+      modelName: null,
     },
   } satisfies RuntimeStatus;
 }
@@ -60,6 +69,25 @@ function resolveDaemonPid(pidPath: string, candidatePids: number[]) {
   return pidFromFile;
 }
 
+function readProcessRSSBytes(pid: number | null) {
+  if (!pid) {
+    return null;
+  }
+
+  const result = spawnSync("ps", ["-o", "rss=", "-p", String(pid)], {
+    encoding: "utf8",
+  });
+  if (result.status !== 0) {
+    return null;
+  }
+
+  const rssKb = Number.parseInt(result.stdout.trim(), 10);
+  if (!Number.isFinite(rssKb) || rssKb <= 0) {
+    return null;
+  }
+  return rssKb * 1024;
+}
+
 async function hydrateHealth(status: RuntimeStatus) {
   try {
     const health = await daemonRequest<{ status: string; model_name: string; socket: string }>(
@@ -82,8 +110,31 @@ async function hydrateHealth(status: RuntimeStatus) {
   return status;
 }
 
+async function hydrateMemory(status: RuntimeStatus) {
+  const activeModelName = status.health.modelName || status.settings.modelName;
+  const modelUsage = await getLoadedOllamaModelUsage(
+    status.settings.modelBaseUrl,
+    activeModelName,
+  );
+  const daemonRssBytes = status.memory.daemonRssBytes;
+  const totalTrackedBytes =
+    daemonRssBytes !== null
+      ? daemonRssBytes + (modelUsage.modelLoadedBytes || 0)
+      : modelUsage.modelLoadedBytes;
+
+  status.memory = {
+    daemonRssBytes,
+    modelLoadedBytes: modelUsage.modelLoadedBytes,
+    modelVramBytes: modelUsage.modelVramBytes,
+    totalTrackedBytes,
+    modelName: modelUsage.modelName,
+  };
+  return status;
+}
+
 export async function getRuntimeStatusWithHealth() {
-  return hydrateHealth(getRuntimeStatus());
+  const status = await hydrateHealth(getRuntimeStatus());
+  return hydrateMemory(status);
 }
 
 export async function saveRuntimeSettings(input: Partial<Record<PersistedKey, string>>) {
@@ -91,7 +142,10 @@ export async function saveRuntimeSettings(input: Partial<Record<PersistedKey, st
   writePersistedRuntimeSettings({
     LAC_MODEL_NAME: input.LAC_MODEL_NAME || current.modelName,
     LAC_MODEL_BASE_URL: input.LAC_MODEL_BASE_URL || current.modelBaseUrl,
+    LAC_MODEL_KEEP_ALIVE: input.LAC_MODEL_KEEP_ALIVE || current.modelKeepAlive,
     LAC_SUGGEST_STRATEGY: input.LAC_SUGGEST_STRATEGY || current.suggestStrategy,
+    LAC_SYSTEM_PROMPT_STATIC:
+      input.LAC_SYSTEM_PROMPT_STATIC ?? current.systemPromptStatic,
     LAC_SOCKET_PATH: input.LAC_SOCKET_PATH || current.socketPath,
     LAC_DB_PATH: input.LAC_DB_PATH || current.dbPath,
     LAC_SUGGEST_TIMEOUT_MS:
@@ -161,7 +215,9 @@ export async function startDaemon() {
         LAC_DB_PATH: settings.dbPath,
         LAC_MODEL_NAME: settings.modelName,
         LAC_MODEL_BASE_URL: settings.modelBaseUrl,
+        LAC_MODEL_KEEP_ALIVE: settings.modelKeepAlive,
         LAC_SUGGEST_STRATEGY: settings.suggestStrategy,
+        LAC_SYSTEM_PROMPT_STATIC: settings.systemPromptStatic,
         LAC_SUGGEST_TIMEOUT_MS: String(settings.suggestTimeoutMs),
         LAC_PTY_CAPTURE_ALLOWLIST: settings.ptyCaptureAllowlist,
       },
