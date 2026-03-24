@@ -2,70 +2,128 @@
 
 **Local-first, context-aware terminal autosuggestions for macOS `zsh`.**
 
-Type a few characters and a ghost-text suggestion appears inline — press `Tab` to accept by default, or switch acceptance to Right Arrow in the daemon settings page. Suggestions are shaped by where you are and what you were just doing: current working directory, repo root, git branch, recent commands, last exit code, recent command output, and local project tasks. Everything runs on your machine: a Go daemon, a local Ollama model, and a SQLite learning loop. No cloud, no API keys, no telemetry.
-
-<p align="center">
-  <img src="docs/screenshots/console-dashboard-overview.png" width="100%" alt="Dashboard — live activity stream, top commands, acceptance rate, and model latency at a glance." />
-</p>
-
----
-
-## Highlights
-
-- **Ghost-text suggestions in zsh** — async, debounced, and non-blocking. Feels like IDE autocomplete but for your terminal.
-- **Learns from you** — every command, acceptance, and rejection feeds back into ranking. The engine gets better the more you use it.
-- **Context-aware** — suggestions factor in your current working directory, repo root, git branch, recent commands, last exit code, recent command output, local filesystem paths, and project tasks from files like `package.json`, `Makefile`, and `justfile`.
-- **Local model inference** — ships with Ollama integration. Runs models like `qwen2.5-coder:7b` entirely on-device.
-- **Full control app** — a local Next.js dashboard for analytics, inspection, benchmarking, model management, and daemon control.
-- **Benchmark suite** — compare models head-to-head on your real prompt contexts and see which one actually works best for your workflow.
-
----
-
-## Screenshots
-
-### Suggestions in the terminal
-
-Ghost-text completions appear inline as you type. Tab accepts by default, and the daemon settings page can switch acceptance to Right Arrow.
+Type a few characters and a ghost-text smart suggestion appears inline. Suggestions are shaped by where you are and what you are doing: current working directory, repo root, git branch, recent commands, last exit code, recent command output, and local project tasks (e.g.`npm run`). Everything runs on your machine backed by a Go daemon, local Ollama model, and SQLite. No cloud, no API keys, no telemetry and blazingly fast (ai suggestions under 300ms).
 
 <p align="center">
   <img src="docs/screenshots/zsh-ghost-text-terminal.png" width="100%" alt="Zsh ghost-text suggestions in the terminal" />
 </p>
 
-### Dashboard
+
+---
+
+## Features
+
+- [Ghost-text suggestions in zsh](#ghost-text-suggestions-in-zsh) - Async inline completions that stay out of your way until you want them.
+- [Context-aware ranking](#context-aware-ranking) - Uses shell, repo, and project signals to shape the next suggestion.
+- [Feedback loop from real usage](#feedback-loop-from-real-usage) - Accepted and rejected suggestions feed back into local ranking.
+- [Dashboard and live activity](#dashboard-and-live-activity) - Watch suggestion traffic, latency, and acceptance trends in one place.
+- [Suggestion history and context snapshots](#suggestion-history-and-context-snapshots) - Browse every suggestion with timing, outcome, and full prompt context.
+- [Commands and feedback inspection](#commands-and-feedback-inspection) - Review command history and feedback signals without losing detail.
+- [Ranking inspector](#ranking-inspector) - Replay a prompt and inspect retrieval, scores, and raw model output.
+- [Model lab and benchmarks](#model-lab-and-benchmarks) - Compare local models head-to-head on your real shell contexts.
+- [Ollama model inventory](#ollama-model-inventory) - Download, switch, and manage local models from the control app.
+
+### Ghost-text suggestions in zsh
+
+Ghost-text completions appear inline as you type, with async debouncing so the shell stays responsive while the daemon works in the background.
+
+**Highlights:**
+
+- Accept with `Tab` by default, or switch to `Right Arrow ->` from the daemon settings page
+- Blend local history, retrieved context, and Ollama output instead of relying on a single source
+- Keep everything on-device through the local daemon, SQLite state, and Ollama
+
+### Context-aware ranking
+
+The same prefix can resolve differently depending on where you are and what just happened in the shell.
+
+**Signals used for ranking:**
+
+- current working directory, repo root, and git branch
+- recent commands, last exit code, and recent command output
+- local project tasks from files like `package.json`, `Makefile`, and `justfile`
+- filesystem paths plus acceptance and rejection history
+
+### Feedback loop from real usage
+
+Every command, suggestion, acceptance, and rejection is logged locally and fed back into ranking.
+
+**What this enables:**
+
+- frequently accepted patterns rise faster
+- repeatedly rejected suggestions lose priority
+- the control app can surface quality trends and path-level behavior over time
+- (future) trigger model fine tuning to get even more personalized suggestions 
+
+### Dashboard and live activity
 
 The local console keeps the live signal stream, recent suggestions, and path-level acceptance trends in one place.
+
+**Includes:**
+
+- live daemon activity as suggestions and commands flow through the system
+- summary cards for acceptance, latency, and top command usage
+- lower-level panels for recent suggestions, model summary, and path-level performance
+
+<p align="center">
+  <img src="docs/screenshots/console-dashboard-overview.png" width="100%" alt="Dashboard — live activity stream, top commands, acceptance rate, and model latency at a glance." />
+</p>
 
 <p align="center">
   <img src="docs/screenshots/console-dashboard-with-suggestions.png" width="100%" alt="Dashboard lower panels showing recent suggestions, model summary, and acceptance by path" />
 </p>
 
-### Suggestion history
+### Suggestion history and context snapshots
 
 Browse every suggestion the engine has made, with timing, model, outcome, and full context snapshots.
+
+**Includes:**
+
+- filters for narrowing down recent behavior
+- labels and outcomes for accepted, rejected, and ignored suggestions
+- stored prompt context so you can inspect what the engine actually saw
 
 <p align="center">
   <img src="docs/screenshots/console-suggestions-history.png" width="100%" alt="Suggestion history table with filters, labels, and context snapshots" />
 </p>
 
-### Commands & feedback signals
+### Commands and feedback inspection
 
 Review executed commands, feedback trends, and command-level context without crowding the main table with full output excerpts.
+
+**Includes:**
+
+- recent executed commands alongside feedback events
+- filters for rejected suggestions and behavior patterns
+- enough context to understand what the user did without turning the page into a raw log dump
 
 <p align="center">
   <img src="docs/screenshots/console-commands-and-feedback.png" width="100%" alt="Commands and feedback page with filters, rejected suggestions, and recent feedback events" />
 </p>
 
-### Inspector
+### Ranking inspector
 
 Replay any prompt context, inspect candidate scores, retrieval signals, and raw model output.
+
+**Includes:**
+
+- prompt replay for a single suggestion case
+- candidate scoring and retrieval breakdowns
+- raw model output for ranking and debugging work
 
 <p align="center">
   <img src="docs/screenshots/console-inspector.png" width="100%" alt="Ranking inspector showing candidate scores and prompt context" />
 </p>
 
-### Model lab — benchmark and compare
+### Model lab and benchmarks
 
 Queue repeatable benchmark runs across multiple models, compare latency and acceptance, and drill into individual results.
+
+**Includes:**
+
+- ad-hoc benchmark jobs from the console
+- saved run history with progress and summary metrics
+- per-case drill-downs to inspect where a model won or failed
 
 <p align="center">
   <img src="docs/screenshots/console-model-lab-benchmarks.png" width="100%" alt="Model lab page for ad-hoc tests and queued benchmark runs" />
@@ -79,9 +137,15 @@ Queue repeatable benchmark runs across multiple models, compare latency and acce
   <img src="docs/screenshots/console-benchmark-run-detail.png" width="100%" alt="Benchmark run detail showing per-model summaries and per-case results" />
 </p>
 
-### Models — download and manage Ollama models
+### Ollama model inventory
 
 Browse the full Ollama library, download models, and switch the active daemon model without leaving the console.
+
+**Includes:**
+
+- installed and available model inventory in one place
+- download actions for models you do not have yet
+- quick switching of the daemon's active local model
 
 <p align="center">
   <img src="docs/screenshots/console-models-inventory.png" width="100%" alt="Model inventory with installed and available models" />
