@@ -81,11 +81,6 @@ func (e *Engine) Suggest(ctx context.Context, request api.SuggestRequest) (api.S
 		return api.SuggestResponse{}, err
 	}
 
-	buffer := strings.TrimSpace(request.Buffer)
-	if buffer == "" {
-		return api.SuggestResponse{}, nil
-	}
-
 	recentCommands := request.RecentCommands
 	var err error
 	inspection, err := e.inspectDetailed(ctx, api.InspectRequest{
@@ -143,11 +138,6 @@ func (e *Engine) inspectDetailed(ctx context.Context, request api.InspectRequest
 		return inspectResult{}, err
 	}
 
-	buffer := strings.TrimSpace(request.Buffer)
-	if buffer == "" {
-		return inspectResult{}, nil
-	}
-
 	limit := request.Limit
 	if limit <= 0 {
 		limit = 8
@@ -167,11 +157,16 @@ func (e *Engine) inspectDetailed(ctx context.Context, request api.InspectRequest
 	} else {
 		strategy = config.NormalizeSuggestStrategy(strategy)
 	}
-	useHistory := strategy != config.SuggestStrategyModelOnly
+	allowEmptyBufferModel := strings.TrimSpace(request.Buffer) == "" && strings.TrimSpace(lastContext.Command) != ""
+	useHistory := strategy != config.SuggestStrategyModelOnly && strings.TrimSpace(request.Buffer) != ""
 	useModel := strategy != config.SuggestStrategyHistoryOnly
+	if strings.TrimSpace(request.Buffer) == "" && !allowEmptyBufferModel {
+		useModel = false
+	}
 
 	resolvedSuggestRequest.Strategy = strategy
 	resolvedSuggestRequest.RecentCommands = recentCommands
+	buffer := resolvedSuggestRequest.Buffer
 	var retrievedContext api.InspectRetrievedContext
 	var retrievalCandidates []retrievalCandidate
 	if err := runParallel(
@@ -744,20 +739,17 @@ func BuildPrompt(
 	retrievedContext api.InspectRetrievedContext,
 ) string {
 	var builder strings.Builder
-	if strings.TrimSpace(systemPromptStatic) != "" {
-		builder.WriteString(strings.TrimSpace(systemPromptStatic))
-		builder.WriteString("\n\n")
+	systemPrompt := strings.TrimSpace(systemPromptStatic)
+	if systemPrompt == "" {
+		systemPrompt = config.DefaultSystemPromptStatic
 	}
-	builder.WriteString("You are a shell autosuggestion engine.\n")
-	builder.WriteString("Complete the current shell command with the single most likely next command.\n")
-	builder.WriteString("Return exactly one shell command on one line.\n")
-	builder.WriteString("Do not include markdown, backticks, bullets, labels, colons, explanations, comments, cwd annotations, or placeholders.\n")
-	builder.WriteString("Never invent explanatory suffixes like paths, notes, or metadata.\n")
-	builder.WriteString("The returned command must begin exactly with the current buffer.\n\n")
-	builder.WriteString("examples:\n")
-	builder.WriteString("buffer: git st\ncommand: git status\n")
-	builder.WriteString("buffer: npm run d\ncommand: npm run dev\n")
-	builder.WriteString("buffer: gcloud auth l\ncommand: gcloud auth list\n\n")
+	builder.WriteString(systemPrompt)
+	builder.WriteString("\n\n")
+	if strings.TrimSpace(request.Buffer) == "" {
+		builder.WriteString("buffer is empty right now. Use last_command and recent context to suggest one full command only when there is a clear, high-confidence next step.\n")
+		builder.WriteString("buffer is empty right now. Prefer the most likely correction of the last command or the most likely immediate follow-up command.\n")
+		builder.WriteString("buffer is empty right now. If there is no clear next step, return an empty response.\n\n")
+	}
 	builder.WriteString(fmt.Sprintf("cwd: %s\n", request.CWD))
 	builder.WriteString(fmt.Sprintf("repo_root: %s\n", request.RepoRoot))
 	builder.WriteString(fmt.Sprintf("branch: %s\n", request.Branch))

@@ -5,8 +5,10 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { DEFAULT_SYSTEM_PROMPT_STATIC } from "@/lib/default-system-prompt";
+import { normalizePtyCaptureList } from "@/lib/pty-capture-list";
 import { normalizeSuggestStrategy } from "@/lib/suggest-strategy";
-import type { RuntimeSettings } from "@/lib/types";
+import type { AcceptSuggestionKey, PtyCaptureMode, RuntimeSettings } from "@/lib/types";
 
 const DEFAULT_STATE_DIR = path.join(
   os.homedir(),
@@ -22,9 +24,12 @@ const DEFAULTS = {
   LAC_MODEL_BASE_URL: "http://127.0.0.1:11434",
   LAC_MODEL_KEEP_ALIVE: "5m",
   LAC_SUGGEST_STRATEGY: "history+model",
-  LAC_SYSTEM_PROMPT_STATIC: "",
+  LAC_SYSTEM_PROMPT_STATIC: DEFAULT_SYSTEM_PROMPT_STATIC,
   LAC_SUGGEST_TIMEOUT_MS: "1200",
+  LAC_ACCEPT_KEY: "tab",
+  LAC_PTY_CAPTURE_MODE: "allowlist",
   LAC_PTY_CAPTURE_ALLOWLIST: "",
+  LAC_PTY_CAPTURE_BLOCKLIST: "",
 } as const;
 
 const PROCESS_ENV_OVERRIDE_FLAG = "LAC_CONSOLE_USE_PROCESS_ENV_OVERRIDES";
@@ -38,6 +43,18 @@ interface RuntimeSettingsResolveOptions {
 
 export function getProjectRoot() {
   return PROJECT_ROOT;
+}
+
+export function normalizePtyCaptureMode(value: string | undefined): PtyCaptureMode {
+  return value?.trim().toLowerCase() === "blocklist" ? "blocklist" : "allowlist";
+}
+
+export function normalizeAcceptSuggestionKey(value: string | undefined): AcceptSuggestionKey {
+  return value?.trim().toLowerCase() === "right-arrow" ? "right-arrow" : "tab";
+}
+
+export function normalizePtyCaptureCommandList(value: string | undefined) {
+  return normalizePtyCaptureList(value);
 }
 
 function shouldUseProcessEnvOverrides() {
@@ -78,9 +95,9 @@ export function readPersistedRuntimeSettings(options?: RuntimeSettingsResolveOpt
   }
 
   const values: Record<string, string> = {};
-  const contents = fs.readFileSync(runtimeEnvPath, "utf8");
-  for (const rawLine of contents.split(/\r?\n/)) {
-    const line = rawLine.trim();
+  const lines = fs.readFileSync(runtimeEnvPath, "utf8").split(/\r?\n/);
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index].trim();
     if (!line || line.startsWith("#")) {
       continue;
     }
@@ -92,14 +109,20 @@ export function readPersistedRuntimeSettings(options?: RuntimeSettingsResolveOpt
 
     const key = line.slice(0, separator).trim();
     let value = line.slice(separator + 1).trim();
-    if (
-      value.length >= 2 &&
-      ((value.startsWith('"') && value.endsWith('"')) ||
-        (value.startsWith("'") && value.endsWith("'")))
-    ) {
-      value = value.slice(1, -1);
+    if (value.startsWith("$'")) {
+      while (findClosingQuoteIndex(value, "'", 2) === -1 && index + 1 < lines.length) {
+        index += 1;
+        value += `\n${lines[index]}`;
+      }
+    } else if (value.startsWith('"') || value.startsWith("'")) {
+      const quote = value[0];
+      while (findClosingQuoteIndex(value, quote, 1) === -1 && index + 1 < lines.length) {
+        index += 1;
+        value += `\n${lines[index]}`;
+      }
     }
-    values[key] = value;
+
+    values[key] = decodePersistedValue(value);
   }
 
   return values;
@@ -131,8 +154,20 @@ export function getResolvedRuntimeSettings(options?: RuntimeSettingsResolveOptio
       runtimeValue("LAC_SUGGEST_TIMEOUT_MS") || DEFAULTS.LAC_SUGGEST_TIMEOUT_MS,
       10,
     ),
+    acceptKey: normalizeAcceptSuggestionKey(
+      runtimeValue("LAC_ACCEPT_KEY") || DEFAULTS.LAC_ACCEPT_KEY,
+    ),
+    ptyCaptureMode: normalizePtyCaptureMode(
+      runtimeValue("LAC_PTY_CAPTURE_MODE") || DEFAULTS.LAC_PTY_CAPTURE_MODE,
+    ),
     ptyCaptureAllowlist:
-      runtimeValue("LAC_PTY_CAPTURE_ALLOWLIST") || DEFAULTS.LAC_PTY_CAPTURE_ALLOWLIST,
+      normalizePtyCaptureCommandList(
+        runtimeValue("LAC_PTY_CAPTURE_ALLOWLIST") || DEFAULTS.LAC_PTY_CAPTURE_ALLOWLIST,
+      ),
+    ptyCaptureBlocklist:
+      normalizePtyCaptureCommandList(
+        runtimeValue("LAC_PTY_CAPTURE_BLOCKLIST") || DEFAULTS.LAC_PTY_CAPTURE_BLOCKLIST,
+      ),
   };
 }
 
@@ -145,17 +180,148 @@ const SAVED_KEYS = [
   "LAC_SOCKET_PATH",
   "LAC_DB_PATH",
   "LAC_SUGGEST_TIMEOUT_MS",
+  "LAC_ACCEPT_KEY",
+  "LAC_PTY_CAPTURE_MODE",
   "LAC_PTY_CAPTURE_ALLOWLIST",
+  "LAC_PTY_CAPTURE_BLOCKLIST",
 ] as const;
 
 export type PersistedKey = (typeof SAVED_KEYS)[number];
 
 function shellQuote(value: string) {
-  return `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
+  return `$'${encodeAnsiCString(value)}'`;
 }
 
 export function writePersistedRuntimeSettings(values: Partial<Record<PersistedKey, string>>) {
   ensureStateDirs();
   const lines = SAVED_KEYS.map((key) => `${key}=${shellQuote(values[key] || "")}`);
   fs.writeFileSync(getRuntimeEnvPath(), `${lines.join("\n")}\n`, "utf8");
+}
+
+function findClosingQuoteIndex(value: string, quote: string, startIndex: number) {
+  let escaped = false;
+  for (let index = startIndex; index < value.length; index += 1) {
+    const current = value[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (current === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (current === quote) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function decodePersistedValue(value: string) {
+  const trimmed = value.trim();
+  if (trimmed.startsWith("$'") && trimmed.endsWith("'")) {
+    return decodeAnsiCString(trimmed.slice(2, -1));
+  }
+  if (trimmed.length >= 2 && trimmed.startsWith('"') && trimmed.endsWith('"')) {
+    return decodeDoubleQuotedValue(trimmed.slice(1, -1));
+  }
+  if (trimmed.length >= 2 && trimmed.startsWith("'") && trimmed.endsWith("'")) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
+function decodeAnsiCString(value: string) {
+  let result = "";
+  for (let index = 0; index < value.length; index += 1) {
+    const current = value[index];
+    if (current !== "\\") {
+      result += current;
+      continue;
+    }
+
+    const next = value[index + 1];
+    if (next === undefined) {
+      result += "\\";
+      continue;
+    }
+
+    index += 1;
+    switch (next) {
+      case "n":
+        result += "\n";
+        break;
+      case "r":
+        result += "\r";
+        break;
+      case "t":
+        result += "\t";
+        break;
+      case "\\":
+        result += "\\";
+        break;
+      case "'":
+        result += "'";
+        break;
+      case '"':
+        result += '"';
+        break;
+      default:
+        result += next;
+        break;
+    }
+  }
+  return result;
+}
+
+function decodeDoubleQuotedValue(value: string) {
+  let result = "";
+  for (let index = 0; index < value.length; index += 1) {
+    const current = value[index];
+    if (current !== "\\") {
+      result += current;
+      continue;
+    }
+
+    const next = value[index + 1];
+    if (next === undefined) {
+      result += "\\";
+      continue;
+    }
+
+    index += 1;
+    switch (next) {
+      case "n":
+        result += "\n";
+        break;
+      case "r":
+        result += "\r";
+        break;
+      case "t":
+        result += "\t";
+        break;
+      case "\\":
+        result += "\\";
+        break;
+      case '"':
+        result += '"';
+        break;
+      case "'":
+        result += "'";
+        break;
+      default:
+        result += next;
+        break;
+    }
+  }
+  return result;
+}
+
+function encodeAnsiCString(value: string) {
+  return value
+    .replaceAll("\\", "\\\\")
+    .replaceAll("'", "\\'")
+    .replaceAll("\n", "\\n")
+    .replaceAll("\r", "\\r")
+    .replaceAll("\t", "\\t");
 }

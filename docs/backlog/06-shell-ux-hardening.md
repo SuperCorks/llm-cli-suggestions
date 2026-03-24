@@ -25,6 +25,6 @@ Suggestion quality and shell feel are different problems. A mediocre suggestion 
 
 ## Open Questions
 
-- whether `Tab` remains the best accept key long-term
+- whether `Tab` should remain the default accept key long-term now that Right Arrow is supported too
 - how much additional keymap support is worth the complexity
 - which terminal and prompt combinations are most likely to expose edge cases

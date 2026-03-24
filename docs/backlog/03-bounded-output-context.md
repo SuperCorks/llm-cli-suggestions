@@ -6,12 +6,12 @@ Some of the most useful next-command predictions depend on the output of the pre
 
 ## Current State
 
-The app can capture bounded output through lightweight PTY wrappers for commands named in `LAC_PTY_CAPTURE_ALLOWLIST`, can still use the older opt-in `LAC_AUTO_CAPTURE_ENABLED=1` path for safe non-interactive commands, keeps `lac-capture` and `lac-capture-pty` as explicit fallbacks, and can feed a small selected set of recent session output snippets into prompting and ranking.
+The app can capture bounded output through lightweight PTY wrappers that run in either allowlist mode or blocklist mode for external commands, can still use the older opt-in `LAC_AUTO_CAPTURE_ENABLED=1` path for safe non-interactive commands, keeps `lac-capture` and `lac-capture-pty` as explicit fallbacks, and can feed a small selected set of recent session output snippets into prompting and ranking.
 
 ## What To Improve
 
-- harden PTY allowlist capture around more shell edge cases
-- decide how broad the default PTY allowlist should be, if any
+- harden PTY wrapper coverage around more shell edge cases
+- decide whether an `all` mode is worth the extra shell complexity beyond the current allowlist and blocklist options
 - improve relevance selection so noisy session output is ignored even more aggressively
 - measure how much recent-output context actually improves acceptance rates
 - decide whether session-only output context should eventually expand to repo-scoped reuse
@@ -25,10 +25,11 @@ The app can capture bounded output through lightweight PTY wrappers for commands
 
 ## Why Not A Full PTY Interposer
 
-The current PTY support is intentionally narrow: it wraps only explicitly allowlisted commands and stores bounded excerpts. A full PTY or terminal-interposer solution would still be much heavier. It would add complexity to shell integration, make debugging harder, and expand the amount of data stored locally.
+The current PTY support is intentionally bounded: it wraps either explicitly allowlisted commands or all external commands except a blocklist and stores bounded excerpts. A full PTY or terminal-interposer solution would still be much heavier. It would add complexity to shell integration, make debugging harder, and expand the amount of data stored locally.
 
 ## Open Questions
 
 - which commands should be excluded from capture
+- whether blocklist mode is broad enough in practice or whether a true `all` mode is still needed
 - whether session-only output context is enough for the best suggestions
 - how much output meaningfully improves next-command quality

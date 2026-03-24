@@ -11,6 +11,8 @@ export type SuggestionSort =
   | "quality-desc";
 export type ClearDataset = "suggestions" | "feedback" | "benchmarks";
 export type SuggestStrategy = "history-only" | "history+model" | "model-only";
+export type PtyCaptureMode = "allowlist" | "blocklist";
+export type AcceptSuggestionKey = "tab" | "right-arrow";
 
 export interface RuntimeSettings {
   stateDir: string;
@@ -23,7 +25,10 @@ export interface RuntimeSettings {
   suggestStrategy: SuggestStrategy;
   systemPromptStatic: string;
   suggestTimeoutMs: number;
+  acceptKey: AcceptSuggestionKey;
+  ptyCaptureMode: PtyCaptureMode;
   ptyCaptureAllowlist: string;
+  ptyCaptureBlocklist: string;
 }
 
 export interface OllamaModelOption {

@@ -20,12 +20,16 @@ typeset -g LAC_DAEMON_PID_PATH="$LAC_STATE_DIR/daemon.pid"
 typeset -g LAC_DEBOUNCE_SECONDS="${LAC_DEBOUNCE_SECONDS:-0.08}"
 typeset -g LAC_HIGHLIGHT_STYLE="${LAC_HIGHLIGHT_STYLE:-fg=242}"
 typeset -g LAC_SNAPSHOT_PATH="${LAC_SNAPSHOT_PATH:-}"
-typeset -gi LAC_CAPTURE_BYTES="${LAC_CAPTURE_BYTES:-600}"
+typeset -gi LAC_CAPTURE_HEAD_BYTES="${LAC_CAPTURE_HEAD_BYTES:-400}"
+typeset -gi LAC_CAPTURE_TAIL_BYTES="${LAC_CAPTURE_TAIL_BYTES:-800}"
 typeset -g LAC_AUTO_CAPTURE_ENABLED="${LAC_AUTO_CAPTURE_ENABLED:-0}"
+typeset -g LAC_PTY_CAPTURE_MODE="${LAC_PTY_CAPTURE_MODE:-}"
 typeset -g LAC_PTY_CAPTURE_ALLOWLIST="${LAC_PTY_CAPTURE_ALLOWLIST:-}"
+typeset -g LAC_PTY_CAPTURE_BLOCKLIST="${LAC_PTY_CAPTURE_BLOCKLIST:-}"
 typeset -g LAC_MODEL_BASE_URL="${LAC_MODEL_BASE_URL:-}"
 typeset -g LAC_SUGGEST_STRATEGY="${LAC_SUGGEST_STRATEGY:-}"
 typeset -g LAC_SUGGEST_TIMEOUT_MS="${LAC_SUGGEST_TIMEOUT_MS:-}"
+typeset -g LAC_ACCEPT_KEY="${LAC_ACCEPT_KEY:-}"
 
 _lac_runtime_value() {
   local key="$1"
@@ -42,8 +46,11 @@ typeset -gx LAC_MODEL_NAME="${LAC_MODEL_NAME:-$(_lac_runtime_value LAC_MODEL_NAM
 typeset -gx LAC_MODEL_BASE_URL="${LAC_MODEL_BASE_URL:-$(_lac_runtime_value LAC_MODEL_BASE_URL)}"
 typeset -gx LAC_SUGGEST_STRATEGY="${LAC_SUGGEST_STRATEGY:-$(_lac_runtime_value LAC_SUGGEST_STRATEGY)}"
 typeset -gx LAC_SUGGEST_TIMEOUT_MS="${LAC_SUGGEST_TIMEOUT_MS:-$(_lac_runtime_value LAC_SUGGEST_TIMEOUT_MS)}"
+typeset -gx LAC_ACCEPT_KEY="${LAC_ACCEPT_KEY:-$(_lac_runtime_value LAC_ACCEPT_KEY)}"
 typeset -gx LAC_AUTO_CAPTURE_ENABLED="${LAC_AUTO_CAPTURE_ENABLED:-$(_lac_runtime_value LAC_AUTO_CAPTURE_ENABLED)}"
+typeset -gx LAC_PTY_CAPTURE_MODE="${LAC_PTY_CAPTURE_MODE:-$(_lac_runtime_value LAC_PTY_CAPTURE_MODE)}"
 typeset -gx LAC_PTY_CAPTURE_ALLOWLIST="${LAC_PTY_CAPTURE_ALLOWLIST:-$(_lac_runtime_value LAC_PTY_CAPTURE_ALLOWLIST)}"
+typeset -gx LAC_PTY_CAPTURE_BLOCKLIST="${LAC_PTY_CAPTURE_BLOCKLIST:-$(_lac_runtime_value LAC_PTY_CAPTURE_BLOCKLIST)}"
 typeset -gx LAC_STATE_DIR
 
 typeset -gx LAC_SOCKET_PATH="${LAC_SOCKET_PATH:-$LAC_STATE_DIR/daemon.sock}"
@@ -52,8 +59,11 @@ typeset -gx LAC_MODEL_NAME="${LAC_MODEL_NAME:-qwen2.5-coder:7b}"
 typeset -gx LAC_MODEL_BASE_URL="${LAC_MODEL_BASE_URL:-http://127.0.0.1:11434}"
 typeset -gx LAC_SUGGEST_STRATEGY="${LAC_SUGGEST_STRATEGY:-history+model}"
 typeset -gx LAC_SUGGEST_TIMEOUT_MS="${LAC_SUGGEST_TIMEOUT_MS:-1200}"
+typeset -gx LAC_ACCEPT_KEY="${LAC_ACCEPT_KEY:-tab}"
 typeset -gx LAC_AUTO_CAPTURE_ENABLED="${LAC_AUTO_CAPTURE_ENABLED:-0}"
+typeset -gx LAC_PTY_CAPTURE_MODE="${LAC_PTY_CAPTURE_MODE:-allowlist}"
 typeset -gx LAC_PTY_CAPTURE_ALLOWLIST="${LAC_PTY_CAPTURE_ALLOWLIST:-}"
+typeset -gx LAC_PTY_CAPTURE_BLOCKLIST="${LAC_PTY_CAPTURE_BLOCKLIST:-}"
 
 mkdir -p -- "$LAC_STATE_DIR" "$LAC_ASYNC_DIR"
 
@@ -79,6 +89,7 @@ typeset -gi LAC_CAPTURE_STDOUT_SAVE_FD=-1
 typeset -gi LAC_CAPTURE_STDERR_SAVE_FD=-1
 typeset -g LAC_CAPTURE_STDOUT_FILE=""
 typeset -g LAC_CAPTURE_STDERR_FILE=""
+typeset -gA LAC_PTY_WRAPPED_COMMANDS=()
 
 mkdir -p -- "$LAC_ASYNC_SESSION_DIR"
 
@@ -95,24 +106,45 @@ _lac_git_branch() {
 }
 
 _lac_trim_capture() {
+  setopt localoptions nomultibyte
+
   local text="$1"
   local marker=$'\n...\n'
   local marker_len="${#marker}"
-  local remaining head_len tail_len tail_start
+  local head_len tail_len tail_start total_len
 
-  if (( ${#text} <= LAC_CAPTURE_BYTES )); then
+  head_len="$LAC_CAPTURE_HEAD_BYTES"
+  tail_len="$LAC_CAPTURE_TAIL_BYTES"
+
+  if (( head_len < 0 )); then
+    head_len=0
+  fi
+  if (( tail_len < 0 )); then
+    tail_len=0
+  fi
+
+  total_len=$(( head_len + tail_len + marker_len ))
+
+  if (( ${#text} <= total_len )); then
     print -rn -- "$text"
     return 0
   fi
 
-  remaining=$(( LAC_CAPTURE_BYTES - marker_len ))
-  if (( remaining < 2 )); then
-    print -rn -- "${text[1,LAC_CAPTURE_BYTES]}"
+  if (( head_len == 0 && tail_len == 0 )); then
     return 0
   fi
 
-  head_len=$(( remaining / 2 ))
-  tail_len=$(( remaining - head_len ))
+  if (( head_len == 0 )); then
+    tail_start=$(( ${#text} - tail_len + 1 ))
+    print -rn -- "${text[tail_start,-1]}"
+    return 0
+  fi
+
+  if (( tail_len == 0 )); then
+    print -rn -- "${text[1,head_len]}"
+    return 0
+  fi
+
   tail_start=$(( ${#text} - tail_len + 1 ))
 
   print -rn -- "${text[1,head_len]}${marker}${text[tail_start,-1]}"
@@ -162,22 +194,236 @@ _lac_auto_capture_enabled() {
   return 1
 }
 
-_lac_is_pty_allowlisted_command() {
+_lac_normalize_pty_capture_mode() {
+  case "${${1:-allowlist}:l}" in
+    blocklist)
+      print -rn -- "blocklist"
+      ;;
+    *)
+      print -rn -- "allowlist"
+      ;;
+  esac
+}
+
+_lac_normalize_accept_key() {
+  case "${${1:-tab}:l}" in
+    right-arrow)
+      print -rn -- "right-arrow"
+      ;;
+    *)
+      print -rn -- "tab"
+      ;;
+  esac
+}
+
+_lac_command_name_from_raw() {
   local raw_command="$1"
-  local normalized="${LAC_PTY_CAPTURE_ALLOWLIST//,/ }"
-  local cmd
+  local word
   local -a words
-  local -a allowlisted_commands=(${=normalized})
+  local index=1
 
   [[ -n "${raw_command//[[:space:]]/}" ]] || return 1
   words=("${(z)raw_command}")
   (( ${#words} > 0 )) || return 1
 
-  for cmd in "${allowlisted_commands[@]}"; do
-    [[ "$cmd" == "$words[1]" ]] && return 0
+  while (( index <= ${#words} )); do
+    word="$words[$index]"
+
+    if [[ "$word" =~ '^[A-Za-z_][A-Za-z0-9_]*=.*$' ]]; then
+      (( index += 1 ))
+      continue
+    fi
+
+    case "$word" in
+      command|builtin|exec|noglob|nocorrect)
+        (( index += 1 ))
+        continue
+        ;;
+      time)
+        (( index += 1 ))
+        while (( index <= ${#words} )) && [[ "${words[$index]}" == -* ]]; do
+          (( index += 1 ))
+        done
+        continue
+        ;;
+    esac
+
+    print -rn -- "$word"
+    return 0
   done
 
   return 1
+}
+
+_lac_trim_pty_capture_rule() {
+  local value="$1"
+
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  print -rn -- "$value"
+}
+
+_lac_is_pty_capture_regex_rule() {
+  local rule
+
+  rule="$(_lac_trim_pty_capture_rule "$1")"
+  (( ${#rule} >= 2 )) || return 1
+  [[ "$rule" == /*/ ]]
+}
+
+_lac_list_pty_capture_rules() {
+  local list_value="$1"
+  local line entry
+  local -a lines parts
+
+  lines=("${(@f)${list_value//$'\r'/}}")
+
+  for line in "${lines[@]}"; do
+    line="$(_lac_trim_pty_capture_rule "$line")"
+    [[ -n "$line" ]] || continue
+
+    if _lac_is_pty_capture_regex_rule "$line"; then
+      print -r -- "$line"
+      continue
+    fi
+
+    parts=("${(@s:,:)line}")
+    for entry in "${parts[@]}"; do
+      entry="$(_lac_trim_pty_capture_rule "$entry")"
+      [[ -n "$entry" ]] || continue
+      print -r -- "$entry"
+    done
+  done
+}
+
+_lac_list_has_pty_capture_regex_rule() {
+  local rule
+  local -a rules
+
+  rules=("${(@f)$(_lac_list_pty_capture_rules "$1")}")
+  for rule in "${rules[@]}"; do
+    _lac_is_pty_capture_regex_rule "$rule" && return 0
+  done
+
+  return 1
+}
+
+_lac_command_matches_pty_capture_list() {
+  local command_name="$1"
+  local raw_command="$2"
+  local list_value="$3"
+  local rule pattern
+  local -a rules
+
+  rules=("${(@f)$(_lac_list_pty_capture_rules "$list_value")}")
+
+  for rule in "${rules[@]}"; do
+    if _lac_is_pty_capture_regex_rule "$rule"; then
+      pattern="${rule[2,-2]}"
+      { [[ "$raw_command" =~ $pattern ]] } 2>/dev/null && return 0
+      continue
+    fi
+
+    [[ "$rule" == "$command_name" ]] && return 0
+  done
+
+  return 1
+}
+
+_lac_command_name_in_plain_pty_capture_list() {
+  local command_name="$1"
+  local list_value="$2"
+  local rule
+  local -a rules
+
+  rules=("${(@f)$(_lac_list_pty_capture_rules "$list_value")}")
+
+  for rule in "${rules[@]}"; do
+    _lac_is_pty_capture_regex_rule "$rule" && continue
+    [[ "$rule" == "$command_name" ]] && return 0
+  done
+
+  return 1
+}
+
+_lac_command_redirection_mode() {
+  local raw_command="$1"
+  local word fd rest stderr_only=0
+  local -a words
+
+  [[ -n "${raw_command//[[:space:]]/}" ]] || {
+    print -rn -- "none"
+    return 0
+  }
+
+  words=("${(z)raw_command}")
+  for word in "${words[@]}"; do
+    case "$word" in
+      "|"|"||"|"&&"|";"|"&")
+        print -rn -- "other"
+        return 0
+        ;;
+      "<"*|"<<"*|"<<-"*|"<<<"*|"<&"*|"<>"*|"&>"*|"&>>"*)
+        print -rn -- "other"
+        return 0
+        ;;
+    esac
+
+    fd=""
+    rest="$word"
+    if [[ "$word" == <->* ]]; then
+      fd="${word%%[^0-9]*}"
+      rest="${word#$fd}"
+    fi
+
+    case "$rest" in
+      ">"*|">>"*|">|"*|">&"*)
+        if [[ "$fd" == "2" ]]; then
+          stderr_only=1
+          continue
+        fi
+        print -rn -- "other"
+        return 0
+        ;;
+    esac
+  done
+
+  if (( stderr_only )); then
+    print -rn -- "stderr-only"
+  else
+    print -rn -- "none"
+  fi
+}
+
+_lac_command_matches_pty_capture_policy() {
+  local command_name="$1"
+  local raw_command="${2:-$1}"
+  local mode
+
+  mode="$(_lac_normalize_pty_capture_mode "${LAC_PTY_CAPTURE_MODE:-allowlist}")"
+  if [[ "$mode" == "blocklist" ]]; then
+    _lac_command_matches_pty_capture_list "$command_name" "$raw_command" "$LAC_PTY_CAPTURE_BLOCKLIST" && return 1
+    return 0
+  fi
+
+  _lac_command_matches_pty_capture_list "$command_name" "$raw_command" "$LAC_PTY_CAPTURE_ALLOWLIST"
+}
+
+_lac_should_pty_wrap_command() {
+  local command_name="$1"
+  local raw_command="${2:-$1}"
+
+  [[ "$(_lac_command_redirection_mode "$raw_command")" == "none" ]] || return 1
+  _lac_command_matches_pty_capture_policy "$command_name" "$raw_command"
+}
+
+_lac_is_pty_wrapped_command() {
+  local raw_command="$1"
+  local command_name=""
+
+  command_name="$(_lac_command_name_from_raw "$raw_command")" || return 1
+  [[ -n "${LAC_PTY_WRAPPED_COMMANDS[$command_name]-}" ]] || return 1
+  _lac_should_pty_wrap_command "$command_name" "$raw_command"
 }
 
 _lac_reset_auto_capture() {
@@ -190,12 +436,22 @@ _lac_reset_auto_capture() {
 
 _lac_should_auto_capture() {
   local raw_command="$1"
+  local command_name=""
+  local redirection_mode
+  local allow_policy_fallback=0
   local -a words
   local word
 
-  _lac_auto_capture_enabled || return 1
-  _lac_is_pty_allowlisted_command "$raw_command" && return 1
   [[ -n "${raw_command//[[:space:]]/}" ]] || return 1
+  command_name="$(_lac_command_name_from_raw "$raw_command")" || command_name=""
+
+  redirection_mode="$(_lac_command_redirection_mode "$raw_command")"
+  if [[ "$redirection_mode" == "stderr-only" ]] && [[ -n "$command_name" ]] && _lac_command_matches_pty_capture_policy "$command_name" "$raw_command"; then
+    allow_policy_fallback=1
+  fi
+
+  (( allow_policy_fallback )) || _lac_auto_capture_enabled || return 1
+  _lac_is_pty_wrapped_command "$raw_command" && return 1
   words=("${(z)raw_command}")
   (( ${#words} > 0 )) || return 1
 
@@ -207,12 +463,11 @@ _lac_should_auto_capture() {
     return 1
   fi
 
+  [[ "$redirection_mode" == "other" ]] && return 1
+
   for word in "${words[@]}"; do
     case "$word" in
-      "|"|"||"|"&&"|";"|"&"|">"|">>"|"<"|"<<"|"<<-"|"<<<"|">&"|"<&"|"<>")
-        return 1
-        ;;
-      [0-9]">"*|[0-9]"<"*|">"*|"<"*)
+      "|"|"||"|"&&"|";"|"&")
         return 1
         ;;
       vim|nvim|vi|nano|less|more|man|top|htop|watch|ssh|sftp|scp|mosh|tmux|screen|fzf)
@@ -299,32 +554,144 @@ _lac_finish_auto_capture() {
 
 _lac_should_use_pty_capture() {
   [[ -o interactive ]] || return 1
-  [[ -t 0 && -t 1 && -t 2 ]] || return 1
+  [[ -t 0 && -t 1 ]] || return 1
   (( $+commands[script] )) || return 1
   return 0
 }
 
-_lac_install_pty_capture_wrappers() {
-  local normalized="${LAC_PTY_CAPTURE_ALLOWLIST//,/ }"
-  local cmd
-  local -a allowlisted_commands=(${=normalized})
+_lac_called_from_internal_function() {
+  local index frame
 
-  for cmd in "${allowlisted_commands[@]}"; do
-    [[ "$cmd" =~ '^[A-Za-z0-9_.+-]+$' ]] || continue
-    (( $+commands[$cmd] )) || continue
-    (( $+functions[$cmd] )) && continue
-    (( $+aliases[$cmd] )) && continue
+  for (( index = 4; index <= ${#funcstack}; index += 1 )); do
+    frame="$funcstack[$index]"
+    case "$frame" in
+      _lac_*|lac-capture|lac-capture-pty)
+        return 0
+        ;;
+    esac
+  done
 
-    eval "
-function $cmd() {
-  if _lac_should_use_pty_capture; then
-    lac-capture-pty \"$cmd\" \"\$@\"
+  return 1
+}
+
+_lac_list_daemon_pids() {
+  local line trimmed pid
+
+  ps -axo pid=,command= 2>/dev/null | while IFS= read -r line; do
+    [[ "$line" == *"/autocomplete-daemon "* ]] || continue
+    trimmed="${line#${line%%[![:space:]]*}}"
+    pid="${trimmed%% *}"
+    [[ "$pid" == <-> ]] || continue
+    print -r -- "$pid"
+  done
+}
+
+_lac_list_socket_daemon_pids() {
+  local socket_path="$1"
+  local line trimmed pid
+
+  [[ -n "$socket_path" ]] || return 0
+
+  ps -axo pid=,command= 2>/dev/null | while IFS= read -r line; do
+    [[ "$line" == *"/autocomplete-daemon "* && "$line" == *"$socket_path"* ]] || continue
+    trimmed="${line#${line%%[![:space:]]*}}"
+    pid="${trimmed%% *}"
+    [[ "$pid" == <-> ]] || continue
+    print -r -- "$pid"
+  done
+}
+
+_lac_stop_daemon_pids() {
+  local pid
+  local -a pids=("$@")
+
+  (( ${#pids} > 0 )) || return 0
+
+  for pid in "${pids[@]}"; do
+    kill -TERM "$pid" 2>/dev/null || true
+  done
+
+  sleep 0.3
+
+  for pid in "${pids[@]}"; do
+    if kill -0 "$pid" 2>/dev/null; then
+      kill -KILL "$pid" 2>/dev/null || true
+    fi
+  done
+}
+
+_lac_run_pty_wrapped_command() {
+  local command_name="$1"
+  local raw_command="${LAC_ACTIVE_COMMAND:-$command_name}"
+  local active_command_name=""
+  shift
+
+  if _lac_called_from_internal_function; then
+    command "$command_name" "$@"
+    return 0
+  fi
+
+  active_command_name="$(_lac_command_name_from_raw "$raw_command")"
+
+  if [[ "$active_command_name" == "$command_name" ]] && _lac_should_use_pty_capture && _lac_should_pty_wrap_command "$command_name" "$raw_command"; then
+    lac-capture-pty "$command_name" "$@"
   else
-    command \"$cmd\" \"\$@\"
+    command "$command_name" "$@"
   fi
 }
+
+_lac_install_pty_capture_wrapper_for_command() {
+  local command_name="$1"
+
+  [[ "$command_name" =~ '^[A-Za-z0-9_.+-]+$' ]] || return 1
+  (( $+commands[$command_name] )) || return 1
+  (( $+builtins[$command_name] )) && return 1
+  _lac_is_reserved_pty_command "$command_name" && return 1
+  (( $+functions[$command_name] )) && return 0
+  (( $+aliases[$command_name] )) && return 1
+
+  eval "
+function $command_name() {
+  _lac_run_pty_wrapped_command \"$command_name\" \"\$@\"
+}
 "
-  done
+  LAC_PTY_WRAPPED_COMMANDS[$command_name]=1
+  return 0
+}
+
+_lac_maybe_install_pty_capture_wrapper_for_command() {
+  local raw_command="$1"
+  local command_name=""
+
+  command_name="$(_lac_command_name_from_raw "$raw_command")" || return 1
+  [[ -n "$command_name" ]] || return 1
+
+  _lac_should_pty_wrap_command "$command_name" "$raw_command" || return 1
+  _lac_install_pty_capture_wrapper_for_command "$command_name"
+}
+
+_lac_prepare_buffer_for_execution() {
+  local raw_command="$BUFFER"
+
+  if [[ -n "$LAC_SUGGESTION" || -n "${POSTDISPLAY-}" ]]; then
+    _lac_clear_suggestion
+    zle redisplay 2>/dev/null || true
+  fi
+
+  [[ -n "${raw_command//[[:space:]]/}" ]] || return 0
+  _lac_maybe_install_pty_capture_wrapper_for_command "$raw_command" || true
+}
+
+_lac_is_reserved_pty_command() {
+  local command_name="$1"
+
+  case "$command_name" in
+    script|mktemp|rm|wc|sleep|perl|mkfifo|mkdir|tee)
+      return 0
+      ;;
+  esac
+
+  return 1
 }
 
 _lac_clear_suggestion() {
@@ -344,6 +711,42 @@ _lac_clear_highlight() {
   done
 
   region_highlight=("${filtered[@]}")
+}
+
+_lac_format_suggestion_source_marker() {
+  local source="$1"
+  local tag label joined=""
+  local normalized="${source//+/ }"
+  local -a tags=(${=normalized})
+  typeset -A seen_labels=()
+
+  for tag in "${tags[@]}"; do
+    case "$tag" in
+      history)
+        label="history"
+        ;;
+      model)
+        label="ai"
+        ;;
+      "")
+        continue
+        ;;
+      *)
+        label="ranking"
+        ;;
+    esac
+
+    [[ -n "${seen_labels[$label]-}" ]] && continue
+    seen_labels[$label]=1
+
+    if [[ -n "$joined" ]]; then
+      joined+="+"
+    fi
+    joined+="$label"
+  done
+
+  [[ -n "$joined" ]] || return 0
+  print -rn -- " [$joined]"
 }
 
 _lac_snapshot_field() {
@@ -394,7 +797,7 @@ _lac_render_suggestion() {
     return 0
   fi
 
-  POSTDISPLAY="${LAC_SUGGESTION#$BUFFER}"
+  POSTDISPLAY="${LAC_SUGGESTION#$BUFFER}$(_lac_format_suggestion_source_marker "$LAC_SUGGESTION_SOURCE")"
   _lac_clear_highlight
 
   if [[ -n "$POSTDISPLAY" ]]; then
@@ -446,7 +849,7 @@ _lac_request_suggestion() {
 _lac_refresh_suggestion_sync() {
   local repo_root branch line suggestion_id suggestion source
 
-  if [[ -z "$BUFFER" || $CURSOR -ne ${#BUFFER} ]]; then
+  if (( CURSOR != ${#BUFFER} )); then
     _lac_clear_suggestion
     return 0
   fi
@@ -459,7 +862,7 @@ _lac_refresh_suggestion_sync() {
   suggestion="$LAC_PARSED_SUGGESTION_FIELDS[2]"
   source="$LAC_PARSED_SUGGESTION_FIELDS[3]"
 
-  if [[ -z "$suggestion" || "$suggestion" != "$BUFFER"* || "$suggestion" == "$BUFFER" ]]; then
+  if [[ -z "$suggestion" || "$suggestion" != "$BUFFER"* || ( -n "$BUFFER" && "$suggestion" == "$BUFFER" ) ]]; then
     _lac_clear_suggestion
     return 0
   fi
@@ -496,7 +899,7 @@ _lac_apply_async_result() {
   suggestion="$LAC_PARSED_SUGGESTION_FIELDS[2]"
   source="$LAC_PARSED_SUGGESTION_FIELDS[3]"
 
-  if [[ -z "$suggestion" || "$suggestion" == "$BUFFER" || "$suggestion" != "$BUFFER"* ]]; then
+  if [[ -z "$suggestion" || ( -n "$BUFFER" && "$suggestion" == "$BUFFER" ) || "$suggestion" != "$BUFFER"* ]]; then
     _lac_clear_suggestion
     return 0
   fi
@@ -548,12 +951,15 @@ _lac_ensure_async_notifier() {
 
 _lac_zle_line_init() {
   _lac_ensure_async_notifier || true
+  if (( CURSOR == ${#BUFFER} )); then
+    _lac_schedule_suggestion
+  fi
 }
 
 _lac_schedule_suggestion() {
   local buffer cwd repo_root branch seq latest_file notify_pipe result_file shell_pid
 
-  if [[ -z "$BUFFER" || $CURSOR -ne ${#BUFFER} ]]; then
+  if (( CURSOR != ${#BUFFER} )); then
     _lac_invalidate_pending
     _lac_clear_suggestion
     return 0
@@ -612,7 +1018,7 @@ _lac_zle_line_pre_redraw() {
 _lac_after_buffer_change() {
   _lac_flush_async_result
 
-  if [[ -z "$BUFFER" || $CURSOR -ne ${#BUFFER} ]]; then
+  if (( CURSOR != ${#BUFFER} )); then
     _lac_invalidate_pending
     _lac_clear_suggestion
     _lac_write_snapshot "buffer-cleared"
@@ -700,6 +1106,8 @@ _lac_preexec() {
   typeset -g LAC_CAPTURED_STDOUT=""
   typeset -g LAC_CAPTURED_STDERR=""
 
+  _lac_maybe_install_pty_capture_wrapper_for_command "$command" || true
+
   if _lac_should_auto_capture "$raw_command"; then
     _lac_begin_auto_capture || true
   fi
@@ -738,14 +1146,27 @@ _lac_precmd() {
 }
 
 lac-start-daemon() {
-  local _ attempt daemon_pid
+  local _ attempt daemon_pid keep_pid
+  local -a active_pids all_pids competing_pids
 
   mkdir -p -- "$LAC_STATE_DIR" "$LAC_ASYNC_DIR"
   [[ -x "$LAC_CLIENT_BIN" && -x "$LAC_DAEMON_BIN" ]] || return 1
 
   if "$LAC_CLIENT_BIN" health --socket "$LAC_SOCKET_PATH" >/dev/null 2>&1; then
+    active_pids=(${(f)"$(_lac_list_socket_daemon_pids "$LAC_SOCKET_PATH")"})
+    keep_pid="${active_pids[1]-}"
+    all_pids=(${(f)"$(_lac_list_daemon_pids)"})
+    competing_pids=()
+    for daemon_pid in "${all_pids[@]}"; do
+      [[ -n "$keep_pid" && "$daemon_pid" == "$keep_pid" ]] && continue
+      competing_pids+=("$daemon_pid")
+    done
+    _lac_stop_daemon_pids "${competing_pids[@]}"
     return 0
   fi
+
+  all_pids=(${(f)"$(_lac_list_daemon_pids)"})
+  _lac_stop_daemon_pids "${all_pids[@]}"
 
   "$LAC_DAEMON_BIN" \
     --socket "$LAC_SOCKET_PATH" \
@@ -803,7 +1224,7 @@ lac-capture-pty() {
     return $?
   }
 
-  script -q "$capture_file" "$@"
+  command script -q "$capture_file" "$@"
   cmd_status=$?
   captured_text="$(_lac_sanitize_capture_text "$capture_file")"
 
@@ -818,6 +1239,22 @@ lac-capture-pty() {
 }
 
 lac-accept-or-complete() {
+  if _lac_accept_suggestion_if_ready; then
+    return 0
+  fi
+
+  zle expand-or-complete
+}
+
+lac-accept-or-forward-char() {
+  if _lac_accept_suggestion_if_ready; then
+    return 0
+  fi
+
+  zle forward-char
+}
+
+_lac_accept_suggestion_if_ready() {
   if [[ -n "$LAC_SUGGESTION" && "$LAC_SUGGESTION" == "$BUFFER"* && $CURSOR -eq ${#BUFFER} ]]; then
     local accepted_command="$LAC_SUGGESTION"
     BUFFER="$accepted_command"
@@ -828,7 +1265,49 @@ lac-accept-or-complete() {
     return 0
   fi
 
-  zle expand-or-complete
+  return 1
+}
+
+_lac_bind_widget_in_insert_keymaps() {
+  local sequence="$1"
+  local widget="$2"
+  local keymap
+
+  bindkey "$sequence" "$widget" 2>/dev/null || true
+
+  for keymap in emacs viins main; do
+    bindkey -M "$keymap" "$sequence" "$widget" 2>/dev/null || true
+  done
+}
+
+_lac_bind_accept_widget() {
+  local accept_key right_arrow_sequence
+  local -A seen_sequences=()
+  local -a right_arrow_sequences
+
+  accept_key="$(_lac_normalize_accept_key "$LAC_ACCEPT_KEY")"
+  right_arrow_sequences=()
+
+  right_arrow_sequence="${terminfo[kcuf1]:-}"
+  if [[ -n "$right_arrow_sequence" && -z "${seen_sequences[$right_arrow_sequence]:-}" ]]; then
+    right_arrow_sequences+=("$right_arrow_sequence")
+    seen_sequences[$right_arrow_sequence]=1
+  fi
+
+  for right_arrow_sequence in $'\e[C' $'\eOC'; do
+    if [[ -z "${seen_sequences[$right_arrow_sequence]:-}" ]]; then
+      right_arrow_sequences+=("$right_arrow_sequence")
+      seen_sequences[$right_arrow_sequence]=1
+    fi
+  done
+
+  if [[ "$accept_key" == "right-arrow" ]]; then
+    for right_arrow_sequence in "${right_arrow_sequences[@]}"; do
+      _lac_bind_widget_in_insert_keymaps "$right_arrow_sequence" lac-accept-or-forward-char
+    done
+  else
+    _lac_bind_widget_in_insert_keymaps '^I' lac-accept-or-complete
+  fi
 }
 
 _lac_wrap_widget() {
@@ -851,12 +1330,29 @@ function $wrapper_function() {
   zle -N "$widget" "$wrapper_function"
 }
 
+_lac_wrap_accept_widget() {
+  local widget="$1"
+  local safe_name="${widget//-/_}"
+  local original_widget="_lac_orig_${safe_name}"
+  local wrapper_function="_lac_accept_${safe_name}"
+
+  zle -A "$widget" "$original_widget" 2>/dev/null || return 0
+
+  eval "
+function $wrapper_function() {
+  _lac_prepare_buffer_for_execution
+  zle $original_widget -- \"\$@\"
+}
+"
+
+  zle -N "$widget" "$wrapper_function"
+}
+
 zle -N lac-accept-or-complete
+zle -N lac-accept-or-forward-char
 zle -N lac-async-notify _lac_async_notify_handler
 zle -N zle-line-init _lac_zle_line_init
 zle -N zle-line-pre-redraw _lac_zle_line_pre_redraw
-
-_lac_install_pty_capture_wrappers
 
 for widget in \
   self-insert \
@@ -882,7 +1378,13 @@ for widget in \
   _lac_wrap_widget "$widget"
 done
 
-bindkey '^I' lac-accept-or-complete
+for widget in \
+  accept-line \
+  accept-and-hold; do
+  _lac_wrap_accept_widget "$widget"
+done
+
+_lac_bind_accept_widget
 
 add-zsh-hook preexec _lac_preexec
 add-zsh-hook precmd _lac_precmd

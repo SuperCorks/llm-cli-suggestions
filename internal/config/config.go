@@ -1,7 +1,6 @@
 package config
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -27,6 +26,20 @@ const (
 	SuggestStrategyHistoryOnly  = "history-only"
 	SuggestStrategyHistoryModel = "history+model"
 	SuggestStrategyModelOnly    = "model-only"
+	DefaultSystemPromptStatic   = `You are a shell autosuggestion engine.
+Complete the current shell command with the single most likely next command.
+Return exactly one shell command on one line.
+Do not include markdown, backticks, bullets, labels, colons, explanations, comments, cwd annotations, or placeholders.
+Never invent explanatory suffixes like paths, notes, or metadata.
+The returned command must begin exactly with the current buffer.
+
+examples:
+buffer: git st
+command: git status
+buffer: npm run d
+command: npm run dev
+buffer: gcloud auth l
+command: gcloud auth list`
 )
 
 func Load() (Config, error) {
@@ -52,7 +65,7 @@ func Load() (Config, error) {
 		runtimeValues["LAC_SUGGEST_STRATEGY"],
 		SuggestStrategyHistoryModel,
 	))
-	systemPromptStatic := firstNonEmpty(os.Getenv("LAC_SYSTEM_PROMPT_STATIC"), runtimeValues["LAC_SYSTEM_PROMPT_STATIC"])
+	systemPromptStatic := firstNonEmpty(os.Getenv("LAC_SYSTEM_PROMPT_STATIC"), runtimeValues["LAC_SYSTEM_PROMPT_STATIC"], DefaultSystemPromptStatic)
 	suggestTimeoutMS := firstNonEmptyInt(os.Getenv("LAC_SUGGEST_TIMEOUT_MS"), runtimeValues["LAC_SUGGEST_TIMEOUT_MS"], 1200)
 
 	if err := os.MkdirAll(stateDir, 0o755); err != nil {
@@ -114,19 +127,18 @@ func firstNonEmptyInt(primary, secondary string, fallback int) int {
 }
 
 func loadRuntimeEnv(path string) (map[string]string, error) {
-	file, err := os.Open(path)
+	contents, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return map[string]string{}, nil
 		}
-		return nil, fmt.Errorf("open runtime env: %w", err)
+		return nil, fmt.Errorf("read runtime env: %w", err)
 	}
-	defer file.Close()
 
 	values := map[string]string{}
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+	lines := strings.Split(strings.ReplaceAll(string(contents), "\r\n", "\n"), "\n")
+	for index := 0; index < len(lines); index++ {
+		line := strings.TrimSpace(lines[index])
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
@@ -138,19 +150,121 @@ func loadRuntimeEnv(path string) (map[string]string, error) {
 
 		key = strings.TrimSpace(key)
 		value = strings.TrimSpace(value)
-		if len(value) >= 2 {
-			if (value[0] == '"' && value[len(value)-1] == '"') || (value[0] == '\'' && value[len(value)-1] == '\'') {
-				value = value[1 : len(value)-1]
+		if strings.HasPrefix(value, "$'") {
+			for findClosingQuoteIndex(value, '\'', 2) == -1 && index+1 < len(lines) {
+				index += 1
+				value += "\n" + lines[index]
+			}
+		} else if strings.HasPrefix(value, "\"") || strings.HasPrefix(value, "'") {
+			quote := rune(value[0])
+			for findClosingQuoteIndex(value, quote, 1) == -1 && index+1 < len(lines) {
+				index += 1
+				value += "\n" + lines[index]
 			}
 		}
-		values[key] = value
-	}
-
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scan runtime env: %w", err)
+		values[key] = decodeRuntimeEnvValue(value)
 	}
 
 	return values, nil
+}
+
+func findClosingQuoteIndex(value string, quote rune, start int) int {
+	escaped := false
+	for index := start; index < len(value); index++ {
+		current := rune(value[index])
+		if escaped {
+			escaped = false
+			continue
+		}
+		if current == '\\' {
+			escaped = true
+			continue
+		}
+		if current == quote {
+			return index
+		}
+	}
+	return -1
+}
+
+func decodeRuntimeEnvValue(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if strings.HasPrefix(trimmed, "$'") && strings.HasSuffix(trimmed, "'") {
+		return decodeANSICQuotedValue(trimmed[2 : len(trimmed)-1])
+	}
+	if len(trimmed) >= 2 && trimmed[0] == '"' && trimmed[len(trimmed)-1] == '"' {
+		return decodeDoubleQuotedValue(trimmed[1 : len(trimmed)-1])
+	}
+	if len(trimmed) >= 2 && trimmed[0] == '\'' && trimmed[len(trimmed)-1] == '\'' {
+		return trimmed[1 : len(trimmed)-1]
+	}
+	return trimmed
+}
+
+func decodeANSICQuotedValue(value string) string {
+	var builder strings.Builder
+	for index := 0; index < len(value); index++ {
+		current := value[index]
+		if current != '\\' {
+			builder.WriteByte(current)
+			continue
+		}
+		if index+1 >= len(value) {
+			builder.WriteByte('\\')
+			continue
+		}
+		index += 1
+		switch value[index] {
+		case 'n':
+			builder.WriteByte('\n')
+		case 'r':
+			builder.WriteByte('\r')
+		case 't':
+			builder.WriteByte('\t')
+		case '\\':
+			builder.WriteByte('\\')
+		case '\'':
+			builder.WriteByte('\'')
+		case '"':
+			builder.WriteByte('"')
+		default:
+			builder.WriteByte(value[index])
+		}
+	}
+	return builder.String()
+}
+
+func decodeDoubleQuotedValue(value string) string {
+	var builder strings.Builder
+	for index := 0; index < len(value); index++ {
+		current := value[index]
+		if current != '\\' {
+			builder.WriteByte(current)
+			continue
+		}
+		if index+1 >= len(value) {
+			builder.WriteByte('\\')
+			continue
+		}
+		index += 1
+		switch value[index] {
+		case 'n':
+			builder.WriteByte('\n')
+		case 'r':
+			builder.WriteByte('\r')
+		case 't':
+			builder.WriteByte('\t')
+		case '\\':
+			builder.WriteByte('\\')
+		case '\'':
+			builder.WriteByte('\'')
+		case '"':
+			builder.WriteByte('"')
+		default:
+			builder.WriteByte(value[index])
+		}
+	}
+	return builder.String()
 }
 
 func getenvDefaultInt(key string, fallback int) int {

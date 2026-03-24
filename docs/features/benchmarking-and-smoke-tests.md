@@ -29,6 +29,7 @@ It verifies:
 - history-based suggestion acceptance
 - rejection logging
 - allowlisted PTY output capture
+- blocklist PTY output capture with excluded-command bypass
 - explicit bounded output capture
 - redirection-aware skip behavior for shell-side capture
 

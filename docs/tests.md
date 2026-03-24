@@ -9,12 +9,16 @@ This document describes the current test strategy and the checks that exist toda
 Commands:
 
 ```bash
+eval "$(fnm env)"
+fnm use "$(cat .node-version)"
 cd apps/console
 npm run typecheck
 npm run lint
 npm run build
 npm run e2e
 ```
+
+Run the console app checks with `fnm` first so they use the repo's pinned Node version from `.node-version`. The console package currently expects Node 24.
 
 These checks currently verify:
 
@@ -30,6 +34,8 @@ This is the current safety net for the control app until dedicated route and que
 Command:
 
 ```bash
+eval "$(fnm env)"
+fnm use "$(cat .node-version)"
 cd apps/console
 npm run e2e
 ```
@@ -39,7 +45,7 @@ The Playwright suite currently covers a seeded local happy path for:
 - overview dashboard rendering
 - shared shell navigation collapse and expand behavior
 - suggestions explorer filtering
-- suggestions explorer sorting, pagination, persisted good/bad grading, and structured context hover previews
+- suggestions explorer sorting, pagination, persisted good/bad grading, structured context hover previews, and empty-buffer placeholder rendering without hydrated text rewrites
 - commands and feedback rendering
 - inspector interaction with a mocked ranking response
 - inspector rendering of retrieved local context alongside candidate scores
@@ -78,6 +84,8 @@ go test ./...
 This now verifies both package integrity and a first slice of focused engine behavior. The current Go tests cover:
 
 - project-task retrieval for commands like `npm run d`
+- empty-buffer suggestions that use the last recorded command as model context for typo correction or likely follow-up commands
+- runtime-env parsing for multiline and escaped persisted system-prompt values
 - Ollama request payload wiring for configured `keep_alive` values
 - filesystem retrieval for path-oriented buffers like `git add s`
 - git branch retrieval for branch-oriented buffers like `git switch fea`
@@ -113,15 +121,19 @@ The smoke test provisions a temporary state directory, launches a temp daemon, s
 
 It currently checks:
 
-- `Tab` is bound to `lac-accept-or-complete`
+- `Tab` is bound to `lac-accept-or-complete` by default
+- when `LAC_ACCEPT_KEY=right-arrow`, Right Arrow is bound to suggestion acceptance while `Tab` falls back to native completion
 - the daemon can be started and passed a health check
 - a recorded command can be suggested back from history
+- an empty prompt can accept a full-command suggestion based on the last recorded command context
 - accepting a suggestion updates the buffer correctly
 - accepting a suggestion re-enters the shell buffer-change flow so a follow-up suggestion can be requested from the accepted prefix
 - rejecting a suggestion logs feedback correctly
 - non-allowlisted commands remain uncaptured by default
-- allowlisted PTY capture records command output without stripping terminal behavior
-- redirected commands still remain uncaptured in the shell smoke path
+- allowlisted PTY capture records command output without stripping terminal behavior, including `/regex/` rules that match only specific raw command lines
+- blocklist PTY capture wraps broad external command coverage while leaving excluded commands on the normal shell path, including `/regex/` rules that can exempt one exact command shape while still wrapping other invocations of the same binary
+- PTY capture still applies when a wrapped command is prefixed with common shell modifiers or leading environment assignments
+- stdout-redirected commands still remain uncaptured in the shell smoke path, while stderr-only redirection still preserves bounded stdout capture without printing or storing stderr
 - bounded output capture through `lac-capture` is recorded
 
 This is the strongest automated test in the repo right now because it exercises the real integration boundary.
@@ -143,9 +155,33 @@ It currently checks four isolated one-prefix idle sessions:
 - `npm p`
 - `npm pr`
 
-For each prefix, the test first confirms the daemon can produce a usable direct suggestion, then verifies the live shell reaches a `notify-applied` snapshot with a rendered suffix that matches the shell suggestion for that prefix.
+For each prefix, the test first confirms the daemon can produce a usable direct suggestion, then verifies the live shell reaches a `notify-applied` snapshot with a rendered suffix that matches the shell suggestion for that prefix plus the square-bracket source badge shown in ghost text.
 
 This is the best targeted regression test for the shell timing issue because it leaves the shell idle after one prefix, avoids invalidating the in-flight request with extra editing input, and exercises the actual ZLE integration instead of only synchronous helper functions.
+
+### PTY Capture Regression Test
+
+Command:
+
+```bash
+make pty-shell
+```
+
+This runs:
+
+```bash
+bash ./scripts/test_pty_capture.sh
+```
+
+This test uses `expect` to drive a real `zsh -dfi` session through the actual line-accept execution path instead of calling `_lac_preexec` and `_lac_precmd` directly.
+
+It currently checks:
+
+- the first matching PTY-captured command is wrapped in time on its very first interactive execution
+- a `/regex/` allowlist rule can match the full raw command line
+- stderr-only redirection such as `2>/dev/null` still preserves bounded stdout capture while keeping stderr out of both the terminal replay and stored suggestion context
+
+This is the targeted regression test for the lazy PTY wrapper installation path because it exercises the exact failure mode that would not show up in the synchronous smoke harness.
 
 ### Model Benchmark CLI
 
@@ -178,7 +214,7 @@ In addition to the scripted checks, the current development workflow has relied 
 - starting a real `fancy` shell
 - typing partial commands such as `git st`
 - verifying that ghost text appears asynchronously
-- confirming `Tab` accepts the suggestion
+- confirming the configured accept key accepts the suggestion
 - confirming ghost text is rendered with muted highlighting
 - opening the local control app and loading overview, suggestions, signals, inspector, models, model lab, and daemon pages
 - confirming daemon start or restart controls update runtime health

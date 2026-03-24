@@ -2,14 +2,17 @@
 
 import { Info } from "lucide-react";
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from "react";
 
 import { ModelPicker } from "@/components/model-picker";
 import { PathHoverActions } from "@/components/path-hover-actions";
 import { SuggestStrategyField } from "@/components/suggest-strategy-field";
 import { useJsonEventStream, type LiveStreamStatus } from "@/components/use-json-event-stream";
+import { DEFAULT_SYSTEM_PROMPT_STATIC } from "@/lib/default-system-prompt";
 import { formatBytes, formatTimestamp } from "@/lib/format";
+import { formatPtyCaptureListForEditor } from "@/lib/pty-capture-list";
 import type {
+  AcceptSuggestionKey,
   ClearDataset,
   OllamaInstallJob,
   OllamaModelOption,
@@ -82,14 +85,14 @@ export function DaemonConsole({
   const [availableModels, setAvailableModels] = useState(initialAvailableModels);
   const [settings, setSettings] = useState({
     LAC_MODEL_NAME: initialStatus.settings.modelName,
-    LAC_MODEL_BASE_URL: initialStatus.settings.modelBaseUrl,
     LAC_MODEL_KEEP_ALIVE: initialModelKeepAlive,
     LAC_SUGGEST_STRATEGY: initialStatus.settings.suggestStrategy,
     LAC_SYSTEM_PROMPT_STATIC: initialStatus.settings.systemPromptStatic,
-    LAC_SOCKET_PATH: initialStatus.settings.socketPath,
-    LAC_DB_PATH: initialStatus.settings.dbPath,
     LAC_SUGGEST_TIMEOUT_MS: String(initialStatus.settings.suggestTimeoutMs),
-    LAC_PTY_CAPTURE_ALLOWLIST: initialStatus.settings.ptyCaptureAllowlist,
+    LAC_ACCEPT_KEY: initialStatus.settings.acceptKey,
+    LAC_PTY_CAPTURE_MODE: initialStatus.settings.ptyCaptureMode,
+    LAC_PTY_CAPTURE_ALLOWLIST: formatPtyCaptureListForEditor(initialStatus.settings.ptyCaptureAllowlist),
+    LAC_PTY_CAPTURE_BLOCKLIST: formatPtyCaptureListForEditor(initialStatus.settings.ptyCaptureBlocklist),
   });
   const [confirmations, setConfirmations] = useState<Record<ClearDataset, string>>({
     suggestions: "",
@@ -112,7 +115,16 @@ export function DaemonConsole({
   const pollTimerRef = useRef<number | null>(null);
   const runtimeRefreshTimerRef = useRef<number | null>(null);
   const pendingSaveAfterInstallRef = useRef(false);
+  const systemPromptFieldId = useId();
+  const acceptKeyFieldId = useId();
+  const ptyCaptureFieldId = useId();
+  const modelBaseUrl = status.settings.modelBaseUrl;
+  const runtimeValueRows = [
+    { label: "Model Base URL", value: modelBaseUrl },
+  ] as const;
   const pathRows = [
+    { label: "Socket Path", value: status.settings.socketPath },
+    { label: "Database Path", value: status.settings.dbPath },
     { label: "State dir", value: status.settings.stateDir },
     { label: "Runtime env", value: status.settings.runtimeEnvPath },
     { label: "PID file", value: status.pidPath },
@@ -164,6 +176,21 @@ export function DaemonConsole({
       : status.health.ok
         ? "Inactive"
         : "Daemon offline";
+  const ptyModeIsBlocklist = settings.LAC_PTY_CAPTURE_MODE === "blocklist";
+  const activePtyListKey = ptyModeIsBlocklist
+    ? "LAC_PTY_CAPTURE_BLOCKLIST"
+    : "LAC_PTY_CAPTURE_ALLOWLIST";
+  const activePtyListValue = settings[activePtyListKey];
+  const activePtyListTitle = ptyModeIsBlocklist ? "PTY Capture Block List" : "PTY Capture Allow List";
+  const activePtyListPlaceholder = ptyModeIsBlocklist
+    ? "vim\n/^codex$/"
+    : "git\n/^npm (run|test)$/";
+  const activePtyListInfoTitle = ptyModeIsBlocklist
+    ? "Enter one command name or one /regex/ per line. Plain lines match the executable name, while regex lines match the full command text before the lightweight PTY helper runs."
+    : "Enter one command name or one /regex/ per line. Plain lines match the executable name, while regex lines match the full command text before the lightweight PTY helper runs. This affects new shells after they reload the plugin; the daemon restart is harmless but not what makes the setting take effect.";
+  const ptyModeHelpText = ptyModeIsBlocklist
+    ? "Enter one command name or /regex/ per line. Plain lines match the executable name, while regex lines match the full command text, so /^codex$/ blocks only bare codex and still allows codex exec .... Use the block list when the lightweight PTY shell can mess up complex interactive CLI tools. Shell builtins still use the normal shell path."
+    : "Enter one command name or /regex/ per line. Plain lines match the executable name, while regex lines match the full command text. Use the allow list when you only want to send specific commands through the lightweight PTY shell because more complex interactive CLI tools can get confused by it.";
 
   function findModelOption(modelName: string) {
     const normalized = modelName.trim();
@@ -209,14 +236,14 @@ export function DaemonConsole({
     if (syncSettings) {
       setSettings({
         LAC_MODEL_NAME: data.settings.modelName,
-        LAC_MODEL_BASE_URL: data.settings.modelBaseUrl,
         LAC_MODEL_KEEP_ALIVE: data.settings.modelKeepAlive || DEFAULT_MODEL_KEEP_ALIVE,
         LAC_SUGGEST_STRATEGY: data.settings.suggestStrategy,
         LAC_SYSTEM_PROMPT_STATIC: data.settings.systemPromptStatic,
-        LAC_SOCKET_PATH: data.settings.socketPath,
-        LAC_DB_PATH: data.settings.dbPath,
         LAC_SUGGEST_TIMEOUT_MS: String(data.settings.suggestTimeoutMs),
-        LAC_PTY_CAPTURE_ALLOWLIST: data.settings.ptyCaptureAllowlist,
+        LAC_ACCEPT_KEY: data.settings.acceptKey,
+        LAC_PTY_CAPTURE_MODE: data.settings.ptyCaptureMode,
+        LAC_PTY_CAPTURE_ALLOWLIST: formatPtyCaptureListForEditor(data.settings.ptyCaptureAllowlist),
+        LAC_PTY_CAPTURE_BLOCKLIST: formatPtyCaptureListForEditor(data.settings.ptyCaptureBlocklist),
       });
     }
     return data;
@@ -417,7 +444,7 @@ export function DaemonConsole({
       pollTimerRef.current = null;
 
       if (data.job.status === "completed") {
-        await refreshAvailableModels(settings.LAC_MODEL_BASE_URL);
+        await refreshAvailableModels(modelBaseUrl);
         const pendingSave = pendingSaveAfterInstallRef.current;
         pendingSaveAfterInstallRef.current = false;
         if (pendingSave) {
@@ -450,7 +477,7 @@ export function DaemonConsole({
         },
         body: JSON.stringify({
           model: modelName,
-          baseUrl: settings.LAC_MODEL_BASE_URL,
+          baseUrl: modelBaseUrl,
         }),
       });
       const data = (await response.json()) as {
@@ -591,18 +618,6 @@ export function DaemonConsole({
               }
             />
             <label>
-              Model Base URL
-              <input
-                value={settings.LAC_MODEL_BASE_URL}
-                onChange={(event) =>
-                  setSettings((current) => ({
-                    ...current,
-                    LAC_MODEL_BASE_URL: event.target.value,
-                  }))
-                }
-              />
-            </label>
-            <label>
               <span className="label-with-info">
                 Model Keep Alive
                 <span
@@ -624,54 +639,6 @@ export function DaemonConsole({
               />
             </label>
             <label>
-              System Prompt Prefix
-              <textarea
-                value={settings.LAC_SYSTEM_PROMPT_STATIC}
-                onChange={(event) =>
-                  setSettings((current) => ({
-                    ...current,
-                    LAC_SYSTEM_PROMPT_STATIC: event.target.value,
-                  }))
-                }
-                rows={8}
-                placeholder="Optional static instructions prepended ahead of the built-in autosuggestion prompt."
-              />
-            </label>
-            <p className="helper-text">
-              Prepended verbatim before the built-in autosuggestion prompt on new daemon requests.
-              Save settings to persist it to runtime.env and restart the daemon.
-            </p>
-            <label>
-              Socket Path
-              <PathHoverActions
-                pathValue={settings.LAC_SOCKET_PATH}
-                label="Socket path"
-                variant="input"
-              >
-                <input
-                  value={settings.LAC_SOCKET_PATH}
-                  onChange={(event) =>
-                    setSettings((current) => ({ ...current, LAC_SOCKET_PATH: event.target.value }))
-                  }
-                />
-              </PathHoverActions>
-            </label>
-            <label>
-              Database Path
-              <PathHoverActions
-                pathValue={settings.LAC_DB_PATH}
-                label="Database path"
-                variant="input"
-              >
-                <input
-                  value={settings.LAC_DB_PATH}
-                  onChange={(event) =>
-                    setSettings((current) => ({ ...current, LAC_DB_PATH: event.target.value }))
-                  }
-                />
-              </PathHoverActions>
-            </label>
-            <label>
               Suggest Timeout (ms)
               <input
                 value={settings.LAC_SUGGEST_TIMEOUT_MS}
@@ -684,26 +651,122 @@ export function DaemonConsole({
               />
             </label>
             <label>
-              <span className="label-with-info">
-                PTY Capture Allow List
-                <span
-                  className="info-bubble"
-                  title="Comma or space separated command names to wrap with the lightweight PTY capture path. This affects new shells after they reload the plugin; the daemon restart is harmless but not what makes the setting take effect."
-                >
-                  <Info aria-hidden="true" />
-                </span>
-              </span>
-              <input
-                value={settings.LAC_PTY_CAPTURE_ALLOWLIST}
+              Accept Suggestion Key
+              <select
+                id={acceptKeyFieldId}
+                value={settings.LAC_ACCEPT_KEY}
                 onChange={(event) =>
                   setSettings((current) => ({
                     ...current,
-                    LAC_PTY_CAPTURE_ALLOWLIST: event.target.value,
+                    LAC_ACCEPT_KEY: event.target.value as AcceptSuggestionKey,
                   }))
                 }
-                placeholder="git,npm,python"
-              />
+              >
+                <option value="tab">Tab</option>
+                <option value="right-arrow">Right Arrow</option>
+              </select>
             </label>
+            <p className="helper-text">
+              Chooses which key accepts a visible ghost-text suggestion in new shells. When set to Right Arrow,
+              Tab returns to normal completion and Right Arrow accepts the suggestion only when one is visible;
+              otherwise it keeps moving the cursor right.
+            </p>
+            <div className="field-group">
+              <span className="field-header field-header-with-toggle">
+                <span className="label-with-info">
+                  <label htmlFor={ptyCaptureFieldId} className="field-label">
+                    {activePtyListTitle}
+                  </label>
+                  <span className="info-bubble" title={activePtyListInfoTitle}>
+                    <Info aria-hidden="true" />
+                  </span>
+                </span>
+                <span className="mode-toggle-group" role="group" aria-label="PTY capture mode">
+                  <button
+                    type="button"
+                    className={
+                      settings.LAC_PTY_CAPTURE_MODE === "allowlist"
+                        ? "mode-toggle-button active"
+                        : "mode-toggle-button"
+                    }
+                    aria-pressed={settings.LAC_PTY_CAPTURE_MODE === "allowlist"}
+                    onClick={() =>
+                      setSettings((current) => ({
+                        ...current,
+                        LAC_PTY_CAPTURE_MODE: "allowlist",
+                      }))
+                    }
+                  >
+                    Allowlist
+                  </button>
+                  <button
+                    type="button"
+                    className={
+                      settings.LAC_PTY_CAPTURE_MODE === "blocklist"
+                        ? "mode-toggle-button active"
+                        : "mode-toggle-button"
+                    }
+                    aria-pressed={settings.LAC_PTY_CAPTURE_MODE === "blocklist"}
+                    onClick={() =>
+                      setSettings((current) => ({
+                        ...current,
+                        LAC_PTY_CAPTURE_MODE: "blocklist",
+                      }))
+                    }
+                  >
+                    Blocklist
+                  </button>
+                </span>
+              </span>
+              <textarea
+                id={ptyCaptureFieldId}
+                value={activePtyListValue}
+                onChange={(event) =>
+                  setSettings((current) => ({
+                    ...current,
+                    [activePtyListKey]: event.target.value,
+                  }))
+                }
+                rows={6}
+                placeholder={activePtyListPlaceholder}
+              />
+            </div>
+            <p className="helper-text">{ptyModeHelpText}</p>
+            <div className="field-group">
+              <span className="field-header field-header-with-actions">
+                <label htmlFor={systemPromptFieldId} className="field-label">
+                  System Prompt
+                </label>
+                <button
+                  type="button"
+                  className="button-secondary inline-field-button"
+                  onClick={() =>
+                    setSettings((current) => ({
+                      ...current,
+                      LAC_SYSTEM_PROMPT_STATIC: DEFAULT_SYSTEM_PROMPT_STATIC,
+                    }))
+                  }
+                >
+                  Reset
+                </button>
+              </span>
+              <textarea
+                id={systemPromptFieldId}
+                value={settings.LAC_SYSTEM_PROMPT_STATIC}
+                onChange={(event) =>
+                  setSettings((current) => ({
+                    ...current,
+                    LAC_SYSTEM_PROMPT_STATIC: event.target.value,
+                  }))
+                }
+                rows={8}
+                placeholder="Edit the default shell autosuggestion system prompt."
+              />
+            </div>
+            <p className="helper-text">
+              Used verbatim as the system prompt on new daemon requests. Reset restores the built-in default.
+              Save settings to persist it to runtime.env and restart the daemon.
+            </p>
             <button type="submit" disabled={busy !== ""}>
               {busy === "settings" ? "Saving..." : "Save Settings"}
             </button>
@@ -711,8 +774,16 @@ export function DaemonConsole({
         </div>
 
         <div className="detail-block">
-          <h3>Paths</h3>
+          <h3>Runtime Details</h3>
           <dl className="meta-list path-meta-list">
+            {runtimeValueRows.map((row) => (
+              <div key={row.label}>
+                <dt>{row.label}</dt>
+                <dd>
+                  <code className="path-value">{row.value}</code>
+                </dd>
+              </div>
+            ))}
             {pathRows.map((row) => (
               <div key={row.label} className="path-row">
                 <dt>{row.label}</dt>

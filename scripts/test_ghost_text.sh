@@ -161,6 +161,27 @@ state_dir = Path(os.environ["STATE_DIR"])
 prefixes = ["n", "npm ", "npm p", "npm pr"]
 
 expected = {}
+
+def format_source_marker(source: str) -> str:
+    labels = []
+    for tag in source.split("+"):
+        if tag == "history":
+            label = "history"
+        elif tag == "model":
+            label = "ai"
+        elif tag:
+            label = "ranking"
+        else:
+            continue
+
+        if label not in labels:
+            labels.append(label)
+
+    if not labels:
+        return ""
+
+    return " [" + "+".join(labels) + "]"
+
 for index, prefix in enumerate(prefixes, start=1):
     result = subprocess.run(
         [
@@ -189,6 +210,7 @@ for index, prefix in enumerate(prefixes, start=1):
     line = result.stdout.strip()
     parts = line.split("\t", 2)
     suggestion = parts[1] if len(parts) >= 2 else ""
+    source = parts[2] if len(parts) >= 3 else ""
     if not suggestion or suggestion == prefix or not suggestion.startswith(prefix):
         print(
             f"expected a usable direct suggestion for {prefix!r}, got {line!r}",
@@ -197,8 +219,9 @@ for index, prefix in enumerate(prefixes, start=1):
         sys.exit(1)
 
     expected[prefix] = {
-        "postdisplay": suggestion[len(prefix):],
+      "postdisplay": suggestion[len(prefix):] + format_source_marker(source),
         "suggestion": suggestion,
+      "source": source,
     }
 
 matrix_path = state_dir / "ghost-expected.json"
@@ -238,6 +261,26 @@ prefix = os.environ["PREFIX_VALUE"]
 expected = json.loads(Path(os.environ["EXPECTED_JSON_PATH"]).read_text(encoding="utf-8"))
 direct_suggestion = expected[prefix]["suggestion"]
 
+def format_source_marker(source: str) -> str:
+  labels = []
+  for tag in source.split("+"):
+    if tag == "history":
+      label = "history"
+    elif tag == "model":
+      label = "ai"
+    elif tag:
+      label = "ranking"
+    else:
+      continue
+
+    if label not in labels:
+      labels.append(label)
+
+  if not labels:
+    return ""
+
+  return " [" + "+".join(labels) + "]"
+
 if not snapshot_path.exists():
     print(f"expected snapshot file for {prefix!r}", file=sys.stderr)
     sys.exit(1)
@@ -269,7 +312,7 @@ matched_state = next(
         if row["event"].startswith("notify-applied:")
         and row["suggestion"].startswith(prefix)
         and row["suggestion"] != prefix
-        and row["postdisplay"] == row["suggestion"][len(prefix):]
+        and row["postdisplay"] == row["suggestion"][len(prefix):] + format_source_marker(row["source"])
     ),
     None,
 )
@@ -284,7 +327,7 @@ if matched_state is None:
     sys.exit(1)
 
 print(
-    f"{prefix!r}\tdirect={direct_suggestion!r}\trendered={matched_state['suggestion']!r}\tpostdisplay={matched_state['postdisplay']!r}\tevent={matched_state['event']}"
+  f"{prefix!r}\tdirect={direct_suggestion!r}\trendered={matched_state['suggestion']!r}\tpostdisplay={matched_state['postdisplay']!r}\tsource={matched_state['source']!r}\tevent={matched_state['event']}"
 )
 PY
 done < <(python3 - "$EXPECTED_JSON_PATH" <<'PY'

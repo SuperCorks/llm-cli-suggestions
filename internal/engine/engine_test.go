@@ -49,6 +49,125 @@ func TestSuggestUsesProjectTaskRetrieval(t *testing.T) {
 	}
 }
 
+func TestSuggestAllowsEmptyBufferWithLastCommandContext(t *testing.T) {
+	t.Parallel()
+
+	store, err := db.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	recordTestCommand(t, store, db.CommandRecord{
+		SessionID:    "test-session",
+		Command:      "git puhs",
+		CWD:          "/tmp/project",
+		RepoRoot:     "/tmp/project",
+		Branch:       "main",
+		ExitCode:     1,
+		DurationMS:   80,
+		StartedAtMS:  1000,
+		FinishedAtMS: 1080,
+	})
+
+	var observedPrompt string
+	engine := NewWithSystemPrompt(
+		store,
+		stubModelClient{suggest: func(ctx context.Context, prompt string) (string, error) {
+			observedPrompt = prompt
+			return "git push", nil
+		}},
+		"qwen3-coder:latest",
+		"http://127.0.0.1:11434",
+		"5m",
+		config.SuggestStrategyModelOnly,
+		"",
+		2*time.Second,
+	)
+
+	response, err := engine.Suggest(context.Background(), api.SuggestRequest{
+		SessionID:    "test-session",
+		Buffer:       "",
+		CWD:          "/tmp/project",
+		RepoRoot:     "/tmp/project",
+		Branch:       "main",
+		LastExitCode: 1,
+		Strategy:     config.SuggestStrategyModelOnly,
+	})
+	if err != nil {
+		t.Fatalf("suggest: %v", err)
+	}
+
+	if response.Suggestion != "git push" {
+		t.Fatalf("expected git push, got %q", response.Suggestion)
+	}
+	if response.Source != "model" {
+		t.Fatalf("expected model source, got %q", response.Source)
+	}
+	if !strings.Contains(observedPrompt, "buffer is empty right now. Use last_command and recent context") {
+		t.Fatalf("expected empty-buffer prompt guidance, got %q", observedPrompt)
+	}
+	if !strings.Contains(observedPrompt, "last_command: git puhs") {
+		t.Fatalf("expected last command in prompt, got %q", observedPrompt)
+	}
+	if !strings.Contains(observedPrompt, "current_buffer:\n\n") {
+		t.Fatalf("expected empty current_buffer block, got %q", observedPrompt)
+	}
+	if strings.Contains(observedPrompt, "matching_history:") {
+		t.Fatalf("did not expect history matches for empty buffer, got %q", observedPrompt)
+	}
+	if strings.Contains(observedPrompt, "path_matches:") {
+		t.Fatalf("did not expect path matches for empty buffer, got %q", observedPrompt)
+	}
+	if strings.Contains(observedPrompt, "project_task_matches:") {
+		t.Fatalf("did not expect project task matches for empty buffer, got %q", observedPrompt)
+	}
+	if strings.Contains(observedPrompt, "git_branch_matches:") {
+		t.Fatalf("did not expect branch matches for empty buffer, got %q", observedPrompt)
+	}
+	if strings.Contains(observedPrompt, "project_tasks:") {
+		t.Fatalf("did not expect project task list for empty buffer, got %q", observedPrompt)
+	}
+	if strings.Contains(observedPrompt, "current_token:") && !strings.Contains(observedPrompt, "current_token: \n") {
+		t.Fatalf("expected empty current_token, got %q", observedPrompt)
+	}
+	if strings.Contains(observedPrompt, "matching_history:") {
+		t.Fatalf("did not expect history candidates for empty buffer")
+	}
+	if strings.Contains(observedPrompt, "recent_commands:\n- git puhs") == false {
+		t.Fatalf("expected recent commands in prompt, got %q", observedPrompt)
+	}
+	if strings.Contains(observedPrompt, "last_exit_code: 1") == false {
+		t.Fatalf("expected last exit code in prompt, got %q", observedPrompt)
+	}
+	if strings.Contains(observedPrompt, "buffer is empty right now. Prefer the most likely correction of the last command or the most likely immediate follow-up command.") == false {
+		t.Fatalf("expected empty-buffer correction guidance, got %q", observedPrompt)
+	}
+	if strings.Contains(observedPrompt, "buffer is empty right now. If there is no clear next step, return an empty response.") == false {
+		t.Fatalf("expected empty-buffer empty-response guidance, got %q", observedPrompt)
+	}
+	if strings.Contains(observedPrompt, "The returned command must begin exactly with the current buffer.") == false {
+		t.Fatalf("expected base system prompt in prompt, got %q", observedPrompt)
+	}
+	if strings.Contains(observedPrompt, "cwd: /tmp/project") == false {
+		t.Fatalf("expected cwd in prompt, got %q", observedPrompt)
+	}
+	if strings.Contains(observedPrompt, "branch: main") == false {
+		t.Fatalf("expected branch in prompt, got %q", observedPrompt)
+	}
+	if strings.Contains(observedPrompt, "repo_root: /tmp/project") == false {
+		t.Fatalf("expected repo_root in prompt, got %q", observedPrompt)
+	}
+	if strings.Contains(observedPrompt, "recent_commands:") == false {
+		t.Fatalf("expected recent commands section, got %q", observedPrompt)
+	}
+	if strings.Contains(observedPrompt, "last_command_context:") == false {
+		t.Fatalf("expected last command context section, got %q", observedPrompt)
+	}
+}
+
 func TestInspectIncludesPathRetrievedContext(t *testing.T) {
 	t.Parallel()
 
@@ -420,8 +539,26 @@ func TestBuildPromptPrependsStaticSystemPrompt(t *testing.T) {
 		api.InspectRetrievedContext{},
 	)
 
-	if !strings.HasPrefix(prompt, "Always prefer conservative completions.\n\nYou are a shell autosuggestion engine.") {
+	if !strings.HasPrefix(prompt, "Always prefer conservative completions.\n\ncwd: ") {
 		t.Fatalf("expected custom system prompt prefix, got %q", prompt)
+	}
+}
+
+func TestBuildPromptUsesDefaultSystemPromptWhenUnset(t *testing.T) {
+	t.Parallel()
+
+	prompt := BuildPrompt(
+		"",
+		api.SuggestRequest{Buffer: "git st"},
+		nil,
+		db.CommandContext{},
+		nil,
+		nil,
+		api.InspectRetrievedContext{},
+	)
+
+	if !strings.HasPrefix(prompt, config.DefaultSystemPromptStatic+"\n\ncwd: ") {
+		t.Fatalf("expected default system prompt prefix, got %q", prompt)
 	}
 }
 

@@ -44,6 +44,7 @@ Shows paginated suggestion history with filters for:
 - page-size controls with top and bottom pagination affordances
 - session ids directly in the history table for quicker cross-referencing with commands and feedback
 - inline good/bad labeling that persists to SQLite for future evaluation and fine-tuning work
+- empty recorded buffers rendered as a muted visual placeholder in the table and detail drawer without inserting fallback text into the hydrated DOM
 - structured context previews on hover with persisted prompt snapshots, retrieved context, feedback outcome details, and replay links into the inspector
 - copy-ready prompt and structured-context payloads from the hover card for debugging or dataset export prep
 - a wider full-canvas layout on the suggestions explorer so the table can use the full screen width instead of the default content cap
@@ -124,17 +125,19 @@ Supports:
 Supports:
 
 - start, stop, and restart
+- daemon lifecycle actions that maintain a single active local daemon process even when the runtime form points at an alternate state dir or socket path
 - runtime actions that wait for the daemon to become healthy before reporting successful start or restart
 - runtime settings saved to `runtime.env`
 - the same installed-only model picker used in the lab
 - a persisted suggestion-strategy selector shared with the daemon and shell runtime
 - an Ollama keep-alive setting persisted to `runtime.env` and applied on daemon inference requests so loaded models can stay warm longer between suggestions
-- a multiline editor for the static system-prompt prefix that the daemon prepends ahead of the built-in autosuggestion prompt
-- shell-facing PTY capture allow-list editing, persisted to `runtime.env` so new shells can pick up the wrapper list
+- a multiline editor for the system prompt used by the daemon, prefilled with the built-in autosuggestion instructions and resettable back to that default
+- a shell accept-key selector that persists whether `Tab` or Right Arrow accepts a visible suggestion in new shells, while leaving the non-selected key on its normal shell behavior
+- shell-facing PTY capture mode selection plus allow-list and block-list editing, persisted to `runtime.env` so new shells can pick up the wrapper rules, with one exact command name or one `/regex/` per line so the UI can exclude only the interactive command shapes that the lightweight PTY shell tends to mangle
 - single-model runtime selection shown directly in the input instead of as a duplicate chip below it
 - download prompts for models that are available in Ollama but not installed locally
 - live pull-progress toasts while a model is downloading
-- daemon path rows with hover actions to reveal items in Finder or open their directory in Terminal
+- a read-only runtime details panel for the model base URL, socket and database paths, and daemon file locations, with hover actions on filesystem paths to reveal items in Finder or open their directory in Terminal
 - live PID fallback from process discovery when the pid file is missing or stale
 - daemon process-memory rows that show the daemon RSS plus loaded-model memory, VRAM, and a tracked total, with an explicit unloaded-model state when Ollama has no active model resident
 - daemon status and memory rows that refresh while the page is open, without clobbering unsaved runtime form edits

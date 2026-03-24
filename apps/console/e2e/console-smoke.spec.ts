@@ -172,6 +172,8 @@ test("suggestions page supports sorting, pagination, structured context, and gra
   await expect(page.getByRole("heading", { name: "Retrieved Context", exact: true })).toBeVisible();
   const copyButton = page.getByRole("button", { name: /Copy Context|Copied/ });
   await expect(copyButton).toBeVisible();
+  await expect(page.getByText("Suggestion ID", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Copy ID|Copied/ })).toBeVisible();
 
   await page.reload();
   const reloadedRow = page.locator("tbody tr").filter({
@@ -183,6 +185,22 @@ test("suggestions page supports sorting, pagination, structured context, and gra
   await page.getByLabel("Quality Label").selectOption("good");
   await page.getByRole("button", { name: "Apply Filters" }).click();
   await expect(page.getByText('git commit -m "ship console"').first()).toBeVisible();
+});
+
+test("suggestions page shows a visual placeholder for empty buffers without adding DOM text", async ({
+  page,
+}) => {
+  await page.goto("/suggestions?query=fixture%20empty%20buffer%20suggestion");
+
+  const row = page.locator("tbody tr").filter({
+    has: page.getByText("fixture empty buffer suggestion"),
+  });
+  const bufferCode = row.locator("td").nth(2).locator("code");
+
+  await expect(bufferCode).toHaveText("");
+  await expect
+    .poll(async () => bufferCode.evaluate((element) => getComputedStyle(element, "::after").content))
+    .toBe('"empty buffer"');
 });
 
 test("ranking inspector shows a mocked winner", async ({ page }) => {
@@ -1265,6 +1283,10 @@ test("daemon runtime settings and downloads work with local fixtures", async ({ 
   let savedModelName = "qwen2.5-coder:7b";
   let savedSystemPromptStatic = "";
   let savedModelKeepAlive = "5m";
+  let savedAcceptKey = "tab";
+  let savedPtyCaptureMode = "allowlist";
+  let savedPtyCaptureAllowlist = "";
+  let savedPtyCaptureBlocklist = "";
   let phi4Installed = false;
 
   await page.route("**/api/runtime/settings", async (route) => {
@@ -1273,11 +1295,19 @@ test("daemon runtime settings and downloads work with local fixtures", async ({ 
       LAC_SUGGEST_STRATEGY?: string;
       LAC_MODEL_KEEP_ALIVE?: string;
       LAC_SYSTEM_PROMPT_STATIC?: string;
+      LAC_ACCEPT_KEY?: string;
+      LAC_PTY_CAPTURE_MODE?: string;
+      LAC_PTY_CAPTURE_ALLOWLIST?: string;
+      LAC_PTY_CAPTURE_BLOCKLIST?: string;
     };
     savedModelName = payload.LAC_MODEL_NAME || savedModelName;
     savedSuggestStrategy = payload.LAC_SUGGEST_STRATEGY || savedSuggestStrategy;
     savedModelKeepAlive = payload.LAC_MODEL_KEEP_ALIVE || savedModelKeepAlive;
     savedSystemPromptStatic = payload.LAC_SYSTEM_PROMPT_STATIC || savedSystemPromptStatic;
+    savedAcceptKey = payload.LAC_ACCEPT_KEY || savedAcceptKey;
+    savedPtyCaptureMode = payload.LAC_PTY_CAPTURE_MODE || savedPtyCaptureMode;
+    savedPtyCaptureAllowlist = payload.LAC_PTY_CAPTURE_ALLOWLIST || savedPtyCaptureAllowlist;
+    savedPtyCaptureBlocklist = payload.LAC_PTY_CAPTURE_BLOCKLIST || savedPtyCaptureBlocklist;
 
     await route.fulfill({
       status: 200,
@@ -1293,7 +1323,10 @@ test("daemon runtime settings and downloads work with local fixtures", async ({ 
         suggestStrategy: savedSuggestStrategy,
         systemPromptStatic: savedSystemPromptStatic,
         suggestTimeoutMs: 1200,
-        ptyCaptureAllowlist: "",
+        acceptKey: savedAcceptKey,
+        ptyCaptureMode: savedPtyCaptureMode,
+        ptyCaptureAllowlist: savedPtyCaptureAllowlist,
+        ptyCaptureBlocklist: savedPtyCaptureBlocklist,
       }),
     });
   });
@@ -1319,7 +1352,10 @@ test("daemon runtime settings and downloads work with local fixtures", async ({ 
           suggestStrategy: savedSuggestStrategy,
           systemPromptStatic: savedSystemPromptStatic,
           suggestTimeoutMs: 1200,
-          ptyCaptureAllowlist: "",
+          acceptKey: savedAcceptKey,
+          ptyCaptureMode: savedPtyCaptureMode,
+          ptyCaptureAllowlist: savedPtyCaptureAllowlist,
+          ptyCaptureBlocklist: savedPtyCaptureBlocklist,
         },
         logPath: "/tmp/lac/daemon.log",
         pidPath: "/tmp/lac/daemon.pid",
@@ -1356,7 +1392,10 @@ test("daemon runtime settings and downloads work with local fixtures", async ({ 
           suggestStrategy: savedSuggestStrategy,
           systemPromptStatic: savedSystemPromptStatic,
           suggestTimeoutMs: 1200,
-          ptyCaptureAllowlist: "",
+          acceptKey: savedAcceptKey,
+          ptyCaptureMode: savedPtyCaptureMode,
+          ptyCaptureAllowlist: savedPtyCaptureAllowlist,
+          ptyCaptureBlocklist: savedPtyCaptureBlocklist,
         },
         logPath: "/tmp/lac/daemon.log",
         pidPath: "/tmp/lac/daemon.pid",
@@ -1468,11 +1507,64 @@ test("daemon runtime settings and downloads work with local fixtures", async ({ 
   await page.getByRole("button", { name: "Refresh Log" }).click();
   await expect(page.getByText("Model warmed up in 146ms")).toBeVisible();
   const runtimeSettingsPanel = getDetailBlock(page, "Runtime Settings");
+  const runtimeDetailsPanel = getDetailBlock(page, "Runtime Details");
   await expect(runtimeSettingsPanel.getByLabel("Model Name")).toHaveValue("qwen2.5-coder:7b");
   await expect(runtimeSettingsPanel.locator(".chip-list")).toHaveCount(0);
+  await expect(runtimeSettingsPanel.getByLabel("Model Base URL")).toHaveCount(0);
+  await expect(runtimeSettingsPanel.getByLabel("Socket Path")).toHaveCount(0);
+  await expect(runtimeSettingsPanel.getByLabel("Database Path")).toHaveCount(0);
+  await expect(runtimeDetailsPanel.getByText("Model Base URL")).toBeVisible();
+  await expect(runtimeDetailsPanel.getByText("http://127.0.0.1:11434")).toBeVisible();
+  await expect(runtimeDetailsPanel.getByText("Socket Path")).toBeVisible();
+  await expect(runtimeDetailsPanel.getByText("Database Path")).toBeVisible();
   await expect(runtimeSettingsPanel.getByLabel("Suggestion Strategy")).toHaveValue("history+model");
-  await runtimeSettingsPanel.getByLabel("System Prompt Prefix").fill("Always prefer concise safe commands.");
+  await expect(runtimeSettingsPanel.getByLabel("Accept Suggestion Key")).toHaveValue("tab");
+  await expect(runtimeSettingsPanel.locator("textarea").nth(1)).toHaveAttribute(
+    "placeholder",
+    "git\n/^npm (run|test)$/",
+  );
+  await runtimeSettingsPanel.getByLabel("System Prompt").fill("Always prefer concise safe commands.");
   await runtimeSettingsPanel.getByLabel("Suggestion Strategy").selectOption("history-only");
+  await runtimeSettingsPanel.getByLabel("Accept Suggestion Key").selectOption("right-arrow");
+  await expect(
+    runtimeSettingsPanel.getByText(
+      "Tab returns to normal completion and Right Arrow accepts the suggestion only when one is visible",
+      { exact: false },
+    ),
+  ).toBeVisible();
+  await expect(
+    runtimeSettingsPanel.getByText(
+      "Enter one command name or /regex/ per line. Plain lines match the executable name, while regex lines match the full command text.",
+      { exact: false },
+    ),
+  ).toBeVisible();
+  await expect(
+    runtimeSettingsPanel.getByText(
+      "complex interactive CLI tools can get confused by it",
+      { exact: false },
+    ),
+  ).toBeVisible();
+  await runtimeSettingsPanel.getByRole("button", { name: "Blocklist" }).click();
+  await runtimeSettingsPanel.getByText("PTY Capture Block List", { exact: true }).click();
+  await expect(runtimeSettingsPanel.getByRole("button", { name: "Blocklist" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(runtimeSettingsPanel.getByRole("button", { name: "Allowlist" })).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
+  await expect(runtimeSettingsPanel.locator("textarea").nth(1)).toHaveAttribute(
+    "placeholder",
+    "vim\n/^codex$/",
+  );
+  await expect(
+    runtimeSettingsPanel.getByText(
+      "Use the block list when the lightweight PTY shell can mess up complex interactive CLI tools.",
+      { exact: false },
+    ),
+  ).toBeVisible();
+  await runtimeSettingsPanel.locator("textarea").nth(1).fill("vim\n/^codex$/");
   await expect(
     runtimeSettingsPanel.getByText(
       "Uses past command history only. Fastest and closest to classic terminal autosuggestions.",
@@ -1485,8 +1577,12 @@ test("daemon runtime settings and downloads work with local fixtures", async ({ 
   await page.getByRole("button", { name: "Download Model" }).click();
   await expect(page.getByText("phi4 ready")).toBeVisible();
   await expect(page.getByText("phi4 downloaded. Runtime settings saved and applied.")).toBeVisible();
+  expect(savedAcceptKey).toBe("right-arrow");
+  expect(savedPtyCaptureMode).toBe("blocklist");
+  expect(savedPtyCaptureBlocklist).toBe("vim\n/^codex$/");
   await expect(runtimeSettingsPanel.getByLabel("Suggestion Strategy")).toHaveValue("history-only");
-  await expect(runtimeSettingsPanel.getByLabel("System Prompt Prefix")).toHaveValue(
+  await expect(runtimeSettingsPanel.getByLabel("Accept Suggestion Key")).toHaveValue("right-arrow");
+  await expect(runtimeSettingsPanel.getByLabel("System Prompt")).toHaveValue(
     "Always prefer concise safe commands.",
   );
   await expect(page.getByText("Model warmed up in 146ms")).toBeVisible();
@@ -1494,8 +1590,16 @@ test("daemon runtime settings and downloads work with local fixtures", async ({ 
   await page.reload();
   await expect(runtimeSettingsPanel.getByLabel("Model Name")).toHaveValue("phi4");
   await expect(runtimeSettingsPanel.getByLabel("Suggestion Strategy")).toHaveValue("history-only");
-  await expect(runtimeSettingsPanel.getByLabel("System Prompt Prefix")).toHaveValue(
+  await expect(runtimeSettingsPanel.getByLabel("Accept Suggestion Key")).toHaveValue("right-arrow");
+  await expect(runtimeSettingsPanel.getByLabel("System Prompt")).toHaveValue(
     "Always prefer concise safe commands.",
+  );
+  await expect(runtimeSettingsPanel.getByRole("button", { name: "Blocklist" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(runtimeSettingsPanel.locator("textarea").nth(1)).toHaveValue(
+    "vim\n/^codex$/",
   );
 
   const pathRow = page.locator(".path-row").filter({ has: page.getByText("State dir") });

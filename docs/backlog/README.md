@@ -18,7 +18,5 @@ Current backlog topics:
 - `06-shell-ux-hardening.md`
 
 ## To refine
-- Use the llm to parse previous outputs like copilot/codex --prompt into the next command, even if it's not in the history
-- Toggle between blocklist, allowlist and all for the TTY console + extensive testing with interactive apps
-- Wakeup model when we run `fancy` to accelerate cold starts
-- 
+- Review ranking system
+- Check if more than 1 engine running

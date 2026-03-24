@@ -215,6 +215,19 @@ insertSuggestion.run(
   "qwen2.5-coder:7b",
   now - 70_000,
 );
+insertSuggestion.run(
+  sessionId,
+  "",
+  "fixture empty buffer suggestion",
+  "model",
+  cwd,
+  repoRoot,
+  "main",
+  0,
+  51,
+  "qwen2.5-coder:7b",
+  now - 65_000,
+);
 
 const insertFeedback = db.prepare(`
   INSERT INTO feedback_events(

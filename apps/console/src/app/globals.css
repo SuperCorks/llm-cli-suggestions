@@ -584,6 +584,58 @@ button:disabled {
   gap: 6px;
 }
 
+.field-group {
+  display: grid;
+  gap: 6px;
+}
+
+.field-label {
+  gap: 0;
+}
+
+.field-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.field-header-with-toggle {
+  justify-content: space-between;
+}
+
+.field-header-with-actions {
+  justify-content: space-between;
+}
+
+.inline-field-button {
+  min-height: 28px;
+  padding: 0 10px;
+  font-size: 0.62rem;
+  letter-spacing: 0.12em;
+}
+
+.mode-toggle-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.mode-toggle-button {
+  min-height: 28px;
+  padding: 0 10px;
+  background: transparent;
+  color: var(--text-muted);
+  box-shadow: inset 0 0 0 1px var(--outline-ghost);
+  font-size: 0.62rem;
+  letter-spacing: 0.12em;
+}
+
+.mode-toggle-button.active {
+  background: var(--surface-container-high);
+  color: var(--primary);
+  box-shadow: inset 0 0 0 1px rgba(179, 200, 231, 0.22);
+}
+
 .info-bubble {
   display: inline-flex;
   align-items: center;
@@ -868,6 +920,13 @@ th {
   min-width: 1220px;
 }
 
+.suggestions-table tbody td:nth-child(3) code:empty::after,
+.suggestion-sidebar .meta-list > div:nth-child(2) code:empty::after {
+  content: "empty buffer";
+  color: var(--text-muted);
+  font-style: italic;
+}
+
 .commands-table {
   min-width: 980px;
 }
@@ -1128,6 +1187,13 @@ th {
   margin: 0;
 }
 
+.meta-list-value-with-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .memory-value {
   display: grid;
   gap: 4px;
@@ -1187,6 +1253,7 @@ th {
   display: block;
   font-size: 0.78rem;
   line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .path-actions {

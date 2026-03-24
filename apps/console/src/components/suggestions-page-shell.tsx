@@ -139,7 +139,7 @@ export function SuggestionsPageShell({
   filters,
 }: SuggestionsPageShellProps) {
   const [selectedId, setSelectedId] = useState<number | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [copiedField, setCopiedField] = useState<"context" | "id" | null>(null);
   const [filtersCollapsed, setFiltersCollapsed] = useState(true);
 
   const entries = useMemo(
@@ -158,7 +158,7 @@ export function SuggestionsPageShell({
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
         setSelectedId(null);
-        setCopied(false);
+        setCopiedField(null);
       }
     }
 
@@ -170,18 +170,30 @@ export function SuggestionsPageShell({
 
   function closeSidebar() {
     setSelectedId(null);
-    setCopied(false);
+    setCopiedField(null);
+  }
+
+  async function copyText(value: string, field: "context" | "id") {
+    await navigator.clipboard.writeText(value);
+    setCopiedField(field);
+    window.setTimeout(() => setCopiedField(null), 1400);
   }
 
   async function copySelectedContext() {
     if (!selectedEntry) {
       return;
     }
-    await navigator.clipboard.writeText(
+    await copyText(
       JSON.stringify(selectedEntry.snapshot.contextPayload, null, 2),
+      "context",
     );
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1400);
+  }
+
+  async function copySelectedId() {
+    if (!selectedEntry) {
+      return;
+    }
+    await copyText(String(selectedEntry.row.id), "id");
   }
 
   return (
@@ -407,7 +419,7 @@ export function SuggestionsPageShell({
                 </Link>
                 <button type="button" className="button-secondary" onClick={() => void copySelectedContext()}>
                   <Copy aria-hidden="true" />
-                  {copied ? "Copied" : "Copy Context"}
+                  {copiedField === "context" ? "Copied" : "Copy Context"}
                 </button>
               </div>
             </div>
@@ -415,6 +427,20 @@ export function SuggestionsPageShell({
             <div className="detail-block">
               <h3>Summary</h3>
               <dl className="meta-list">
+                <div>
+                  <dt>Suggestion ID</dt>
+                  <dd className="meta-list-value-with-action">
+                    <span>{selectedEntry.row.id}</span>
+                    <button
+                      type="button"
+                      className="button-secondary inline-field-button"
+                      onClick={() => void copySelectedId()}
+                    >
+                      <Copy aria-hidden="true" />
+                      {copiedField === "id" ? "Copied" : "Copy ID"}
+                    </button>
+                  </dd>
+                </div>
                 <div>
                   <dt>Session</dt>
                   <dd>{selectedEntry.row.sessionId}</dd>

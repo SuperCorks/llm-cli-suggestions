@@ -19,7 +19,7 @@ The current implementation is built from six main pieces:
 4. The client sends an HTTP request over a local Unix socket to the daemon.
 5. The daemon builds a suggestion using local history, feedback, context, and optional model output.
 6. The daemon stores the suggestion in SQLite.
-7. The plugin receives the result asynchronously, renders the suffix as ghost text, and allows `Tab` to accept it.
+7. The plugin receives the result asynchronously, renders the suffix as ghost text, and allows the configured accept key to accept it.
 8. When the command is executed, the plugin logs the command and feedback events back through the client and daemon into SQLite.
 9. The control app reads the same SQLite database directly for analytics and uses local server routes for daemon control and experiments.
 
@@ -32,9 +32,9 @@ The shell layer is intentionally shallow. It is responsible for:
 - discarding stale requests
 - rendering the suggestion as `POSTDISPLAY`
 - styling the ghost text with `region_highlight`
-- accepting the suggestion with `Tab`
+- accepting the suggestion with the configured accept key
 - falling back to normal completion when no suggestion is present
-- capturing command execution lifecycle and bounded output excerpts via `preexec` and `precmd`, with explicit wrappers for one-off capture (`lac-capture`, `lac-capture-pty`) and optional allowlisted PTY capture for selected commands
+- capturing command execution lifecycle and bounded output excerpts via `preexec` and `precmd`, with explicit wrappers for one-off capture (`lac-capture`, `lac-capture-pty`) and optional PTY capture that can run in allowlist or blocklist mode for external commands, using either exact command-name rules or `/regex/` rules that match the full raw command text and preparing wrappers lazily just before matching commands execute
 
 The plugin does not run model inference directly. That work stays outside the shell so typing remains responsive and the inference backend can evolve without rewriting the editor integration.
 
@@ -168,16 +168,23 @@ For the daemon and shell plugin, the precedence is:
 
 The control app is more defensive by default: it resolves from the standard state directory and persisted `runtime.env` instead of inheriting ambient `LAC_*` shell variables from whatever terminal launched Next. That avoids the console silently reading a stale socket or SQLite path when a development shell still exports older repo-specific values. For isolated runs like end-to-end tests, the console can opt back into process-environment overrides with `LAC_CONSOLE_USE_PROCESS_ENV_OVERRIDES=1`.
 
+Runtime file overrides do not imply multi-daemon support. The shell startup path and the control-app daemon controls intentionally maintain one active `autocomplete-daemon` process at a time on the local machine, even if different state directories or socket paths are configured.
+
 The control app writes this file, and the `zsh` plugin reads it before launching the daemon in `fancy` mode. That gives the app a durable way to control:
+
+Persisted values are written as shell-sourceable single-line escaped assignments so multiline settings like the system prompt round-trip cleanly through the control app, `zsh`, and the Go daemon.
 
 - model name
 - model base URL
 - suggestion strategy
-- a static system-prompt prefix prepended ahead of the built-in autosuggestion prompt
+- a configurable system prompt, seeded with the built-in autosuggestion instructions by default
 - socket path
 - SQLite path
 - suggest timeout
-- PTY capture allow-list
+- suggestion accept key
+- PTY capture mode
+- PTY capture allow-list, with one exact command name or `/regex/` rule per line
+- PTY capture block-list, with one exact command name or `/regex/` rule per line
 
 The current strategy modes are:
 
@@ -219,7 +226,7 @@ The current implementation is deliberately scoped:
 
 - it is built for macOS and `zsh`
 - it keeps all inference local
-- it supports bounded output capture, including a lightweight PTY wrapper for explicitly allowlisted commands, but not a full PTY interposer or complete terminal transcript system
+- it supports bounded output capture, including a lightweight PTY wrapper that can target either an explicit allowlist or an all-except blocklist set of external commands, but not a full PTY interposer or complete terminal transcript system
 - it focuses on command-line autosuggestions, not a full terminal replacement
 - it is designed to be started explicitly from the shell integration or the local control app rather than always running for every shell session
 

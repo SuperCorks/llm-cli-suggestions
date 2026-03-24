@@ -69,6 +69,34 @@ function resolveDaemonPid(pidPath: string, candidatePids: number[]) {
   return pidFromFile;
 }
 
+function listDaemonProcesses() {
+  const result = spawnSync("ps", ["-axo", "pid=,command="], {
+    encoding: "utf8",
+  });
+  if (result.status !== 0) {
+    return [] as Array<{ pid: number; command: string }>;
+  }
+
+  return result.stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .flatMap((line) => {
+      const match = line.match(/^(\d+)\s+(.*)$/);
+      if (!match) {
+        return [];
+      }
+
+      const pid = Number.parseInt(match[1] || "", 10);
+      const command = match[2] || "";
+      if (!Number.isFinite(pid) || !command.includes("autocomplete-daemon")) {
+        return [];
+      }
+
+      return [{ pid, command }];
+    });
+}
+
 function readProcessRSSBytes(pid: number | null) {
   if (!pid) {
     return null;
@@ -150,8 +178,14 @@ export async function saveRuntimeSettings(input: Partial<Record<PersistedKey, st
     LAC_DB_PATH: input.LAC_DB_PATH || current.dbPath,
     LAC_SUGGEST_TIMEOUT_MS:
       input.LAC_SUGGEST_TIMEOUT_MS || String(current.suggestTimeoutMs),
+    LAC_ACCEPT_KEY:
+      input.LAC_ACCEPT_KEY ?? current.acceptKey,
+    LAC_PTY_CAPTURE_MODE:
+      input.LAC_PTY_CAPTURE_MODE ?? current.ptyCaptureMode,
     LAC_PTY_CAPTURE_ALLOWLIST:
       input.LAC_PTY_CAPTURE_ALLOWLIST ?? current.ptyCaptureAllowlist,
+    LAC_PTY_CAPTURE_BLOCKLIST:
+      input.LAC_PTY_CAPTURE_BLOCKLIST ?? current.ptyCaptureBlocklist,
   });
   return getResolvedRuntimeSettings();
 }
@@ -170,23 +204,49 @@ async function waitForHealth(attempts = 80, delayMs = 150) {
 }
 
 function findDaemonPids(socketPath: string) {
-  const result = spawnSync("pgrep", ["-f", `autocomplete-daemon.*${socketPath}`], {
-    encoding: "utf8",
-  });
-  if (result.status !== 0) {
-    return [] as number[];
+  return listDaemonProcesses()
+    .filter((processInfo) => processInfo.command.includes(socketPath))
+    .map((processInfo) => processInfo.pid);
+}
+
+function findAllDaemonPids() {
+  return listDaemonProcesses().map((processInfo) => processInfo.pid);
+}
+
+async function stopDaemonPids(pidCandidates: Iterable<number>) {
+  const uniquePids = Array.from(new Set(pidCandidates)).filter((value) => Number.isFinite(value));
+  if (uniquePids.length === 0) {
+    return;
   }
-  return result.stdout
-    .split(/\s+/)
-    .map((value) => Number.parseInt(value, 10))
-    .filter((value) => Number.isFinite(value));
+
+  for (const candidate of uniquePids) {
+    try {
+      process.kill(candidate, "SIGTERM");
+    } catch {
+      // ignore stale pid
+    }
+  }
+
+  await new Promise((resolve) => setTimeout(resolve, 300));
+
+  for (const candidate of uniquePids) {
+    try {
+      process.kill(candidate, 0);
+      process.kill(candidate, "SIGKILL");
+    } catch {
+      // process exited
+    }
+  }
 }
 
 export async function startDaemon() {
   ensureStateDirs();
   const current = await getRuntimeStatusWithHealth();
+  const currentPids = findDaemonPids(current.settings.socketPath);
+  const keepPid = current.health.ok ? resolveDaemonPid(getDaemonPidPath(), currentPids) : null;
+  await stopDaemonPids(findAllDaemonPids().filter((pid) => pid !== keepPid));
   if (current.health.ok) {
-    return current;
+    return getRuntimeStatusWithHealth();
   }
 
   const settings = current.settings;
@@ -219,7 +279,9 @@ export async function startDaemon() {
         LAC_SUGGEST_STRATEGY: settings.suggestStrategy,
         LAC_SYSTEM_PROMPT_STATIC: settings.systemPromptStatic,
         LAC_SUGGEST_TIMEOUT_MS: String(settings.suggestTimeoutMs),
+        LAC_PTY_CAPTURE_MODE: settings.ptyCaptureMode,
         LAC_PTY_CAPTURE_ALLOWLIST: settings.ptyCaptureAllowlist,
+        LAC_PTY_CAPTURE_BLOCKLIST: settings.ptyCaptureBlocklist,
       },
     },
   );
@@ -245,24 +307,11 @@ export async function stopDaemon() {
     pidCandidates.add(candidate);
   }
 
-  for (const candidate of pidCandidates) {
-    try {
-      process.kill(candidate, "SIGTERM");
-    } catch {
-      // ignore stale pid
-    }
+  for (const candidate of findAllDaemonPids()) {
+    pidCandidates.add(candidate);
   }
 
-  await new Promise((resolve) => setTimeout(resolve, 300));
-
-  for (const candidate of pidCandidates) {
-    try {
-      process.kill(candidate, 0);
-      process.kill(candidate, "SIGKILL");
-    } catch {
-      // process exited
-    }
-  }
+  await stopDaemonPids(pidCandidates);
 
   if (fs.existsSync(pidPath)) {
     fs.rmSync(pidPath, { force: true });

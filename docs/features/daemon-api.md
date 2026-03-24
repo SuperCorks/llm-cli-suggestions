@@ -16,6 +16,8 @@ Returns daemon health plus model and socket information.
 
 The daemon runtime itself is configured from `runtime.env` values such as model name, Ollama base URL, suggestion strategy, timeout, and Ollama `keep_alive`.
 
+The runtime control paths that start or restart the daemon intentionally keep the service singleton-scoped on the local machine. Repointing the shell or control app at another state dir changes which socket and runtime files the daemon uses, but it does not leave multiple `autocomplete-daemon` processes running in parallel.
+
 ### `POST /suggest`
 
 Accepts a suggestion request containing:

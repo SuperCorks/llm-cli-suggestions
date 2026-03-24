@@ -2,7 +2,7 @@
 
 **Local-first, context-aware terminal autosuggestions for macOS `zsh`.**
 
-Type a few characters and a ghost-text suggestion appears inline — press `Tab` to accept, keep typing to ignore. Suggestions are shaped by where you are and what you were just doing: current working directory, repo root, git branch, recent commands, last exit code, recent command output, and local project tasks. Everything runs on your machine: a Go daemon, a local Ollama model, and a SQLite learning loop. No cloud, no API keys, no telemetry.
+Type a few characters and a ghost-text suggestion appears inline — press `Tab` to accept by default, or switch acceptance to Right Arrow in the daemon settings page. Suggestions are shaped by where you are and what you were just doing: current working directory, repo root, git branch, recent commands, last exit code, recent command output, and local project tasks. Everything runs on your machine: a Go daemon, a local Ollama model, and a SQLite learning loop. No cloud, no API keys, no telemetry.
 
 <p align="center">
   <img src="docs/screenshots/console-dashboard-overview.png" width="100%" alt="Dashboard — live activity stream, top commands, acceptance rate, and model latency at a glance." />
@@ -25,7 +25,7 @@ Type a few characters and a ghost-text suggestion appears inline — press `Tab`
 
 ### Suggestions in the terminal
 
-Ghost-text completions appear inline as you type. Press Tab to accept.
+Ghost-text completions appear inline as you type. Tab accepts by default, and the daemon settings page can switch acceptance to Right Arrow.
 
 <p align="center">
   <img src="docs/screenshots/zsh-ghost-text-terminal.png" width="100%" alt="Zsh ghost-text suggestions in the terminal" />
@@ -171,8 +171,9 @@ The daemon uses sensible defaults:
 | Model | `qwen2.5-coder:7b` | `LAC_MODEL_NAME` |
 | Ollama URL | `http://127.0.0.1:11434` | `LAC_MODEL_BASE_URL` |
 | Ollama keep alive | `5m` | `LAC_MODEL_KEEP_ALIVE` |
-| Static System Prompt Prefix | empty | `LAC_SYSTEM_PROMPT_STATIC` |
+| System Prompt | built-in shell autosuggestion prompt | `LAC_SYSTEM_PROMPT_STATIC` |
 | Suggest timeout | `1200ms` | `LAC_SUGGEST_TIMEOUT_MS` |
+| Accept key | `tab` | `LAC_ACCEPT_KEY` |
 
 Settings saved from the control app persist to `runtime.env` and are picked up by new shells automatically.
 
@@ -190,9 +191,9 @@ npm run dev
 
 Open the local URL shown by Next.js to access the dashboard, suggestions, signals, inspector, models, model lab, and daemon controls.
 
-The console app resolves its runtime paths from the standard state directory and persisted `runtime.env` by default, so it does not accidentally inherit stale `LAC_*` variables from the shell used to launch `next dev`. If you intentionally want to run the console against an alternate state dir or SQLite file through process env, also set `LAC_CONSOLE_USE_PROCESS_ENV_OVERRIDES=1`.
+The console app resolves its runtime paths from the standard state directory and persisted `runtime.env` by default, so it does not accidentally inherit stale `LAC_*` variables from the shell used to launch `next dev`. If you intentionally want to inspect or edit an alternate state dir or SQLite file through process env, also set `LAC_CONSOLE_USE_PROCESS_ENV_OVERRIDES=1`. Daemon start, stop, and restart still enforce a single active local daemon process at a time, so switching to an alternate state dir replaces the currently running daemon instead of running both in parallel.
 
-The Daemon page also lets you edit a static system-prompt prefix that is prepended verbatim ahead of the built-in autosuggestion prompt, along with the Ollama `keep_alive` value used to keep models warm between requests.
+The Daemon page also lets you edit the full system prompt used for shell autosuggestions, choose whether `Tab` or Right Arrow accepts a suggestion in new shells, and set the Ollama `keep_alive` value used to keep models warm between requests.
 
 For a production build: `npm run build`. Run the e2e smoke suite with `npm run e2e`.
 
@@ -202,11 +203,11 @@ For a production build: `npm run build`. Run the e2e smoke suite with `npm run e
 
 The engine can use previous command output to make smarter suggestions (e.g. run `git branch`, then `git checkout` suggests an actual branch name).
 
-- **PTY capture** — set `LAC_PTY_CAPTURE_ALLOWLIST=git,npm,python` to automatically capture output for specific commands
+- **PTY capture** — set `LAC_PTY_CAPTURE_MODE=allowlist` to wrap only selected commands, or `LAC_PTY_CAPTURE_MODE=blocklist` to wrap most external commands while excluding tools you do not want to run through the PTY helper. In the daemon UI, enter one exact command name or one `/regex/` per line in the allow-list or block-list. Plain lines match the executable name, while regex lines match the full command text, which is useful when the lightweight PTY shell can interfere with complex interactive CLI tools.
 - **Auto capture** — set `LAC_AUTO_CAPTURE_ENABLED=1` for safe non-interactive commands (may affect color output)
 - **Explicit** — `lac-capture <command>` or `lac-capture-pty <command>` for one-off capture
 
-The control app Daemon page can persist the PTY capture allow-list to `runtime.env` so new shells pick it up automatically.
+The control app Daemon page can persist the PTY capture mode plus newline-separated allow-list and block-list rules to `runtime.env` so new shells pick them up automatically.
 
 ---
 

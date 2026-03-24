@@ -32,7 +32,7 @@ func main() {
 	case "health":
 		runHealth(cfg.SocketPath, os.Args[2:])
 	case "suggest":
-		runSuggest(cfg.SocketPath, os.Args[2:])
+		runSuggest(cfg.SocketPath, cfg.SuggestTimeout, os.Args[2:])
 	case "feedback":
 		runFeedback(cfg.SocketPath, os.Args[2:])
 	case "record-command":
@@ -49,7 +49,7 @@ func runHealth(defaultSocket string, args []string) {
 	socket := flags.String("socket", defaultSocket, "unix socket path")
 	_ = flags.Parse(args)
 
-	client := newSocketClient(*socket)
+	client := newSocketClient(*socket, 2500*time.Millisecond)
 	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://unix/health", nil)
 	if err != nil {
 		exitWithError(err)
@@ -72,7 +72,7 @@ func runHealth(defaultSocket string, args []string) {
 	fmt.Println(payload.Status)
 }
 
-func runSuggest(defaultSocket string, args []string) {
+func runSuggest(defaultSocket string, suggestTimeout time.Duration, args []string) {
 	flags := flag.NewFlagSet("suggest", flag.ExitOnError)
 	socket := flags.String("socket", defaultSocket, "unix socket path")
 	sessionID := flags.String("session", "", "session id")
@@ -83,7 +83,7 @@ func runSuggest(defaultSocket string, args []string) {
 	lastExitCode := flags.Int("last-exit", 0, "last exit code")
 	_ = flags.Parse(args)
 
-	client := newSocketClient(*socket)
+	client := newSocketClient(*socket, clientTimeoutForSuggest(suggestTimeout))
 	payload := api.SuggestRequest{
 		SessionID:    *sessionID,
 		Buffer:       *buffer,
@@ -113,7 +113,7 @@ func runFeedback(defaultSocket string, args []string) {
 	actualCommand := flags.String("actual-command", "", "actual command")
 	_ = flags.Parse(args)
 
-	client := newSocketClient(*socket)
+	client := newSocketClient(*socket, 2500*time.Millisecond)
 	payload := api.FeedbackRequest{
 		SuggestionID:    *suggestionID,
 		SessionID:       *sessionID,
@@ -145,7 +145,7 @@ func runRecordCommand(defaultSocket string, args []string) {
 	stderrExcerpt := flags.String("stderr", "", "stderr excerpt")
 	_ = flags.Parse(args)
 
-	client := newSocketClient(*socket)
+	client := newSocketClient(*socket, 2500*time.Millisecond)
 	payload := api.RecordCommandRequest{
 		SessionID:     *sessionID,
 		Command:       *command,
@@ -257,7 +257,7 @@ func runInspectRecentFeedback(defaultDBPath string, args []string) {
 	}
 }
 
-func newSocketClient(socketPath string) *http.Client {
+func newSocketClient(socketPath string, timeout time.Duration) *http.Client {
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			var dialer net.Dialer
@@ -265,10 +265,23 @@ func newSocketClient(socketPath string) *http.Client {
 		},
 	}
 
+	if timeout <= 0 {
+		timeout = 2500 * time.Millisecond
+	}
+
 	return &http.Client{
 		Transport: transport,
-		Timeout:   2500 * time.Millisecond,
+		Timeout:   timeout,
 	}
+}
+
+func clientTimeoutForSuggest(suggestTimeout time.Duration) time.Duration {
+	if suggestTimeout <= 0 {
+		return 2500 * time.Millisecond
+	}
+
+	const buffer = 500 * time.Millisecond
+	return suggestTimeout + buffer
 }
 
 func doJSON(client *http.Client, method, url string, payload any, target any) error {
