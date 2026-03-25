@@ -1,0 +1,114 @@
+[
+  {
+    "id": "gcloud_auth_list",
+    "name": "GCloud auth list",
+    "category": "infra",
+    "tags": ["gcloud", "auth", "extended"],
+    "label_kind": "positive",
+    "request": {
+      "session_id": "bench",
+      "buffer": "gcloud auth l",
+      "cwd": "/Users/example",
+      "repo_root": "",
+      "branch": "",
+      "last_exit_code": 0,
+      "recent_commands": [
+        "gcloud auth",
+        "gcloud list",
+        "gcloud config set project my-project-1478832460965"
+      ]
+    },
+    "expected": "gcloud auth list",
+    "origin": "static"
+  },
+  {
+    "id": "envpull_push",
+    "name": "Envpull push",
+    "category": "repo-specific",
+    "tags": ["envpull", "repo-specific", "extended"],
+    "label_kind": "positive",
+    "request": {
+      "session_id": "bench",
+      "buffer": "envpull p",
+      "cwd": "/Users/example/projects/gleamery/gleamery-appointments",
+      "repo_root": "/Users/example/projects/gleamery/gleamery-appointments",
+      "branch": "main",
+      "last_exit_code": 0,
+      "recent_commands": [
+        "envpull init",
+        "envpull ls",
+        "envpull help"
+      ]
+    },
+    "expected": "envpull push .env.prod.local .env.sandbox.local",
+    "origin": "static"
+  },
+  {
+    "id": "gswitch_private_project",
+    "name": "Gswitch private project",
+    "category": "repo-specific",
+    "tags": ["gswitch", "repo-specific", "extended"],
+    "label_kind": "positive",
+    "request": {
+      "session_id": "bench",
+      "buffer": "gswitch new p",
+      "cwd": "/Users/example/projects/blvd-events-pipelines",
+      "repo_root": "/Users/example/projects/blvd-events-pipelines",
+      "branch": "main",
+      "last_exit_code": 0,
+      "recent_commands": [
+        "npx gswitch new peachy --private",
+        "gswitch new rk",
+        "npm login"
+      ]
+    },
+    "expected": "gswitch new peachy --private",
+    "origin": "static"
+  },
+  {
+    "id": "go_test_pkg",
+    "name": "Go test package",
+    "category": "build-test",
+    "tags": ["go", "test", "extended"],
+    "label_kind": "positive",
+    "request": {
+      "session_id": "bench",
+      "buffer": "go test ./int",
+      "cwd": "/Users/example/projects/llm-cli-suggestions",
+      "repo_root": "/Users/example/projects/llm-cli-suggestions",
+      "branch": "main",
+      "last_exit_code": 0,
+      "recent_commands": [
+        "go test ./...",
+        "go test ./internal/engine",
+        "go test ./cmd/model-bench"
+      ]
+    },
+    "expected": "go test ./internal/...",
+    "alternatives": ["go test ./internal/engine", "go test ./internal/db"],
+    "origin": "static"
+  },
+  {
+    "id": "negative_pipe_overreach",
+    "name": "Avoid inventing follow-up pipes",
+    "category": "negatives",
+    "tags": ["negative", "pipe", "extended"],
+    "label_kind": "negative",
+    "request": {
+      "session_id": "bench",
+      "buffer": "codex exec \"give me a commit message\" 2>/dev/null",
+      "cwd": "/Users/example/projects/llm-cli-suggestions",
+      "repo_root": "/Users/example/projects/llm-cli-suggestions",
+      "branch": "main",
+      "last_exit_code": 0,
+      "recent_commands": [
+        "codex exec \"summarize this diff\"",
+        "git diff --stat",
+        "git status"
+      ]
+    },
+    "expected": "codex exec \"give me a commit message\" 2>/dev/null",
+    "negative": "codex exec \"give me a commit message\" 2>/dev/null | grep -v \"error:\" | head -n 1",
+    "origin": "static"
+  }
+]

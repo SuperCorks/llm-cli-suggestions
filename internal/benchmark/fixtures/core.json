@@ -1,0 +1,208 @@
+[
+  {
+    "id": "git_status_after_repo_navigation",
+    "name": "Git status after repo navigation",
+    "category": "git",
+    "tags": ["git", "status", "core"],
+    "label_kind": "positive",
+    "request": {
+      "session_id": "bench",
+      "buffer": "git st",
+      "cwd": "/Users/example/projects/llm-cli-suggestions",
+      "repo_root": "/Users/example/projects/llm-cli-suggestions",
+      "branch": "main",
+      "last_exit_code": 0,
+      "recent_commands": [
+        "cd /Users/example/projects/llm-cli-suggestions",
+        "git checkout main",
+        "git pull",
+        "go test ./..."
+      ]
+    },
+    "expected": "git status",
+    "alternatives": ["git stash"],
+    "origin": "static"
+  },
+  {
+    "id": "npm_dev_server",
+    "name": "NPM dev server",
+    "category": "package-manager",
+    "tags": ["npm", "dev", "core"],
+    "label_kind": "positive",
+    "request": {
+      "session_id": "bench",
+      "buffer": "npm run d",
+      "cwd": "/Users/example/app",
+      "repo_root": "/Users/example/app",
+      "branch": "feature/autocomplete",
+      "last_exit_code": 0,
+      "recent_commands": [
+        "npm install",
+        "npm test",
+        "npm run lint"
+      ]
+    },
+    "expected": "npm run dev",
+    "origin": "static"
+  },
+  {
+    "id": "docker_compose_logs",
+    "name": "Docker compose logs",
+    "category": "infra",
+    "tags": ["docker", "compose", "logs", "core"],
+    "label_kind": "positive",
+    "request": {
+      "session_id": "bench",
+      "buffer": "docker comp",
+      "cwd": "/Users/example/services",
+      "repo_root": "/Users/example/services",
+      "branch": "main",
+      "last_exit_code": 1,
+      "recent_commands": [
+        "docker compose up -d",
+        "docker compose ps",
+        "docker compose restart web"
+      ]
+    },
+    "expected": "docker compose logs -f",
+    "alternatives": ["docker compose ps", "docker compose up -d"],
+    "origin": "static"
+  },
+  {
+    "id": "kubectl_get_pods",
+    "name": "Kubectl get pods",
+    "category": "infra",
+    "tags": ["kubectl", "k8s", "core"],
+    "label_kind": "positive",
+    "request": {
+      "session_id": "bench",
+      "buffer": "kubectl get p",
+      "cwd": "/Users/example",
+      "repo_root": "",
+      "branch": "",
+      "last_exit_code": 0,
+      "recent_commands": [
+        "kubectl config use-context prod",
+        "kubectl get nodes",
+        "kubectl describe pod api-123"
+      ]
+    },
+    "expected": "kubectl get pods",
+    "origin": "static"
+  },
+  {
+    "id": "git_checkout_branch",
+    "name": "Git checkout branch",
+    "category": "git",
+    "tags": ["git", "checkout", "core"],
+    "label_kind": "positive",
+    "request": {
+      "session_id": "bench",
+      "buffer": "git chec",
+      "cwd": "/Users/example/projects/llm-cli-suggestions",
+      "repo_root": "/Users/example/projects/llm-cli-suggestions",
+      "branch": "main",
+      "last_exit_code": 0,
+      "recent_commands": [
+        "git branch",
+        "git fetch origin",
+        "git checkout -b spike/autocomplete"
+      ]
+    },
+    "expected": "git checkout",
+    "alternatives": ["git checkout -b spike/autocomplete"],
+    "origin": "static"
+  },
+  {
+    "id": "empty_buffer_follow_up_git_status",
+    "name": "Empty buffer follow-up after repo work",
+    "category": "empty-buffer",
+    "tags": ["empty-buffer", "git", "core"],
+    "label_kind": "positive",
+    "request": {
+      "session_id": "bench",
+      "buffer": "",
+      "cwd": "/Users/example/projects/llm-cli-suggestions",
+      "repo_root": "/Users/example/projects/llm-cli-suggestions",
+      "branch": "main",
+      "last_exit_code": 0,
+      "recent_commands": [
+        "git checkout main",
+        "git pull --rebase",
+        "go test ./..."
+      ]
+    },
+    "expected": "git status",
+    "alternatives": ["go test ./..."],
+    "origin": "static"
+  },
+  {
+    "id": "cd_apps_console",
+    "name": "Change directory into console app",
+    "category": "nav",
+    "tags": ["cd", "navigation", "core"],
+    "label_kind": "positive",
+    "request": {
+      "session_id": "bench",
+      "buffer": "cd ap",
+      "cwd": "/Users/example/projects/llm-cli-suggestions",
+      "repo_root": "/Users/example/projects/llm-cli-suggestions",
+      "branch": "main",
+      "last_exit_code": 0,
+      "recent_commands": [
+        "ls",
+        "cd apps",
+        "pwd"
+      ]
+    },
+    "expected": "cd apps/console/",
+    "alternatives": ["cd apps/"],
+    "origin": "static"
+  },
+  {
+    "id": "negative_cd_dir_overreach",
+    "name": "Avoid over-expanding cd into a subdirectory",
+    "category": "negatives",
+    "tags": ["negative", "cd", "navigation", "core"],
+    "label_kind": "negative",
+    "request": {
+      "session_id": "bench",
+      "buffer": "cd cli-auto-complete/",
+      "cwd": "/Users/example/projects",
+      "repo_root": "",
+      "branch": "",
+      "last_exit_code": 0,
+      "recent_commands": [
+        "ls",
+        "cd cli-auto-complete/",
+        "pwd"
+      ]
+    },
+    "expected": "cd cli-auto-complete/",
+    "negative": "cd cli-auto-complete/bin/",
+    "origin": "static"
+  },
+  {
+    "id": "negative_git_branch_flags",
+    "name": "Avoid inventing branch list flags",
+    "category": "negatives",
+    "tags": ["negative", "git", "branch", "core"],
+    "label_kind": "negative",
+    "request": {
+      "session_id": "bench",
+      "buffer": "git branch",
+      "cwd": "/Users/example/projects/llm-cli-suggestions",
+      "repo_root": "/Users/example/projects/llm-cli-suggestions",
+      "branch": "main",
+      "last_exit_code": 0,
+      "recent_commands": [
+        "git status",
+        "git fetch origin",
+        "git checkout main"
+      ]
+    },
+    "expected": "git branch",
+    "negative": "git branch --list",
+    "origin": "static"
+  }
+]
