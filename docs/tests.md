@@ -43,10 +43,10 @@ npm run e2e
 The Playwright suite currently covers a seeded local happy path for:
 
 - overview dashboard rendering
-- performance dashboard rendering, filter wiring including the all-time preset, and the default active-model analysis path
+- performance dashboard rendering, filter wiring including the all-time preset, the default active-model analysis path, and the prompt-size-versus-latency panel
 - shared shell navigation collapse and expand behavior
 - suggestions explorer filtering
-- suggestions explorer sorting, pagination, persisted good/bad grading, structured context hover previews, and empty-buffer placeholder rendering without hydrated text rewrites
+- suggestions explorer sorting, pagination, persisted good/bad grading, structured context hover previews, empty-buffer placeholder rendering without hydrated text rewrites, and 2-second in-place auto-refresh for newly logged rows
 - commands and feedback rendering
 - inspector interaction with a mocked ranking response
 - inspector rendering of retrieved local context alongside candidate scores

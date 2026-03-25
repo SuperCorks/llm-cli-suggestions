@@ -1,9 +1,58 @@
+import { execFileSync } from "node:child_process";
+import path from "node:path";
+
 import { expect, test, type Page } from "@playwright/test";
+
+const E2E_DB_PATH = path.resolve(process.cwd(), "../../.tmp/console-e2e-state/e2e.sqlite");
 
 function getDetailBlock(page: Page, heading: string) {
   return page.locator(".detail-block").filter({
     has: page.getByRole("heading", { name: heading }),
   });
+}
+
+function insertSuggestionFixture({
+  buffer,
+  suggestionText,
+  source = "model",
+  modelName = "qwen2.5-coder:7b",
+}: {
+  buffer: string;
+  suggestionText: string;
+  source?: string;
+  modelName?: string;
+}) {
+  const escapeSql = (value: string) => value.replaceAll("'", "''");
+
+  execFileSync("sqlite3", [
+    E2E_DB_PATH,
+    `INSERT INTO suggestions(
+      session_id, buffer, suggestion_text, source, cwd, repo_root, branch,
+      last_exit_code, latency_ms, request_latency_ms, model_name, request_model_name,
+      model_total_duration_ms, model_load_duration_ms, model_prompt_eval_duration_ms,
+      model_eval_duration_ms, model_prompt_eval_count, model_eval_count, created_at_ms
+    ) VALUES (
+      'session-alpha',
+      '${escapeSql(buffer)}',
+      '${escapeSql(suggestionText)}',
+      '${escapeSql(source)}',
+      '/Users/simon/projects/gleamery/apps/console',
+      '/Users/simon/projects/gleamery',
+      'main',
+      0,
+      91,
+      104,
+      '${escapeSql(modelName)}',
+      '${escapeSql(modelName)}',
+      96,
+      0,
+      28,
+      51,
+      17,
+      10,
+      ${Date.now()}
+    );`,
+  ]);
 }
 
 async function mockEventSource(
@@ -129,6 +178,7 @@ test("performance dashboard renders latency analysis controls and charts", async
   await expect(page.getByText("Cold-start penalty")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Latency Trend" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Where Time Goes" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Prompt Size vs Latency" })).toBeVisible();
   await expect(page.getByText("qwen2.5-coder:7b").first()).toBeVisible();
 
   await page.getByLabel("Range Preset").selectOption("yesterday");
@@ -219,6 +269,22 @@ test("suggestions page shows a visual placeholder for empty buffers without addi
   await expect
     .poll(async () => bufferCode.evaluate((element) => getComputedStyle(element, "::after").content))
     .toBe('"empty buffer"');
+});
+
+test("suggestions page auto-refreshes the history table every 2 seconds", async ({ page }) => {
+  await page.goto("/suggestions?query=live%20refresh%20fixture");
+
+  await expect(page.getByText("No suggestions matched the selected filters.")).toBeVisible();
+
+  insertSuggestionFixture({
+    buffer: "live refresh fixture",
+    suggestionText: "live refresh fixture suggestion",
+  });
+
+  await expect(page.getByText("live refresh fixture suggestion")).toBeVisible({
+    timeout: 8_000,
+  });
+  await expect(page.getByText("No suggestions matched the selected filters.")).toHaveCount(0);
 });
 
 test("ranking inspector shows a mocked winner", async ({ page }) => {

@@ -27,6 +27,7 @@ The engine uses these inputs when choosing a suggestion:
 4. Run the independent local lookups in parallel where possible.
 5. Gather prefix-matching history candidates when the buffer is non-empty.
 6. Gather targeted retrieval candidates for paths, git branches, and project tasks.
+   Path retrieval treats bare `.` and `..` tokens as directory prefixes, so inputs like `cd ..` resolve against the current or parent directory the same way `cd ./` or `cd ../` do.
 7. If the buffer is empty, only allow the model path when there is a recorded last command to ground the suggestion.
 8. If history is clearly dominant, return the top history result immediately.
 9. Otherwise, ask the local model for one completion.
@@ -35,7 +36,7 @@ The engine uses these inputs when choosing a suggestion:
 
 ## Empty Buffer Behavior
 
-When the current buffer is empty, the engine does not open history-prefix matching or token retrieval against the whole command corpus. Instead, it only permits a model-backed suggestion when there is a non-empty `last_command` context available. The prompt explicitly tells the model that the buffer is empty right now and asks for either the most likely correction of the last command or the most likely immediate follow-up command, with an empty response preferred when there is no clear next step.
+When the current buffer is empty, the engine does not open history-prefix matching or token retrieval against the whole command corpus. Instead, it only permits a model-backed suggestion when there is a non-empty `last_command` context available. The prompt appends explicit empty-buffer guidance at the end of the snapshot, in place of a blank `current_buffer` block, so the model sees the normal request context first and then the instruction to prefer either a correction of the last command, an immediate follow-up command, or an empty response when there is no clear next step.
 
 ## Candidate Sources
 

@@ -73,6 +73,13 @@ export interface PerformanceDashboardData {
     unknownCount: number;
     notApplicableCount: number;
   }>;
+  promptSizeHistogram: Array<{
+    label: string;
+    count: number;
+    avgLatencyMs: number;
+    p95LatencyMs: number;
+    avgPromptChars: number;
+  }>;
   stageBreakdown: Array<{
     key: "cold" | "hot";
     label: string;
@@ -123,6 +130,7 @@ interface PerformanceRow {
   modelEvalDurationMs: number;
   modelPromptEvalCount: number;
   modelEvalCount: number;
+  promptTextLength: number;
 }
 
 const START_STATE_LABELS: Record<PerformanceStartState, string> = {
@@ -140,6 +148,16 @@ const LATENCY_BANDS = [
   { label: "1-1.9 s", max: 2000 },
   { label: "2-3.9 s", max: 4000 },
   { label: "4 s+", max: Number.POSITIVE_INFINITY },
+] as const;
+
+const PROMPT_SIZE_BANDS = [
+  { label: "<1k chars", max: 1000 },
+  { label: "1.0k-1.9k", max: 2000 },
+  { label: "2.0k-2.9k", max: 3000 },
+  { label: "3.0k-3.9k", max: 4000 },
+  { label: "4.0k-4.9k", max: 5000 },
+  { label: "5.0k-5.9k", max: 6000 },
+  { label: "6k+", max: Number.POSITIVE_INFINITY },
 ] as const;
 
 export function getPerformanceRangeBounds() {
@@ -218,6 +236,7 @@ export function getPerformanceDashboardData(filters: PerformanceDashboardFilters
     startStates: summarizeStartStates(currentRows),
     timeline: buildTimeline(currentRows, filters.startMs, filters.endMs),
     histogram: buildHistogram(currentRows),
+    promptSizeHistogram: buildPromptSizeHistogram(currentRows),
     stageBreakdown: buildStageBreakdown(currentRows),
     sourceBreakdown: buildSourceBreakdown(currentRows),
     cwdLeaderboard: buildCwdLeaderboard(currentRows),
@@ -255,7 +274,8 @@ function queryRows(filters: PerformanceDashboardFilters) {
          model_prompt_eval_duration_ms AS modelPromptEvalDurationMs,
          model_eval_duration_ms AS modelEvalDurationMs,
          model_prompt_eval_count AS modelPromptEvalCount,
-         model_eval_count AS modelEvalCount
+         model_eval_count AS modelEvalCount,
+         LENGTH(COALESCE(prompt_text, '')) AS promptTextLength
        FROM suggestions
        WHERE ${clauses.join(" AND ")}
        ORDER BY created_at_ms ASC`,
@@ -430,6 +450,26 @@ function buildHistogram(rows: PerformanceRow[]) {
   });
 }
 
+function buildPromptSizeHistogram(rows: PerformanceRow[]) {
+  const promptRows = rows.filter(
+    (row) => row.requestModelName.trim() !== "" && row.promptTextLength > 0,
+  );
+
+  return PROMPT_SIZE_BANDS.map((band, index) => {
+    const previousMax = index === 0 ? 0 : PROMPT_SIZE_BANDS[index - 1]?.max || 0;
+    const bandRows = promptRows.filter(
+      (row) => row.promptTextLength >= previousMax && row.promptTextLength < band.max,
+    );
+    return {
+      label: band.label,
+      count: bandRows.length,
+      avgLatencyMs: average(bandRows.map(getEffectiveLatency)),
+      p95LatencyMs: percentile(bandRows.map(getEffectiveLatency), 0.95),
+      avgPromptChars: average(bandRows.map((row) => row.promptTextLength)),
+    };
+  });
+}
+
 function buildStageBreakdown(rows: PerformanceRow[]) {
   return (["cold", "hot"] as const)
     .map((key) => {
@@ -515,7 +555,7 @@ function buildBufferLeaderboard(rows: PerformanceRow[]) {
     }))
     .filter((row) => row.count >= 2)
     .sort((left, right) => right.avgLatencyMs - left.avgLatencyMs || right.count - left.count)
-    .slice(0, 6);
+    .slice(0, 5);
 }
 
 function groupRows(rows: PerformanceRow[], getKey: (row: PerformanceRow) => string) {

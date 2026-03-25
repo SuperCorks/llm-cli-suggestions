@@ -274,6 +274,10 @@ func resolvePathSearchRoot(cwd, token string) (string, string, string, bool) {
 		searchDir = filepath.Join(homeDir, filepath.Dir(strings.TrimPrefix(token, "~/")))
 		dirPrefix = token[:strings.LastIndex(token, "/")+1]
 		basePrefix = token[strings.LastIndex(token, "/")+1:]
+	} else if token == "." || token == ".." {
+		dirPrefix = token + "/"
+		basePrefix = ""
+		searchDir = filepath.Join(cwd, filepath.Clean(token))
 	} else if strings.Contains(token, "/") {
 		dirPart := token[:strings.LastIndex(token, "/")+1]
 		basePrefix = token[strings.LastIndex(token, "/")+1:]

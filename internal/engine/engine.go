@@ -764,11 +764,6 @@ func BuildPrompt(
 	}
 	builder.WriteString(systemPrompt)
 	builder.WriteString("\n\n")
-	if strings.TrimSpace(request.Buffer) == "" {
-		builder.WriteString("buffer is empty right now. Use last_command and recent context to suggest one full command only when there is a clear, high-confidence next step.\n")
-		builder.WriteString("buffer is empty right now. Prefer the most likely correction of the last command or the most likely immediate follow-up command.\n")
-		builder.WriteString("buffer is empty right now. If there is no clear next step, return an empty response.\n\n")
-	}
 	builder.WriteString(fmt.Sprintf("cwd: %s\n", request.CWD))
 	builder.WriteString(fmt.Sprintf("repo_root: %s\n", request.RepoRoot))
 	builder.WriteString(fmt.Sprintf("branch: %s\n", request.Branch))
@@ -792,9 +787,15 @@ func BuildPrompt(
 	appendPromptList(&builder, "git_branch_matches", retrievedContext.GitBranchMatches)
 	appendPromptList(&builder, "project_tasks", retrievedContext.ProjectTasks)
 	appendPromptList(&builder, "project_task_matches", retrievedContext.ProjectTaskMatches)
-	builder.WriteString("\ncurrent_buffer:\n")
-	builder.WriteString(request.Buffer)
-	builder.WriteString("\n")
+	if strings.TrimSpace(request.Buffer) == "" {
+		builder.WriteString("\nbuffer is empty right now. Use last_command and recent context to suggest one full command only when there is a clear, high-confidence next step.\n")
+		builder.WriteString("buffer is empty right now. Prefer the most likely correction of the last command or the most likely immediate follow-up command.\n")
+		builder.WriteString("buffer is empty right now. If there is no clear next step, return an empty response.\n")
+	} else {
+		builder.WriteString("\ncurrent_buffer:\n")
+		builder.WriteString(request.Buffer)
+		builder.WriteString("\n")
+	}
 	return builder.String()
 }
 

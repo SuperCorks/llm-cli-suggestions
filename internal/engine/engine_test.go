@@ -115,8 +115,8 @@ func TestSuggestAllowsEmptyBufferWithLastCommandContext(t *testing.T) {
 	if !strings.Contains(observedPrompt, "last_command: git puhs") {
 		t.Fatalf("expected last command in prompt, got %q", observedPrompt)
 	}
-	if !strings.Contains(observedPrompt, "current_buffer:\n\n") {
-		t.Fatalf("expected empty current_buffer block, got %q", observedPrompt)
+	if strings.Contains(observedPrompt, "current_buffer:") {
+		t.Fatalf("did not expect current_buffer block for empty buffer, got %q", observedPrompt)
 	}
 	if strings.Contains(observedPrompt, "matching_history:") {
 		t.Fatalf("did not expect history matches for empty buffer, got %q", observedPrompt)
@@ -150,6 +150,14 @@ func TestSuggestAllowsEmptyBufferWithLastCommandContext(t *testing.T) {
 	}
 	if strings.Contains(observedPrompt, "buffer is empty right now. If there is no clear next step, return an empty response.") == false {
 		t.Fatalf("expected empty-buffer empty-response guidance, got %q", observedPrompt)
+	}
+	if !strings.HasSuffix(
+		observedPrompt,
+		"buffer is empty right now. Use last_command and recent context to suggest one full command only when there is a clear, high-confidence next step.\n"+
+			"buffer is empty right now. Prefer the most likely correction of the last command or the most likely immediate follow-up command.\n"+
+			"buffer is empty right now. If there is no clear next step, return an empty response.\n",
+	) {
+		t.Fatalf("expected empty-buffer guidance at end of prompt, got %q", observedPrompt)
 	}
 	if strings.Contains(observedPrompt, "The returned command must begin exactly with the current buffer.") == false {
 		t.Fatalf("expected base system prompt in prompt, got %q", observedPrompt)
@@ -204,6 +212,40 @@ func TestInspectIncludesPathRetrievedContext(t *testing.T) {
 	}
 	if !strings.Contains(response.Prompt, "path_matches:") {
 		t.Fatalf("expected prompt to include path matches, got %q", response.Prompt)
+	}
+}
+
+func TestInspectTreatsDotDotLikeDirectoryPrefixForPathRetrieval(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cwd := filepath.Join(root, "child")
+	mustMkdir(t, cwd)
+	mustMkdir(t, filepath.Join(root, "sibling"))
+	mustMkdir(t, filepath.Join(root, "scripts"))
+
+	engine := newTestEngine(t)
+	response, err := engine.Inspect(context.Background(), api.InspectRequest{
+		SessionID: "test-session",
+		Buffer:    "cd ..",
+		CWD:       cwd,
+		RepoRoot:  root,
+	})
+	if err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+
+	if len(response.RetrievedContext.PathMatches) == 0 {
+		t.Fatalf("expected path matches")
+	}
+	if !containsString(response.RetrievedContext.PathMatches, "../sibling/") {
+		t.Fatalf("expected ../sibling/ in path matches, got %#v", response.RetrievedContext.PathMatches)
+	}
+	if response.Winner == nil {
+		t.Fatalf("expected winner")
+	}
+	if !strings.Contains(response.Winner.Source, "path") {
+		t.Fatalf("expected path-backed winner, got %#v", response.Winner)
 	}
 }
 

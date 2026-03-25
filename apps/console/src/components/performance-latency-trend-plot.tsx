@@ -321,3 +321,173 @@ export function PerformanceLatencyDistributionPlot({
     </div>
   );
 }
+
+export function PerformancePromptSizeLatencyPlot({
+  rows,
+}: {
+  rows: PerformanceDashboardData["promptSizeHistogram"];
+}) {
+  const activeRows = rows.filter((row) => row.count > 0);
+
+  if (activeRows.length === 0) {
+    return <p className="helper-text">No stored prompt snapshots matched the current filters.</p>;
+  }
+
+  const xValues = rows.map((_, index) => index);
+  const tickText = rows.map((row) => row.label);
+  const countValues = rows.map((row) => row.count);
+  const avgLatencyValues = rows.map((row) => (row.count > 0 ? row.avgLatencyMs : null));
+  const p95LatencyValues = rows.map((row) => (row.count > 0 ? row.p95LatencyMs : null));
+  const customData = rows.map((row) => [row.avgPromptChars, row.avgLatencyMs, row.p95LatencyMs]);
+
+  return (
+    <div className="performance-chart-shell">
+      <Plot
+        className="performance-plot"
+        data={[
+          {
+            x: xValues,
+            y: countValues,
+            type: "bar",
+            name: "Requests",
+            width: 0.72,
+            yaxis: "y",
+            customdata: customData,
+            marker: {
+              color: "rgba(139, 211, 159, 0.26)",
+              line: {
+                color: "#8bd39f",
+                width: 1,
+              },
+            },
+            hovertemplate:
+              "%{x}<br>Requests: %{y}" +
+              "<br>Avg. prompt: %{customdata[0]:.0f} chars" +
+              "<br>Avg. latency: %{customdata[1]:.0f} ms" +
+              "<br>P95 latency: %{customdata[2]:.0f} ms<extra></extra>",
+          },
+          {
+            x: xValues,
+            y: avgLatencyValues,
+            type: "scatter",
+            mode: "lines+markers",
+            name: "Avg. latency",
+            yaxis: "y2",
+            line: {
+              color: "#b3c8e7",
+              width: 1.8,
+              shape: "linear",
+            },
+            marker: {
+              size: 7,
+              color: "#b3c8e7",
+              line: {
+                width: 1.5,
+                color: "#1a1a1a",
+              },
+            },
+            connectgaps: true,
+            hovertemplate: "%{y:.0f} ms<extra></extra>",
+          },
+          {
+            x: xValues,
+            y: p95LatencyValues,
+            type: "scatter",
+            mode: "lines+markers",
+            name: "P95 latency",
+            yaxis: "y2",
+            line: {
+              color: "#f3c47d",
+              width: 1.8,
+              shape: "linear",
+            },
+            marker: {
+              size: 7,
+              color: "#f3c47d",
+              line: {
+                width: 1.5,
+                color: "#1a1a1a",
+              },
+            },
+            connectgaps: true,
+            hovertemplate: "%{y:.0f} ms<extra></extra>",
+          },
+        ]}
+        layout={{
+          autosize: true,
+          bargap: 0.22,
+          paper_bgcolor: "transparent",
+          plot_bgcolor: "transparent",
+          margin: { l: 52, r: 56, t: 16, b: 72 },
+          showlegend: true,
+          legend: {
+            orientation: "h",
+            x: 0,
+            y: 1.14,
+            xanchor: "left",
+            yanchor: "bottom",
+            bgcolor: "rgba(0, 0, 0, 0)",
+            font: { color: "#8e9197", size: 12 },
+          },
+          hoverlabel: {
+            bgcolor: "#12161d",
+            bordercolor: "rgba(179, 200, 231, 0.18)",
+            font: { color: "#f5f7fb", size: 12 },
+          },
+          xaxis: {
+            type: "linear",
+            automargin: true,
+            showgrid: false,
+            showline: false,
+            zeroline: false,
+            tickfont: { color: "#8e9197", size: 12 },
+            tickmode: "array",
+            tickvals: xValues,
+            ticktext: tickText,
+            range: [-0.5, Math.max(rows.length - 0.5, 0.5)],
+          },
+          yaxis: {
+            automargin: true,
+            rangemode: "tozero",
+            showline: false,
+            zeroline: false,
+            gridcolor: "rgba(142, 145, 151, 0.14)",
+            tickfont: { color: "#8e9197", size: 12 },
+            tickmode: "auto",
+            nticks: 6,
+            tickformat: ",d",
+            title: {
+              text: "Requests",
+              font: { color: "#8e9197", size: 12 },
+            },
+          },
+          yaxis2: {
+            automargin: true,
+            rangemode: "tozero",
+            overlaying: "y",
+            side: "right",
+            showgrid: false,
+            zeroline: false,
+            tickfont: { color: "#8e9197", size: 12 },
+            ticksuffix: " ms",
+            title: {
+              text: "Latency",
+              font: { color: "#8e9197", size: 12 },
+            },
+          },
+        }}
+        config={{
+          displayModeBar: false,
+          responsive: true,
+        }}
+        style={{ width: "100%", height: 340 }}
+        useResizeHandler
+      />
+      <div className="performance-chart-legend">
+        <span className="helper-text">
+          Bars show request count per prompt-size bucket. Lines show average and p95 request latency.
+        </span>
+      </div>
+    </div>
+  );
+}

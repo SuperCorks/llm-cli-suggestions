@@ -2,6 +2,7 @@ import Link from "next/link";
 
 import {
   PerformanceLatencyDistributionPlot,
+  PerformancePromptSizeLatencyPlot,
   PerformanceLatencyTrendPlot,
 } from "@/components/performance-latency-trend-plot";
 import { Panel } from "@/components/panel";
@@ -152,162 +153,169 @@ export function PerformanceDashboard({ data, activeModel }: PerformanceDashboard
         />
       </div>
 
-      <div className="performance-grid performance-grid-featured">
-        <Panel
-          title="Latency Trend"
-          subtitle="Track average and p95 latency across the selected window, with hot and cold request curves layered on top."
-        >
-          <PerformanceLatencyTrendPlot
-            points={data.timeline.points}
-            bucketLabelFormat={data.timeline.bucketLabelFormat}
-          />
-        </Panel>
+      <div className="performance-dashboard-layout">
+        <div className="stack-lg performance-dashboard-column performance-dashboard-column-main">
+          <Panel
+            title="Latency Trend"
+            subtitle="Track average and p95 latency across the selected window, with hot and cold request curves layered on top."
+          >
+            <PerformanceLatencyTrendPlot
+              points={data.timeline.points}
+              bucketLabelFormat={data.timeline.bucketLabelFormat}
+            />
+          </Panel>
 
-        <Panel
-          title="Start State Split"
-          subtitle="See how often the model had to wake up and what that did to the tail."
-        >
-          <div className="stack-md">
-            <div className="performance-state-rail">
-              {data.startStates.map((state) => (
-                <div
-                  key={state.key}
-                  className="performance-state-segment"
-                  style={{
-                    width: `${Math.max(state.share * 100, 6)}%`,
-                    background: STATE_COLORS[state.key],
-                  }}
-                  title={`${state.label}: ${formatCompactNumber(state.count)} rows`}
-                />
-              ))}
+          <Panel
+            title="Latency Distribution"
+            subtitle="Spot whether the pain is concentrated in the tail or spread across the whole request mix."
+          >
+            <LatencyHistogramChart rows={data.histogram} />
+          </Panel>
+
+          <Panel
+            title="Prompt Size vs Latency"
+            subtitle="Bucket stored prompt snapshots by size so we can see whether larger prompts correlate with slower request tails."
+          >
+            <PerformancePromptSizeLatencyPlot rows={data.promptSizeHistogram} />
+          </Panel>
+        </div>
+
+        <div className="stack-lg performance-dashboard-column performance-dashboard-column-side">
+          <Panel
+            title="Start State Split"
+            subtitle="See how often the model had to wake up and what that did to the tail."
+          >
+            <div className="stack-md">
+              <div className="performance-state-rail">
+                {data.startStates.map((state) => (
+                  <div
+                    key={state.key}
+                    className="performance-state-segment"
+                    style={{
+                      width: `${Math.max(state.share * 100, 6)}%`,
+                      background: STATE_COLORS[state.key],
+                    }}
+                    title={`${state.label}: ${formatCompactNumber(state.count)} rows`}
+                  />
+                ))}
+              </div>
+              <ul className="metric-list performance-state-list">
+                {data.startStates.map((state) => (
+                  <li key={state.key}>
+                    <div className="performance-state-copy">
+                      <span className="performance-legend">
+                        <span
+                          className="performance-legend-dot"
+                          style={{ background: STATE_COLORS[state.key] }}
+                          aria-hidden="true"
+                        />
+                        {state.label}
+                      </span>
+                      <small>
+                        {formatCompactNumber(state.count)} rows · {formatPercent(state.share)}
+                      </small>
+                    </div>
+                    <div className="performance-state-metrics">
+                      <strong>{formatDurationMs(state.p95LatencyMs)}</strong>
+                      <small>
+                        avg {formatDurationMs(state.avgLatencyMs)}
+                        {state.avgLoadDurationMs > 0 ? ` · load ${formatDurationMs(state.avgLoadDurationMs)}` : ""}
+                      </small>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+              <p className="helper-text">
+                Instrumentation coverage: {formatPercent(instrumentationRate)} of model-invoked rows
+                {data.instrumentation.unknownStartStateCount > 0
+                  ? `, with ${formatCompactNumber(data.instrumentation.unknownStartStateCount)} row(s) still missing wake/load metadata.`
+                  : "."}
+              </p>
             </div>
-            <ul className="metric-list performance-state-list">
-              {data.startStates.map((state) => (
-                <li key={state.key}>
-                  <div className="performance-state-copy">
-                    <span className="performance-legend">
-                      <span
-                        className="performance-legend-dot"
-                        style={{ background: STATE_COLORS[state.key] }}
-                        aria-hidden="true"
-                      />
-                      {state.label}
-                    </span>
-                    <small>
-                      {formatCompactNumber(state.count)} rows · {formatPercent(state.share)}
-                    </small>
+          </Panel>
+
+          <Panel
+            title="Where Time Goes"
+            subtitle="Average request phase breakdown for fully instrumented cold and hot model requests."
+          >
+            <div className="stack-md">
+              {data.stageBreakdown.map((row) => (
+                <StageBreakdownRow key={row.key} row={row} />
+              ))}
+              {data.stageBreakdown.length === 0 ? (
+                <p className="helper-text">No instrumented model rows matched the current filters.</p>
+              ) : null}
+            </div>
+          </Panel>
+
+          <Panel
+            title="Slow Buffer Patterns"
+            subtitle="Repeated prefixes with the highest sustained latency so we can find problem prompts or wake-heavy flows."
+          >
+            <ul className="metric-list performance-hotspot-list">
+              {data.bufferLeaderboard.map((row) => (
+                <li key={row.buffer}>
+                  <div>
+                    <code>{row.buffer}</code>
+                    <p className="helper-text">
+                      {formatCompactNumber(row.count)} rows · {formatCompactNumber(row.coldCount)} cold
+                    </p>
                   </div>
-                  <div className="performance-state-metrics">
-                    <strong>{formatDurationMs(state.p95LatencyMs)}</strong>
-                    <small>
-                      avg {formatDurationMs(state.avgLatencyMs)}
-                      {state.avgLoadDurationMs > 0 ? ` · load ${formatDurationMs(state.avgLoadDurationMs)}` : ""}
-                    </small>
+                  <div className="performance-hotspot-metrics">
+                    <strong>{formatDurationMs(row.avgLatencyMs)}</strong>
+                    <small>p95 {formatDurationMs(row.p95LatencyMs)}</small>
                   </div>
                 </li>
               ))}
+              {data.bufferLeaderboard.length === 0 ? (
+                <li>No repeated buffers met the hotspot threshold in this slice.</li>
+              ) : null}
             </ul>
-            <p className="helper-text">
-              Instrumentation coverage: {formatPercent(instrumentationRate)} of model-invoked rows
-              {data.instrumentation.unknownStartStateCount > 0
-                ? `, with ${formatCompactNumber(data.instrumentation.unknownStartStateCount)} row(s) still missing wake/load metadata.`
-                : "."}
-            </p>
-          </div>
-        </Panel>
-      </div>
+          </Panel>
 
-      <div className="performance-grid">
-        <Panel
-          title="Latency Distribution"
-          subtitle="Spot whether the pain is concentrated in the tail or spread across the whole request mix."
-        >
-          <LatencyHistogramChart rows={data.histogram} />
-        </Panel>
-
-        <Panel
-          title="Where Time Goes"
-          subtitle="Average request phase breakdown for fully instrumented cold and hot model requests."
-        >
-          <div className="stack-md">
-            {data.stageBreakdown.map((row) => (
-              <StageBreakdownRow key={row.key} row={row} />
-            ))}
-            {data.stageBreakdown.length === 0 ? (
-              <p className="helper-text">No instrumented model rows matched the current filters.</p>
-            ) : null}
-          </div>
-        </Panel>
-      </div>
-
-      <div className="performance-grid">
-        <Panel
-          title="Path Hotspots"
-          subtitle="The slowest working directories by tail latency, so we can see where context shape or model wake-ups hurt most."
-        >
-          <div className="table-wrap">
-            <table className="performance-table">
-              <thead>
-                <tr>
-                  <th>Path</th>
-                  <th>Samples</th>
-                  <th>Avg.</th>
-                  <th>P95</th>
-                  <th>Cold Share</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.cwdLeaderboard.map((row) => (
-                  <tr key={row.path}>
-                    <td>
-                      {row.path === "(no path)" ? (
-                        row.path
-                      ) : (
-                        <PathHoverActions pathValue={row.path} label="Latency path" variant="inline">
-                          <span>{row.path}</span>
-                        </PathHoverActions>
-                      )}
-                    </td>
-                    <td>{formatCompactNumber(row.count)}</td>
-                    <td>{formatDurationMs(row.avgLatencyMs)}</td>
-                    <td>{formatDurationMs(row.p95LatencyMs)}</td>
-                    <td>{formatPercent(row.coldShare)}</td>
-                  </tr>
-                ))}
-                {data.cwdLeaderboard.length === 0 ? (
+          <Panel
+            title="Path Hotspots"
+            subtitle="The slowest working directories by tail latency, so we can see where context shape or model wake-ups hurt most."
+          >
+            <div className="table-wrap">
+              <table className="performance-table">
+                <thead>
                   <tr>
-                    <td colSpan={5}>No path hotspots matched the current filters.</td>
+                    <th>Path</th>
+                    <th>Samples</th>
+                    <th>Avg.</th>
+                    <th>P95</th>
+                    <th>Cold Share</th>
                   </tr>
-                ) : null}
-              </tbody>
-            </table>
-          </div>
-        </Panel>
-
-        <Panel
-          title="Slow Buffer Patterns"
-          subtitle="Repeated prefixes with the highest sustained latency so we can find problem prompts or wake-heavy flows."
-        >
-          <ul className="metric-list performance-hotspot-list">
-            {data.bufferLeaderboard.map((row) => (
-              <li key={row.buffer}>
-                <div>
-                  <code>{row.buffer}</code>
-                  <p className="helper-text">
-                    {formatCompactNumber(row.count)} rows · {formatCompactNumber(row.coldCount)} cold
-                  </p>
-                </div>
-                <div className="performance-hotspot-metrics">
-                  <strong>{formatDurationMs(row.avgLatencyMs)}</strong>
-                  <small>p95 {formatDurationMs(row.p95LatencyMs)}</small>
-                </div>
-              </li>
-            ))}
-            {data.bufferLeaderboard.length === 0 ? (
-              <li>No repeated buffers met the hotspot threshold in this slice.</li>
-            ) : null}
-          </ul>
-        </Panel>
+                </thead>
+                <tbody>
+                  {data.cwdLeaderboard.map((row) => (
+                    <tr key={row.path}>
+                      <td>
+                        {row.path === "(no path)" ? (
+                          row.path
+                        ) : (
+                          <PathHoverActions pathValue={row.path} label="Latency path" variant="inline">
+                            <span>{row.path}</span>
+                          </PathHoverActions>
+                        )}
+                      </td>
+                      <td>{formatCompactNumber(row.count)}</td>
+                      <td>{formatDurationMs(row.avgLatencyMs)}</td>
+                      <td>{formatDurationMs(row.p95LatencyMs)}</td>
+                      <td>{formatPercent(row.coldShare)}</td>
+                    </tr>
+                  ))}
+                  {data.cwdLeaderboard.length === 0 ? (
+                    <tr>
+                      <td colSpan={5}>No path hotspots matched the current filters.</td>
+                    </tr>
+                  ) : null}
+                </tbody>
+              </table>
+            </div>
+          </Panel>
+        </div>
       </div>
 
       <Panel

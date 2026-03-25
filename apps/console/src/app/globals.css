@@ -2424,6 +2424,17 @@ th {
   grid-template-columns: minmax(0, 1.5fr) minmax(320px, 0.9fr);
 }
 
+.performance-dashboard-layout {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 24px;
+  align-items: start;
+}
+
+.performance-dashboard-column {
+  min-width: 0;
+}
+
 .performance-chart-shell {
   display: grid;
   gap: 14px;
@@ -2641,7 +2652,8 @@ th {
   .overview-grid,
   .overview-grid.lower,
   .performance-grid,
-  .performance-grid-featured {
+  .performance-grid-featured,
+  .performance-dashboard-layout {
     grid-template-columns: 1fr;
   }
 

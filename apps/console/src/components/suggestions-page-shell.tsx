@@ -2,7 +2,8 @@
 
 import { ChevronDown, Copy, X } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import { startTransition, useEffect, useEffectEvent, useMemo, useState } from "react";
 
 import { Panel } from "@/components/panel";
 import { PathHoverActions } from "@/components/path-hover-actions";
@@ -126,6 +127,10 @@ function describeActiveFilters(filters: SuggestionsPageShellProps["filters"]) {
   return items;
 }
 
+function formatCharacterCount(value: string) {
+  return `${new Intl.NumberFormat("en-CA").format(value.length)} chars`;
+}
+
 export function SuggestionsPageShell({
   rows,
   total,
@@ -138,6 +143,7 @@ export function SuggestionsPageShell({
   sourceOptions,
   filters,
 }: SuggestionsPageShellProps) {
+  const router = useRouter();
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [copiedField, setCopiedField] = useState<"context" | "id" | null>(null);
   const [filtersCollapsed, setFiltersCollapsed] = useState(true);
@@ -149,6 +155,15 @@ export function SuggestionsPageShell({
   const activeFilterSummary = describeActiveFilters(filters);
 
   const selectedEntry = entries.find((entry) => entry.row.id === selectedId) || null;
+  const refreshSuggestions = useEffectEvent(() => {
+    if (document.visibilityState !== "visible") {
+      return;
+    }
+
+    startTransition(() => {
+      router.refresh();
+    });
+  });
 
   useEffect(() => {
     if (selectedId === null) {
@@ -167,6 +182,21 @@ export function SuggestionsPageShell({
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [selectedId]);
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      refreshSuggestions();
+    }, 2_000);
+
+    window.addEventListener("focus", refreshSuggestions);
+    document.addEventListener("visibilitychange", refreshSuggestions);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", refreshSuggestions);
+      document.removeEventListener("visibilitychange", refreshSuggestions);
+    };
+  }, []);
 
   function closeSidebar() {
     setSelectedId(null);
@@ -323,6 +353,7 @@ export function SuggestionsPageShell({
         <Panel
           title="Suggestion History"
           subtitle={`Showing ${startIndex}-${endIndex} of ${total} suggestions.`}
+          actions={<span className="stream-indicator stream-indicator-live">[LIVE]</span>}
         >
           <div className="suggestions-toolbar">
             <div className="suggestions-toolbar-copy">
@@ -594,6 +625,11 @@ export function SuggestionsPageShell({
 
             <div className="detail-block">
               <h3>Prompt Snapshot</h3>
+              <p className="helper-text">
+                {selectedEntry.row.promptText
+                  ? formatCharacterCount(selectedEntry.row.promptText)
+                  : "No prompt snapshot recorded."}
+              </p>
               <pre className="code-block code-block-tall suggestion-sidebar-pre">
                 {selectedEntry.row.promptText || "No prompt snapshot."}
               </pre>

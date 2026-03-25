@@ -41,6 +41,7 @@ Shows:
 - cold versus hot start splits based on persisted Ollama load-duration metadata, with graceful fallback to an unknown state for historical rows that predate the instrumentation
 - comparison against the immediately previous matching window for average latency, p95 latency, and cold-start share
 - a Plotly-powered latency trend and latency-distribution charts for better date-axis handling and hover inspection
+- a prompt-size-versus-latency chart that buckets stored prompt snapshots by size and overlays average plus p95 request latency
 - request-phase breakdowns for load, prompt evaluation, decode, and non-model overhead
 - path and buffer hotspot leaderboards for slow tails
 - source-level latency cards to compare history, retrieval, and model-heavy traffic at a glance
@@ -66,6 +67,7 @@ Shows paginated suggestion history with filters for:
 - a wider full-canvas layout on the suggestions explorer so the table can use the full screen width instead of the default content cap
 - a collapsible Filters & Sort panel that starts closed so the history table stays primary while still surfacing active filter summaries
 - a right-side detail drawer that flies over the page instead of shrinking the history table when a suggestion snapshot is opened
+- automatic in-place refresh of the suggestions history every 2 seconds so newly logged rows appear without a manual reload while current filters and drawer state stay intact
 
 ### Commands And Feedback
 
