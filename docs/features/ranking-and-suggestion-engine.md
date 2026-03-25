@@ -38,6 +38,10 @@ The engine uses these inputs when choosing a suggestion:
 
 When the current buffer is empty, the engine does not open history-prefix matching or token retrieval against the whole command corpus. Instead, it only permits a model-backed suggestion when there is a non-empty `last_command` context available. The prompt appends explicit empty-buffer guidance at the end of the snapshot, in place of a blank `current_buffer` block, so the model sees the normal request context first and then the instruction to prefer either a correction of the last command, an immediate follow-up command, or an empty response when there is no clear next step.
 
+## Prompt Shape
+
+For live suggestions, the prompt now collapses `last_command`, recent command lists, recent command context, and recent output context into one deduplicated `recent_context` block. That keeps the most useful recent command and output details while reducing repeated command names in the prompt snapshot.
+
 ## Candidate Sources
 
 - `history`

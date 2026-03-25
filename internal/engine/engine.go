@@ -769,19 +769,7 @@ func BuildPrompt(
 	builder.WriteString(fmt.Sprintf("branch: %s\n", request.Branch))
 	builder.WriteString(fmt.Sprintf("last_exit_code: %d\n", request.LastExitCode))
 	builder.WriteString(fmt.Sprintf("current_token: %s\n", retrievedContext.CurrentToken))
-	if len(lastCommandContext) > 0 {
-		builder.WriteString(fmt.Sprintf("last_command: %s\n", lastCommandContext[0].Command))
-	} else if lastContext.Command != "" {
-		builder.WriteString(fmt.Sprintf("last_command: %s\n", lastContext.Command))
-	}
-	appendLastCommandContext(&builder, lastCommandContext)
-	builder.WriteString("recent_commands:\n")
-	for _, command := range recentCommands {
-		builder.WriteString("- ")
-		builder.WriteString(command)
-		builder.WriteString("\n")
-	}
-	appendRecentOutputContext(&builder, recentOutputContext)
+	appendRecentContext(&builder, recentCommands, lastContext, lastCommandContext, recentOutputContext)
 	appendPromptList(&builder, "matching_history", retrievedContext.HistoryMatches)
 	appendPromptList(&builder, "path_matches", retrievedContext.PathMatches)
 	appendPromptList(&builder, "git_branch_matches", retrievedContext.GitBranchMatches)
@@ -799,33 +787,108 @@ func BuildPrompt(
 	return builder.String()
 }
 
-func appendLastCommandContext(builder *strings.Builder, contexts []api.InspectCommandContext) {
-	if len(contexts) == 0 {
+type promptRecentContextEntry struct {
+	Command       string
+	LastCommand   bool
+	HasExitCode   bool
+	ExitCode      int
+	StdoutExcerpt string
+	StderrExcerpt string
+}
+
+func appendRecentContext(
+	builder *strings.Builder,
+	recentCommands []string,
+	lastContext db.CommandContext,
+	lastCommandContext []api.InspectCommandContext,
+	recentOutputContext []api.InspectRecentOutputContext,
+) {
+	entries := []promptRecentContextEntry{}
+	indexByCommand := map[string]int{}
+
+	ensureEntry := func(command string) *promptRecentContextEntry {
+		command = strings.TrimSpace(command)
+		if command == "" {
+			return nil
+		}
+		if index, exists := indexByCommand[command]; exists {
+			return &entries[index]
+		}
+		indexByCommand[command] = len(entries)
+		entries = append(entries, promptRecentContextEntry{Command: command})
+		return &entries[len(entries)-1]
+	}
+
+	mergeEntry := func(
+		command string,
+		lastCommand bool,
+		hasExitCode bool,
+		exitCode int,
+		stdoutExcerpt string,
+		stderrExcerpt string,
+	) {
+		entry := ensureEntry(command)
+		if entry == nil {
+			return
+		}
+		entry.LastCommand = entry.LastCommand || lastCommand
+		if hasExitCode && !entry.HasExitCode {
+			entry.HasExitCode = true
+			entry.ExitCode = exitCode
+		}
+		if entry.StdoutExcerpt == "" && strings.TrimSpace(stdoutExcerpt) != "" {
+			entry.StdoutExcerpt = stdoutExcerpt
+		}
+		if entry.StderrExcerpt == "" && strings.TrimSpace(stderrExcerpt) != "" {
+			entry.StderrExcerpt = stderrExcerpt
+		}
+	}
+
+	for _, context := range lastCommandContext {
+		mergeEntry(context.Command, false, true, context.ExitCode, context.StdoutExcerpt, context.StderrExcerpt)
+	}
+	for _, command := range recentCommands {
+		mergeEntry(command, false, false, 0, "", "")
+	}
+	for _, snippet := range recentOutputContext {
+		mergeEntry(snippet.Command, false, true, snippet.ExitCode, snippet.StdoutExcerpt, snippet.StderrExcerpt)
+	}
+	mergeEntry(
+		lastContext.Command,
+		lastContext.Command != "",
+		lastContext.Command != "",
+		lastContext.ExitCode,
+		lastContext.StdoutExcerpt,
+		lastContext.StderrExcerpt,
+	)
+	if len(lastCommandContext) > 0 {
+		mergeEntry(
+			lastCommandContext[0].Command,
+			true,
+			true,
+			lastCommandContext[0].ExitCode,
+			lastCommandContext[0].StdoutExcerpt,
+			lastCommandContext[0].StderrExcerpt,
+		)
+	}
+
+	if len(entries) == 0 {
 		return
 	}
 
-	builder.WriteString("last_command_context:\n")
-	for _, context := range contexts {
+	builder.WriteString("recent_context:\n")
+	for _, entry := range entries {
 		builder.WriteString("- command: ")
-		builder.WriteString(context.Command)
+		builder.WriteString(entry.Command)
 		builder.WriteString("\n")
-		builder.WriteString(fmt.Sprintf("  exit_code: %d\n", context.ExitCode))
-		if context.StdoutExcerpt != "" {
-			builder.WriteString("  stdout_excerpt:\n")
-			for _, line := range strings.Split(context.StdoutExcerpt, "\n") {
-				builder.WriteString("    ")
-				builder.WriteString(line)
-				builder.WriteString("\n")
-			}
+		if entry.LastCommand {
+			builder.WriteString("  last_command: true\n")
 		}
-		if context.StderrExcerpt != "" {
-			builder.WriteString("  stderr_excerpt:\n")
-			for _, line := range strings.Split(context.StderrExcerpt, "\n") {
-				builder.WriteString("    ")
-				builder.WriteString(line)
-				builder.WriteString("\n")
-			}
+		if entry.HasExitCode {
+			builder.WriteString(fmt.Sprintf("  exit_code: %d\n", entry.ExitCode))
 		}
+		appendIndentedBlock(builder, "stdout_excerpt", entry.StdoutExcerpt)
+		appendIndentedBlock(builder, "stderr_excerpt", entry.StderrExcerpt)
 	}
 }
 
@@ -844,22 +907,6 @@ func toInspectCommandContexts(values []db.RecentCommandContext) []api.InspectCom
 		})
 	}
 	return result
-}
-
-func appendRecentOutputContext(builder *strings.Builder, snippets []api.InspectRecentOutputContext) {
-	if len(snippets) == 0 {
-		return
-	}
-
-	builder.WriteString("recent_output_context:\n")
-	for _, snippet := range snippets {
-		builder.WriteString("- command: ")
-		builder.WriteString(snippet.Command)
-		builder.WriteString("\n")
-		builder.WriteString(fmt.Sprintf("  exit_code: %d\n", snippet.ExitCode))
-		appendIndentedBlock(builder, "stdout_excerpt", snippet.StdoutExcerpt)
-		appendIndentedBlock(builder, "stderr_excerpt", snippet.StderrExcerpt)
-	}
 }
 
 func appendIndentedBlock(builder *strings.Builder, label, text string) {

@@ -112,8 +112,14 @@ func TestSuggestAllowsEmptyBufferWithLastCommandContext(t *testing.T) {
 	if !strings.Contains(observedPrompt, "buffer is empty right now. Use last_command and recent context") {
 		t.Fatalf("expected empty-buffer prompt guidance, got %q", observedPrompt)
 	}
-	if !strings.Contains(observedPrompt, "last_command: git puhs") {
-		t.Fatalf("expected last command in prompt, got %q", observedPrompt)
+	if !strings.Contains(observedPrompt, "recent_context:") {
+		t.Fatalf("expected recent_context block, got %q", observedPrompt)
+	}
+	if !strings.Contains(observedPrompt, "- command: git puhs") {
+		t.Fatalf("expected last command in recent_context, got %q", observedPrompt)
+	}
+	if !strings.Contains(observedPrompt, "  last_command: true") {
+		t.Fatalf("expected last_command marker in prompt, got %q", observedPrompt)
 	}
 	if strings.Contains(observedPrompt, "current_buffer:") {
 		t.Fatalf("did not expect current_buffer block for empty buffer, got %q", observedPrompt)
@@ -139,8 +145,8 @@ func TestSuggestAllowsEmptyBufferWithLastCommandContext(t *testing.T) {
 	if strings.Contains(observedPrompt, "matching_history:") {
 		t.Fatalf("did not expect history candidates for empty buffer")
 	}
-	if strings.Contains(observedPrompt, "recent_commands:\n- git puhs") == false {
-		t.Fatalf("expected recent commands in prompt, got %q", observedPrompt)
+	if strings.Contains(observedPrompt, "recent_commands:") {
+		t.Fatalf("did not expect separate recent_commands block, got %q", observedPrompt)
 	}
 	if strings.Contains(observedPrompt, "last_exit_code: 1") == false {
 		t.Fatalf("expected last exit code in prompt, got %q", observedPrompt)
@@ -171,11 +177,11 @@ func TestSuggestAllowsEmptyBufferWithLastCommandContext(t *testing.T) {
 	if strings.Contains(observedPrompt, "repo_root: /tmp/project") == false {
 		t.Fatalf("expected repo_root in prompt, got %q", observedPrompt)
 	}
-	if strings.Contains(observedPrompt, "recent_commands:") == false {
-		t.Fatalf("expected recent commands section, got %q", observedPrompt)
+	if strings.Contains(observedPrompt, "last_command_context:") {
+		t.Fatalf("did not expect separate last_command_context block, got %q", observedPrompt)
 	}
-	if strings.Contains(observedPrompt, "last_command_context:") == false {
-		t.Fatalf("expected last command context section, got %q", observedPrompt)
+	if strings.Contains(observedPrompt, "recent_output_context:") {
+		t.Fatalf("did not expect separate recent_output_context block, got %q", observedPrompt)
 	}
 }
 
@@ -402,8 +408,8 @@ func TestInspectFallsBackToCWDContextWhenSessionIsEmpty(t *testing.T) {
 	if !containsRecentOutputCommand(response.RecentOutputContext, `copilot --prompt "hi"`) {
 		t.Fatalf("expected cwd fallback output context for copilot prompt, got %#v", response.RecentOutputContext)
 	}
-	if !strings.Contains(response.Prompt, "recent_commands:") {
-		t.Fatalf("expected prompt to include recent commands, got %q", response.Prompt)
+	if !strings.Contains(response.Prompt, "recent_context:") {
+		t.Fatalf("expected prompt to include merged recent context, got %q", response.Prompt)
 	}
 }
 
@@ -512,8 +518,8 @@ func TestInspectIncludesRecentOutputContextAndOutputBonus(t *testing.T) {
 	if len(response.RecentOutputContext) == 0 {
 		t.Fatalf("expected recent output context in inspect response")
 	}
-	if !strings.Contains(response.Prompt, "recent_output_context:") {
-		t.Fatalf("expected prompt to include recent output context, got %q", response.Prompt)
+	if !strings.Contains(response.Prompt, "recent_context:") {
+		t.Fatalf("expected prompt to include merged recent context, got %q", response.Prompt)
 	}
 	if !containsRecentOutputCommand(response.RecentOutputContext, "git branch") {
 		t.Fatalf("expected git branch output in inspect response: %#v", response.RecentOutputContext)
@@ -560,14 +566,17 @@ func TestBuildPromptIncludesRecentOutputContext(t *testing.T) {
 		api.InspectRetrievedContext{CurrentToken: "fea"},
 	)
 
-	if !strings.Contains(prompt, "recent_output_context:") {
-		t.Fatalf("expected recent_output_context block, got %q", prompt)
+	if !strings.Contains(prompt, "recent_context:") {
+		t.Fatalf("expected recent_context block, got %q", prompt)
 	}
 	if !strings.Contains(prompt, "feature/demo") {
 		t.Fatalf("expected prompt to include selected output text, got %q", prompt)
 	}
-	if !strings.Contains(prompt, "last_command_context:") {
-		t.Fatalf("expected prompt to include last_command_context block, got %q", prompt)
+	if strings.Contains(prompt, "last_command_context:") {
+		t.Fatalf("did not expect separate last_command_context block, got %q", prompt)
+	}
+	if strings.Contains(prompt, "recent_output_context:") {
+		t.Fatalf("did not expect separate recent_output_context block, got %q", prompt)
 	}
 }
 
@@ -645,6 +654,9 @@ func TestInspectReturnsLastThreeCommandContexts(t *testing.T) {
 	}
 	if !strings.Contains(response.Prompt, "git diff output") {
 		t.Fatalf("expected prompt to include output from the last three commands, got %q", response.Prompt)
+	}
+	if !strings.Contains(response.Prompt, "recent_context:") {
+		t.Fatalf("expected prompt to include merged recent context, got %q", response.Prompt)
 	}
 }
 

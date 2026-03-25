@@ -353,7 +353,7 @@ export function SuggestionsPageShell({
         <Panel
           title="Suggestion History"
           subtitle={`Showing ${startIndex}-${endIndex} of ${total} suggestions.`}
-          actions={<span className="stream-indicator stream-indicator-live">[LIVE]</span>}
+          actions={<span className="stream-indicator stream-indicator-live">Live</span>}
         >
           <div className="suggestions-toolbar">
             <div className="suggestions-toolbar-copy">
