@@ -1,10 +1,13 @@
 import "server-only";
 
+import fs from "node:fs";
+
 import { formatTimestamp } from "@/lib/format";
 import { getDb } from "@/lib/server/db";
 import { getRuntimeStatus } from "@/lib/server/runtime";
 import type {
   ActivitySignal,
+  BenchmarkStartState,
   BenchmarkResultRow,
   BenchmarkRunRow,
   CommandRow,
@@ -19,6 +22,253 @@ import type {
 } from "@/lib/types";
 
 type QueryValue = string | number;
+
+function parseJsonObject(value: unknown) {
+  if (!value) {
+    return null;
+  }
+  try {
+    return JSON.parse(String(value)) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function parseBenchmarkEnvironment(value: unknown): BenchmarkRunRow["environment"] {
+  const parsed = parseJsonObject(value);
+  if (!parsed) {
+    return null;
+  }
+  return {
+    hostname: String(parsed.hostname || ""),
+    os: String(parsed.os || ""),
+    arch: String(parsed.arch || ""),
+    goVersion: String(parsed.goVersion || parsed.go_version || ""),
+    modelBaseURL: String(parsed.modelBaseURL || parsed.model_base_url || ""),
+    modelKeepAlive: String(parsed.modelKeepAlive || parsed.model_keep_alive || ""),
+    activeModelName: String(parsed.activeModelName || parsed.active_model_name || ""),
+    dbPath: String(parsed.dbPath || parsed.db_path || ""),
+  };
+}
+
+function parseBenchmarkRunSummary(value: unknown): BenchmarkRunRow["summary"] {
+  const parsed = parseJsonObject(value);
+  if (!parsed) {
+    return null;
+  }
+
+  const progressSource =
+    parsed.progress && typeof parsed.progress === "object"
+      ? (parsed.progress as Record<string, unknown>)
+      : {};
+  const modelsSource = Array.isArray(parsed.models) ? parsed.models : [];
+  const normalizeLatency = (source: Record<string, unknown> | null | undefined) => ({
+    count: Number(source?.count || 0),
+    mean: Number(source?.mean || 0),
+    median: Number(source?.median || 0),
+    p90: Number(source?.p90 || 0),
+    p95: Number(source?.p95 || 0),
+    max: Number(source?.max || 0),
+  });
+  const normalizeQuality = (source: Record<string, unknown> | null | undefined) => ({
+    positiveCaseCount: Number(source?.positiveCaseCount || source?.positive_case_count || 0),
+    negativeCaseCount: Number(source?.negativeCaseCount || source?.negative_case_count || 0),
+    positiveExactHitRate: Number(source?.positiveExactHitRate || source?.positive_exact_hit_rate || 0),
+    negativeAvoidRate: Number(source?.negativeAvoidRate || source?.negative_avoid_rate || 0),
+    validWinnerRate: Number(source?.validWinnerRate || source?.valid_winner_rate || 0),
+    candidateRecallAt3: Number(source?.candidateRecallAt3 || source?.candidate_recall_at_3 || 0),
+    charsSavedRatio: Number(source?.charsSavedRatio || source?.chars_saved_ratio || 0),
+  });
+  const normalizeAggregate = (source: Record<string, unknown> | null | undefined) => {
+    const startStates = Array.isArray(source?.startStates || source?.start_states)
+      ? ((source?.startStates || source?.start_states) as Array<Record<string, unknown>>)
+      : [];
+    const stages = Array.isArray(source?.stages) ? (source?.stages as Array<Record<string, unknown>>) : [];
+    const budgetPassRates = Array.isArray(source?.budgetPassRates || source?.budget_pass_rates)
+      ? ((source?.budgetPassRates || source?.budget_pass_rates) as Array<Record<string, unknown>>)
+      : [];
+    const categoryBreakdown = Array.isArray(source?.categoryBreakdown || source?.category_breakdown)
+      ? ((source?.categoryBreakdown || source?.category_breakdown) as Array<Record<string, unknown>>)
+      : [];
+    const sourceBreakdown = Array.isArray(source?.sourceBreakdown || source?.source_breakdown)
+      ? ((source?.sourceBreakdown || source?.source_breakdown) as Array<Record<string, unknown>>)
+      : [];
+    const normalizeBucket = (bucket: Record<string, unknown>) => ({
+      key: String(bucket.key || ""),
+      label: String(bucket.label || ""),
+      count: Number(bucket.count || 0),
+      share: Number(bucket.share || 0),
+      quality: normalizeQuality(bucket.quality as Record<string, unknown>),
+      latency: normalizeLatency(bucket.latency as Record<string, unknown>),
+    });
+    return {
+      count: Number(source?.count || 0),
+      quality: normalizeQuality(source?.quality as Record<string, unknown>),
+      latency: normalizeLatency(source?.latency as Record<string, unknown>),
+      startStates: startStates.map((state) => ({
+        key: String(state.key || "unknown") as BenchmarkStartState,
+        count: Number(state.count || 0),
+        share: Number(state.share || 0),
+        latency: normalizeLatency(state.latency as Record<string, unknown>),
+      })),
+      coldPenaltyMs: Number(source?.coldPenaltyMs || source?.cold_penalty_ms || 0),
+      stages: stages.map((stage) => ({
+        label: String(stage.label || ""),
+        count: Number(stage.count || 0),
+        avgRequestLatencyMs: Number(stage.avgRequestLatencyMs || stage.avg_request_latency_ms || 0),
+        avgModelTotalDurationMs: Number(stage.avgModelTotalDurationMs || stage.avg_model_total_duration_ms || 0),
+        avgLoadDurationMs: Number(stage.avgLoadDurationMs || stage.avg_load_duration_ms || 0),
+        avgPromptEvalDurationMs: Number(stage.avgPromptEvalDurationMs || stage.avg_prompt_eval_duration_ms || 0),
+        avgEvalDurationMs: Number(stage.avgEvalDurationMs || stage.avg_eval_duration_ms || 0),
+        avgNonModelOverheadMs: Number(stage.avgNonModelOverheadMs || stage.avg_non_model_overhead_ms || 0),
+        decodeTokensPerSecond: Number(stage.decodeTokensPerSecond || stage.decode_tokens_per_second || 0),
+      })),
+      budgetPassRates: budgetPassRates.map((entry) => ({
+        budgetMs: Number(entry.budgetMs || entry.budget_ms || 0),
+        rate: Number(entry.rate || 0),
+      })),
+      categoryBreakdown: categoryBreakdown.map(normalizeBucket),
+      sourceBreakdown: sourceBreakdown.map(normalizeBucket),
+    };
+  };
+
+  return {
+    progress: {
+      completed: Number(progressSource.completed || 0),
+      total: Number(progressSource.total || 0),
+      percent: Number(progressSource.percent || 0),
+      status: String(progressSource.status || ""),
+      currentModel: String(progressSource.currentModel || progressSource.current_model || ""),
+      currentCase: String(progressSource.currentCase || progressSource.current_case || ""),
+      currentRun: Number(progressSource.currentRun || progressSource.current_run || 0),
+      currentPhase: String(progressSource.currentPhase || progressSource.current_phase || ""),
+    },
+    track: String(parsed.track || "static") as BenchmarkRunRow["track"],
+    surface: String(parsed.surface || "end_to_end") as BenchmarkRunRow["surface"],
+    suiteName: String(parsed.suiteName || parsed.suite_name || ""),
+    strategy: String(parsed.strategy || ""),
+    timingProtocol: String(parsed.timingProtocol || parsed.timing_protocol || "full") as BenchmarkRunRow["timingProtocol"],
+    datasetSize: Number(parsed.datasetSize || parsed.dataset_size || 0),
+    positiveCaseCount: Number(parsed.positiveCaseCount || parsed.positive_case_count || 0),
+    negativeCaseCount: Number(parsed.negativeCaseCount || parsed.negative_case_count || 0),
+    overall: normalizeAggregate(parsed.overall as Record<string, unknown>),
+    models: modelsSource.map((entry) => {
+      const modelEntry = entry as Record<string, unknown>;
+      return {
+        model: String(modelEntry.model || ""),
+        overall: normalizeAggregate(modelEntry.overall as Record<string, unknown>),
+        cold: normalizeAggregate(modelEntry.cold as Record<string, unknown>),
+        hot: normalizeAggregate(modelEntry.hot as Record<string, unknown>),
+      };
+    }),
+  };
+}
+
+function readBenchmarkArtifact(outputJsonPath: string) {
+  if (!outputJsonPath || !fs.existsSync(outputJsonPath)) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(fs.readFileSync(outputJsonPath, "utf8")) as Record<string, unknown>;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function extractBenchmarkRunError(logText: string) {
+  const taggedErrors = [...logText.matchAll(/\[error\]\s+([^\n]+)/g)];
+  if (taggedErrors.length > 0) {
+    return String(taggedErrors.at(-1)?.[1] || "").trim();
+  }
+
+  const workerErrors = [...logText.matchAll(/\[stderr\]\s+(benchmark failed early:[^\n]+)/g)];
+  if (workerErrors.length > 0) {
+    return String(workerErrors.at(-1)?.[1] || "").trim();
+  }
+
+  return "";
+}
+
+function getArtifactProgressStatus(artifact: Record<string, unknown> | null) {
+  const summary = artifact?.summary;
+  if (!summary || typeof summary !== "object") {
+    return "";
+  }
+  const progress = (summary as Record<string, unknown>).progress;
+  if (!progress || typeof progress !== "object") {
+    return "";
+  }
+  return String((progress as Record<string, unknown>).status || "").trim().toLowerCase();
+}
+
+function reconcileBenchmarkRuns() {
+  const db = getDb();
+  const staleRuns = db
+    .prepare(
+      `SELECT
+         id,
+         status,
+         output_json_path AS outputJsonPath,
+         log_text AS logText,
+         summary_json AS summaryJson,
+         error_text AS errorText,
+         finished_at_ms AS finishedAtMs,
+         last_event_at_ms AS lastEventAtMs
+       FROM benchmark_runs
+       WHERE status IN ('queued', 'running')`,
+    )
+    .all() as Array<{
+      id: number;
+      status: string;
+      outputJsonPath: string;
+      logText: string;
+      summaryJson: string;
+      errorText: string;
+      finishedAtMs: number;
+      lastEventAtMs: number;
+    }>;
+
+  const updateRun = db.prepare(
+    `UPDATE benchmark_runs
+     SET status = ?,
+         summary_json = COALESCE(?, summary_json),
+         error_text = ?,
+         finished_at_ms = CASE WHEN finished_at_ms > 0 THEN finished_at_ms ELSE ? END
+     WHERE id = ?`,
+  );
+
+  for (const run of staleRuns) {
+    const artifact = readBenchmarkArtifact(run.outputJsonPath);
+    const artifactSummary =
+      artifact?.summary && typeof artifact.summary === "object"
+        ? (artifact.summary as Record<string, unknown>)
+        : null;
+    const artifactStatus = getArtifactProgressStatus(artifact);
+    const loggedError = extractBenchmarkRunError(run.logText || "");
+
+    let nextStatus = "";
+    if (artifactStatus === "failed" || artifactStatus === "completed") {
+      nextStatus = artifactStatus;
+    } else if (loggedError) {
+      nextStatus = "failed";
+    } else if ((run.logText || "").includes("[completed]")) {
+      nextStatus = "completed";
+    }
+
+    if (!nextStatus) {
+      continue;
+    }
+
+    updateRun.run(
+      nextStatus,
+      artifactSummary ? JSON.stringify(artifactSummary) : null,
+      nextStatus === "failed" ? run.errorText || loggedError || "benchmark run failed" : "",
+      run.finishedAtMs > 0 ? run.finishedAtMs : run.lastEventAtMs || Date.now(),
+      run.id,
+    );
+  }
+}
 
 function buildWhere(clauses: string[]) {
   return clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
@@ -133,7 +383,10 @@ export function listSuggestions(input: {
          s.branch,
          s.last_exit_code AS lastExitCode,
          s.model_name AS modelName,
-         s.latency_ms AS latencyMs,
+         CASE
+           WHEN s.request_latency_ms > 0 THEN s.request_latency_ms
+           ELSE s.latency_ms
+         END AS latencyMs,
          s.created_at_ms AS createdAtMs,
          COALESCE(f.accepted, 0) AS accepted,
          COALESCE(f.rejected, 0) AS rejected,
@@ -175,14 +428,31 @@ export function listSuggestionSources() {
   return rows.map((row) => row.source).filter(Boolean);
 }
 
+export function listSuggestionModels() {
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT model
+       FROM (
+         SELECT model_name AS model FROM suggestions WHERE TRIM(model_name) <> ''
+         UNION
+         SELECT request_model_name AS model FROM suggestions WHERE TRIM(request_model_name) <> ''
+       )
+       ORDER BY model ASC`,
+    )
+    .all() as Array<{ model: string }>;
+
+  return rows.map((row) => row.model).filter(Boolean);
+}
+
 function getSuggestionOrderBy(sort?: SuggestionSort) {
   switch (sort) {
     case "oldest":
       return "s.created_at_ms ASC, s.id ASC";
     case "latency-desc":
-      return "s.latency_ms DESC, s.created_at_ms DESC";
+      return "CASE WHEN s.request_latency_ms > 0 THEN s.request_latency_ms ELSE s.latency_ms END DESC, s.created_at_ms DESC";
     case "latency-asc":
-      return "s.latency_ms ASC, s.created_at_ms DESC";
+      return "CASE WHEN s.request_latency_ms > 0 THEN s.request_latency_ms ELSE s.latency_ms END ASC, s.created_at_ms DESC";
     case "buffer-asc":
       return "s.buffer ASC, s.created_at_ms DESC";
     case "model-asc":
@@ -395,17 +665,28 @@ export function getFeedbackSummaryFiltered(input: {
 }
 
 export function listBenchmarkRuns(limit = 20): BenchmarkRunRow[] {
+  reconcileBenchmarkRuns();
   const db = getDb();
   return db
     .prepare(
       `SELECT
          id,
          status,
+         track,
+         surface,
+         suite_name AS suiteName,
+         strategy,
+         timing_protocol AS timingProtocol,
          models,
          repeat_count AS repeatCount,
          timeout_ms AS timeoutMs,
+         filters_json AS filtersJson,
+         dataset_size AS datasetSize,
+         environment_json AS environmentJson,
          output_json_path AS outputJsonPath,
          summary_json AS summaryJson,
+         log_text AS logText,
+         last_event_at_ms AS lastEventAtMs,
          error_text AS errorText,
          created_at_ms AS createdAtMs,
          started_at_ms AS startedAtMs,
@@ -420,14 +701,24 @@ export function listBenchmarkRuns(limit = 20): BenchmarkRunRow[] {
       return {
         id: Number(parsed.id),
         status: String(parsed.status),
+        track: String(parsed.track || "static") as BenchmarkRunRow["track"],
+        surface: String(parsed.surface || "end_to_end") as BenchmarkRunRow["surface"],
+        suiteName: String(parsed.suiteName || ""),
+        strategy: String(parsed.strategy || ""),
+        timingProtocol: String(parsed.timingProtocol || "full") as BenchmarkRunRow["timingProtocol"],
         models: String(parsed.models || "")
           .split(",")
           .map((value) => value.trim())
           .filter(Boolean),
         repeatCount: Number(parsed.repeatCount || 0),
         timeoutMs: Number(parsed.timeoutMs || 0),
+        filtersJson: String(parsed.filtersJson || ""),
+        datasetSize: Number(parsed.datasetSize || 0),
+        environment: parseBenchmarkEnvironment(parsed.environmentJson),
         outputJsonPath: String(parsed.outputJsonPath || ""),
-        summary: parsed.summaryJson ? JSON.parse(String(parsed.summaryJson)) : null,
+        summary: parseBenchmarkRunSummary(parsed.summaryJson),
+        logText: String(parsed.logText || ""),
+        lastEventAtMs: Number(parsed.lastEventAtMs || 0),
         errorText: String(parsed.errorText || ""),
         createdAtMs: Number(parsed.createdAtMs || 0),
         startedAtMs: Number(parsed.startedAtMs || 0),
@@ -449,13 +740,47 @@ export function getBenchmarkRun(runId: number) {
          id,
          run_id AS runId,
          model_name AS modelName,
+         track,
+         surface,
+         suite_name AS suiteName,
+         strategy,
+         timing_protocol AS timingProtocol,
+         timing_phase AS timingPhase,
+         start_state AS startState,
+         case_id AS caseId,
          case_name AS caseName,
+         category,
+         tags_json AS tagsJson,
+         label_kind AS labelKind,
          run_number AS runNumber,
-         latency_ms AS latencyMs,
-         suggestion_text AS suggestionText,
+         request_json AS requestJson,
+         expected_command AS expectedCommand,
+         expected_alternatives_json AS expectedAlternativesJson,
+         negative_target AS negativeTarget,
+         winner_command AS winnerCommand,
+         winner_source AS winnerSource,
+         candidates_json AS candidatesJson,
+         raw_model_output AS rawModelOutput,
+         cleaned_model_output AS cleanedModelOutput,
+         exact_match AS exactMatch,
+         alternative_match AS alternativeMatch,
+         negative_avoided AS negativeAvoided,
          valid_prefix AS validPrefix,
-         accepted,
+         candidate_hit_at_3 AS candidateHitAt3,
+         chars_saved_ratio AS charsSavedRatio,
+         command_edit_distance AS commandEditDistance,
+         request_latency_ms AS requestLatencyMs,
+         model_total_duration_ms AS modelTotalDurationMs,
+         model_load_duration_ms AS modelLoadDurationMs,
+         model_prompt_eval_duration_ms AS modelPromptEvalDurationMs,
+         model_eval_duration_ms AS modelEvalDurationMs,
+         model_prompt_eval_count AS modelPromptEvalCount,
+         model_eval_count AS modelEvalCount,
+         decode_tokens_per_second AS decodeTokensPerSecond,
+         non_model_overhead_duration_ms AS nonModelOverheadDurationMs,
+         model_error AS modelError,
          error_text AS errorText,
+         replay_source_json AS replaySourceJson,
          created_at_ms AS createdAtMs
        FROM benchmark_results
        WHERE run_id = ?
@@ -468,18 +793,99 @@ export function getBenchmarkRun(runId: number) {
         id: Number(parsed.id),
         runId: Number(parsed.runId),
         modelName: String(parsed.modelName || ""),
+        track: String(parsed.track || "static") as BenchmarkResultRow["track"],
+        surface: String(parsed.surface || "end_to_end") as BenchmarkResultRow["surface"],
+        suiteName: String(parsed.suiteName || ""),
+        strategy: String(parsed.strategy || ""),
+        timingProtocol: String(parsed.timingProtocol || "full") as BenchmarkResultRow["timingProtocol"],
+        timingPhase: String(parsed.timingPhase || "mixed") as BenchmarkResultRow["timingPhase"],
+        startState: String(parsed.startState || "unknown") as BenchmarkResultRow["startState"],
+        caseId: String(parsed.caseId || ""),
         caseName: String(parsed.caseName || ""),
+        category: String(parsed.category || ""),
+        tags: parsed.tagsJson ? JSON.parse(String(parsed.tagsJson)) : [],
+        labelKind: String(parsed.labelKind || "positive") as BenchmarkResultRow["labelKind"],
         runNumber: Number(parsed.runNumber || 0),
-        latencyMs: Number(parsed.latencyMs || 0),
-        suggestionText: String(parsed.suggestionText || ""),
+        requestJson: String(parsed.requestJson || ""),
+        expectedCommand: String(parsed.expectedCommand || ""),
+        expectedAlternatives: parsed.expectedAlternativesJson
+          ? JSON.parse(String(parsed.expectedAlternativesJson))
+          : [],
+        negativeTarget: String(parsed.negativeTarget || ""),
+        winnerCommand: String(parsed.winnerCommand || ""),
+        winnerSource: String(parsed.winnerSource || ""),
+        candidatesJson: String(parsed.candidatesJson || ""),
+        rawModelOutput: String(parsed.rawModelOutput || ""),
+        cleanedModelOutput: String(parsed.cleanedModelOutput || ""),
+        exactMatch: Number(parsed.exactMatch || 0) === 1,
+        alternativeMatch: Number(parsed.alternativeMatch || 0) === 1,
+        negativeAvoided: Number(parsed.negativeAvoided || 0) === 1,
         validPrefix: Number(parsed.validPrefix || 0) === 1,
-        accepted: Number(parsed.accepted || 0) === 1,
+        candidateHitAt3: Number(parsed.candidateHitAt3 || 0) === 1,
+        charsSavedRatio: Number(parsed.charsSavedRatio || 0),
+        commandEditDistance: Number(parsed.commandEditDistance || 0),
+        requestLatencyMs: Number(parsed.requestLatencyMs || 0),
+        modelTotalDurationMs: Number(parsed.modelTotalDurationMs || 0),
+        modelLoadDurationMs: Number(parsed.modelLoadDurationMs || 0),
+        modelPromptEvalDurationMs: Number(parsed.modelPromptEvalDurationMs || 0),
+        modelEvalDurationMs: Number(parsed.modelEvalDurationMs || 0),
+        modelPromptEvalCount: Number(parsed.modelPromptEvalCount || 0),
+        modelEvalCount: Number(parsed.modelEvalCount || 0),
+        decodeTokensPerSecond: Number(parsed.decodeTokensPerSecond || 0),
+        nonModelOverheadDurationMs: Number(parsed.nonModelOverheadDurationMs || 0),
+        modelError: String(parsed.modelError || ""),
         errorText: String(parsed.errorText || ""),
+        replaySourceJson: String(parsed.replaySourceJson || ""),
         createdAtMs: Number(parsed.createdAtMs || 0),
       } satisfies BenchmarkResultRow;
     });
 
   return { run, results };
+}
+
+export function deleteBenchmarkRun(runId: number) {
+  const db = getDb();
+  const existing = db
+    .prepare(
+      `SELECT
+         id,
+         status,
+         output_json_path AS outputJsonPath
+       FROM benchmark_runs
+       WHERE id = ?`,
+    )
+    .get(runId) as
+    | {
+        id: number;
+        status: string;
+        outputJsonPath: string;
+      }
+    | undefined;
+
+  if (!existing) {
+    return { ok: false as const, reason: "not_found" as const };
+  }
+
+  if (existing.status === "queued" || existing.status === "running") {
+    return {
+      ok: false as const,
+      reason: "active" as const,
+      status: existing.status,
+    };
+  }
+
+  const removeRun = db.transaction((targetRunId: number) => {
+    db.prepare("DELETE FROM benchmark_results WHERE run_id = ?").run(targetRunId);
+    db.prepare("DELETE FROM benchmark_runs WHERE id = ?").run(targetRunId);
+  });
+
+  removeRun(runId);
+
+  if (existing.outputJsonPath) {
+    fs.rmSync(existing.outputJsonPath, { force: true });
+  }
+
+  return { ok: true as const, deletedRunId: runId };
 }
 
 export function clearDataset(kind: "suggestions" | "feedback" | "benchmarks") {
@@ -511,6 +917,14 @@ export function exportRows(dataset: "suggestions" | "commands" | "benchmarks") {
            s.branch,
            s.model_name,
            s.latency_ms,
+           s.request_latency_ms,
+           s.request_model_name,
+           s.model_total_duration_ms,
+           s.model_load_duration_ms,
+           s.model_prompt_eval_duration_ms,
+           s.model_eval_duration_ms,
+           s.model_prompt_eval_count,
+           s.model_eval_count,
            s.created_at_ms,
            GROUP_CONCAT(DISTINCT fe.event_type) AS feedback_events,
            MAX(fe.accepted_command) AS accepted_command,
@@ -548,20 +962,32 @@ export function exportRows(dataset: "suggestions" | "commands" | "benchmarks") {
       `SELECT
          r.id AS run_id,
          r.status,
+         r.track,
+         r.surface,
+         r.suite_name,
+         r.strategy,
+         r.timing_protocol,
          r.models,
          r.repeat_count,
          r.timeout_ms,
+         r.dataset_size,
          r.created_at_ms,
          r.started_at_ms,
          r.finished_at_ms,
          r.error_text,
          br.model_name,
+         br.case_id,
          br.case_name,
+         br.category,
+         br.label_kind,
          br.run_number,
-         br.latency_ms,
-         br.suggestion_text,
+         br.request_latency_ms,
+         br.winner_command,
+         br.winner_source,
          br.valid_prefix,
-         br.accepted,
+         br.exact_match,
+         br.alternative_match,
+         br.negative_avoided,
          br.error_text AS result_error_text
        FROM benchmark_runs r
        LEFT JOIN benchmark_results br ON br.run_id = r.id
@@ -594,7 +1020,15 @@ export function getOverviewData(): OverviewData {
   const averageModelLatency = Number(
     db
       .prepare(
-        "SELECT COALESCE(AVG(CASE WHEN latency_ms > 0 THEN latency_ms END), 0) FROM suggestions",
+        `SELECT COALESCE(
+           AVG(
+             CASE
+               WHEN request_latency_ms > 0 THEN request_latency_ms
+               WHEN latency_ms > 0 THEN latency_ms
+             END
+           ),
+           0
+         ) FROM suggestions`,
       )
       .pluck()
       .get() || 0,
@@ -613,13 +1047,24 @@ export function getOverviewData(): OverviewData {
   const latencyByModel = db
     .prepare(
       `SELECT
-         model_name AS model,
+         CASE
+           WHEN TRIM(request_model_name) <> '' THEN request_model_name
+           ELSE model_name
+         END AS model,
          COUNT(*) AS count,
-         ROUND(AVG(CASE WHEN latency_ms > 0 THEN latency_ms END), 1) AS avgLatencyMs
+         ROUND(
+           AVG(
+             CASE
+               WHEN request_latency_ms > 0 THEN request_latency_ms
+               WHEN latency_ms > 0 THEN latency_ms
+             END
+           ),
+           1
+         ) AS avgLatencyMs
        FROM suggestions
-       WHERE model_name != ''
-       GROUP BY model_name
-       ORDER BY count DESC, model_name ASC`,
+       WHERE TRIM(CASE WHEN TRIM(request_model_name) <> '' THEN request_model_name ELSE model_name END) <> ''
+       GROUP BY model
+       ORDER BY count DESC, model ASC`,
     )
     .all() as Array<{ model: string; count: number; avgLatencyMs: number }>;
 

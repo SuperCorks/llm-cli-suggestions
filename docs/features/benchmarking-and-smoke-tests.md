@@ -4,17 +4,60 @@ The repo includes several checks and measurement tools that protect the shell UX
 
 ## Model Benchmarking
 
-`cmd/model-bench` compares models across fixed command-completion cases.
+`cmd/model-bench` now supports three benchmark tracks:
 
-It reports:
+- `static` for curated repo-controlled regression cases
+- `replay` for live-DB cases mined from accepted, rejected, and manually reviewed suggestions
+- `raw` for prompt/model-only diagnostics against the static suite
 
-- latency
-- whether the result is a valid continuation of the prefix
-- whether the result matches an acceptable answer
+The default benchmark surface is end-to-end ranking through the engine, not raw model output.
 
-This is the main tool for comparing local model choices and prompt changes.
+It reports richer results than the original suite:
 
-The same benchmark workflow is also exposed through the control app Model Lab, which can queue saved runs, persist results to SQLite, and drill into per-model or per-case detail views.
+- positive exact-hit rate
+- negative-avoidance rate
+- valid-winner rate
+- chars-saved ratio and candidate recall at 3
+- mean, median, p90, p95, and max request latency
+- cold vs hot timing splits
+- model stage timing for load, prompt-eval, decode, and non-model overhead
+- category and winner-source breakdowns
+
+Timing can be forced with explicit protocols:
+
+- `cold_only`
+- `hot_only`
+- `mixed`
+- `full`
+
+Useful commands:
+
+```bash
+make bench-static
+make bench-replay
+make bench-all
+./bin/model-bench raw --models qwen3-coder:latest --suite core
+./bin/model-bench compare path/to/run-a.json path/to/run-b.json
+./bin/model-bench mine-static --limit 25
+```
+
+The same benchmark workflow is also exposed through the control app Model Lab, which refreshes saved runs on page load, can queue or delete saved runs, persists results to SQLite, and drills into per-model or per-case detail views.
+
+The saved-run detail view now also shows:
+
+- a live worker log assembled from benchmark stdout and stderr
+- the timestamp of the last worker event
+- a stall warning when a queued or running benchmark has stopped emitting updates for an extended period
+
+Saved benchmark rows also self-reconcile on the next read if the worker wrote a terminal artifact or logged a terminal error but failed to finish the final SQLite status update. That keeps visibly failed runs from getting stuck in `running` after a worker-side crash or finalization problem.
+
+Fail-fast benchmark errors during hot-phase prewarm now still write a populated partial artifact and summary instead of bailing out with an empty benchmark artifact. The background worker also builds its `benchmark_results` insert from one shared column list so placeholder mismatches fail fast in code review instead of at runtime.
+
+For hot-phase benchmark passes, the Ollama client now reuses the configured `keep_alive` duration instead of sending the invalid `-1` sentinel. Non-200 Ollama responses now include the response body in the surfaced error text so failures like invalid duration parsing are visible in the saved run.
+
+The benchmark worker and Go runtime now also use SQLite WAL mode plus a busy timeout, and the engine's inspect path stays read-only instead of creating session rows. That reduces cross-process lock contention between the detached worker and the benchmark command when both touch the same local database.
+
+Hot-phase benchmark rows now classify `start_state` using the requested timing phase plus a small warm-load tolerance, instead of treating any nonzero Ollama `load_duration` as a cold start. That keeps prewarmed runs with minor residual load time from being mislabeled as cold in saved results.
 
 ## Shell Smoke Test
 

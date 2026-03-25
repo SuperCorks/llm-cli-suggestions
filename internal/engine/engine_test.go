@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -14,13 +15,15 @@ import (
 	"github.com/SuperCorks/llm-cli-suggestions/internal/api"
 	"github.com/SuperCorks/llm-cli-suggestions/internal/config"
 	"github.com/SuperCorks/llm-cli-suggestions/internal/db"
+	"github.com/SuperCorks/llm-cli-suggestions/internal/model"
+	_ "modernc.org/sqlite"
 )
 
 type stubModelClient struct {
-	suggest func(ctx context.Context, prompt string) (string, error)
+	suggest func(ctx context.Context, prompt string) (model.SuggestResult, error)
 }
 
-func (s stubModelClient) Suggest(ctx context.Context, prompt string) (string, error) {
+func (s stubModelClient) Suggest(ctx context.Context, prompt string) (model.SuggestResult, error) {
 	return s.suggest(ctx, prompt)
 }
 
@@ -75,9 +78,9 @@ func TestSuggestAllowsEmptyBufferWithLastCommandContext(t *testing.T) {
 	var observedPrompt string
 	engine := NewWithSystemPrompt(
 		store,
-		stubModelClient{suggest: func(ctx context.Context, prompt string) (string, error) {
+		stubModelClient{suggest: func(ctx context.Context, prompt string) (model.SuggestResult, error) {
 			observedPrompt = prompt
-			return "git push", nil
+			return model.SuggestResult{Response: "git push"}, nil
 		}},
 		"qwen3-coder:latest",
 		"http://127.0.0.1:11434",
@@ -659,8 +662,8 @@ func TestInspectSurfacesModelTimeoutError(t *testing.T) {
 
 	engine := NewWithSystemPrompt(
 		store,
-		stubModelClient{suggest: func(ctx context.Context, prompt string) (string, error) {
-			return "", context.DeadlineExceeded
+		stubModelClient{suggest: func(ctx context.Context, prompt string) (model.SuggestResult, error) {
+			return model.SuggestResult{}, context.DeadlineExceeded
 		}},
 		"qwen3-coder:latest",
 		"http://127.0.0.1:11434",
@@ -706,8 +709,8 @@ func TestInspectSurfacesRejectedModelOutput(t *testing.T) {
 
 	engine := NewWithSystemPrompt(
 		store,
-		stubModelClient{suggest: func(ctx context.Context, prompt string) (string, error) {
-			return "status --short", nil
+		stubModelClient{suggest: func(ctx context.Context, prompt string) (model.SuggestResult, error) {
+			return model.SuggestResult{Response: "status --short"}, nil
 		}},
 		"qwen3-coder:latest",
 		"http://127.0.0.1:11434",
@@ -754,13 +757,13 @@ func TestInspectUsesLongerTimeoutThanLiveSuggestions(t *testing.T) {
 	var observedDeadline time.Duration
 	engine := NewWithSystemPrompt(
 		store,
-		stubModelClient{suggest: func(ctx context.Context, prompt string) (string, error) {
+		stubModelClient{suggest: func(ctx context.Context, prompt string) (model.SuggestResult, error) {
 			deadline, ok := ctx.Deadline()
 			if !ok {
 				t.Fatal("expected inspect context deadline")
 			}
 			observedDeadline = time.Until(deadline)
-			return "git status", nil
+			return model.SuggestResult{Response: "git status"}, nil
 		}},
 		"qwen3-coder:latest",
 		"http://127.0.0.1:11434",
@@ -784,6 +787,59 @@ func TestInspectUsesLongerTimeoutThanLiveSuggestions(t *testing.T) {
 	}
 	if observedDeadline < 9*time.Second {
 		t.Fatalf("expected inspect timeout near 10s, got %s", observedDeadline)
+	}
+}
+
+func TestInspectDoesNotCreateSession(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := db.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	engine := NewWithSystemPrompt(
+		store,
+		nil,
+		"qwen3-coder:latest",
+		"http://127.0.0.1:11434",
+		"5m",
+		"history+model",
+		"",
+		5*time.Second,
+	)
+
+	if _, err := engine.Inspect(context.Background(), api.InspectRequest{
+		SessionID: "inspect-session",
+		Buffer:    "git st",
+		CWD:       "/tmp/project",
+		RepoRoot:  "/tmp/project",
+	}); err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+
+	rawDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open raw sqlite: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = rawDB.Close()
+	})
+
+	var sessionCount int
+	if err := rawDB.QueryRowContext(
+		context.Background(),
+		"SELECT COUNT(*) FROM sessions WHERE id = ?",
+		"inspect-session",
+	).Scan(&sessionCount); err != nil {
+		t.Fatalf("count sessions: %v", err)
+	}
+	if sessionCount != 0 {
+		t.Fatalf("expected inspect to avoid session writes, found %d session rows", sessionCount)
 	}
 }
 

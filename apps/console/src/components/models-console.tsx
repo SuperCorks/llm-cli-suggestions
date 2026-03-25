@@ -1,8 +1,8 @@
 "use client";
 
-import { Download } from "lucide-react";
+import { ChevronDown, Download, Play, Trash2 } from "lucide-react";
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ModelPicker } from "@/components/model-picker";
 import type {
@@ -60,25 +60,44 @@ export function ModelsConsole({
   });
   const [downloadModel, setDownloadModel] = useState("");
   const [search, setSearch] = useState("");
+  const [sizeFilters, setSizeFilters] = useState<string[]>([]);
+  const [sizeMenuOpen, setSizeMenuOpen] = useState(false);
+  const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [operationJobs, setOperationJobs] = useState<OllamaInstallJob[]>([]);
   const [availablePage, setAvailablePage] = useState(1);
   const [hydrated, setHydrated] = useState(false);
+  const [switchingModel, setSwitchingModel] = useState<string | null>(null);
+  const sizeFilterRef = useRef<HTMLDivElement | null>(null);
 
   const configuredModel = runtime.settings.modelName;
   const modelIsLive = runtime.health.ok && runtime.health.modelName === configuredModel;
 
-  const filteredModels = useMemo(() => {
-    const normalizedSearch = search.trim().toLowerCase();
-    return models.filter((model) =>
-      normalizedSearch ? model.name.toLowerCase().includes(normalizedSearch) : true,
-    );
-  }, [models, search]);
+  const sizeOptions = useMemo(
+    () =>
+      [...new Set(models.map((model) => model.sizeLabel?.trim() || "").filter(Boolean))].sort(
+        (left, right) => left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" }),
+      ),
+    [models],
+  );
 
-  const installedModels = filteredModels
+  const filteredAvailableModels = useMemo(() => {
+    const normalizedSearch = search.trim().toLowerCase();
+    return models.filter((model) => {
+      if (model.installed) {
+        return false;
+      }
+      const matchesSearch = normalizedSearch ? model.name.toLowerCase().includes(normalizedSearch) : true;
+      const matchesSize =
+        sizeFilters.length > 0 ? sizeFilters.includes(model.sizeLabel?.trim() || "") : true;
+      return matchesSearch && matchesSize;
+    });
+  }, [models, search, sizeFilters]);
+
+  const installedModels = models
     .filter((model) => model.installed)
     .sort((a, b) => (a.name === configuredModel ? -1 : b.name === configuredModel ? 1 : 0));
-  const availableModels = filteredModels.filter((model) => !model.installed);
+  const availableModels = filteredAvailableModels;
   const availableTotalPages = Math.max(
     1,
     Math.ceil(availableModels.length / AVAILABLE_PAGE_SIZE),
@@ -211,7 +230,24 @@ export function ModelsConsole({
 
   useEffect(() => {
     setAvailablePage(1);
-  }, [search, models]);
+  }, [search, models, sizeFilters]);
+
+  useEffect(() => {
+    function handlePointerDown(event: MouseEvent) {
+      if (!sizeFilterRef.current?.contains(event.target as Node)) {
+        setSizeMenuOpen(false);
+      }
+    }
+
+    if (!sizeMenuOpen) {
+      return;
+    }
+
+    window.addEventListener("mousedown", handlePointerDown);
+    return () => {
+      window.removeEventListener("mousedown", handlePointerDown);
+    };
+  }, [sizeMenuOpen]);
 
   useEffect(() => {
     if (availablePage > availableTotalPages) {
@@ -224,7 +260,7 @@ export function ModelsConsole({
       return;
     }
 
-    const timer = window.setTimeout(() => {
+    const intervalId = window.setInterval(() => {
       void Promise.all([
         refreshOperations(runtime.settings.modelBaseUrl),
         refreshModels(runtime.settings.modelBaseUrl),
@@ -238,11 +274,12 @@ export function ModelsConsole({
     }, 700);
 
     return () => {
-      window.clearTimeout(timer);
+      window.clearInterval(intervalId);
     };
   }, [activeOperations.length, refreshModels, refreshOperations, runtime.settings.modelBaseUrl]);
 
   async function startDownload(modelName: string) {
+    setMessage("");
     setError("");
     try {
       const model = models.find((candidate) => candidate.name === modelName) || null;
@@ -281,6 +318,7 @@ export function ModelsConsole({
   }
 
   async function removeModel(modelName: string) {
+    setMessage("");
     setError("");
     try {
       const response = await fetch("/api/ollama/remove", {
@@ -311,6 +349,7 @@ export function ModelsConsole({
   }
 
   async function updateOperation(jobId: string, action: "cancel" | "dismiss") {
+    setMessage("");
     setError("");
     try {
       const response = await fetch("/api/ollama/operations", {
@@ -343,6 +382,56 @@ export function ModelsConsole({
     }
   }
 
+  function toggleSizeFilter(size: string) {
+    setSizeFilters((current) =>
+      current.includes(size) ? current.filter((value) => value !== size) : [...current, size],
+    );
+  }
+
+  const sizeFilterSummary =
+    sizeFilters.length === 0
+      ? "All sizes"
+      : sizeFilters.length <= 2
+        ? sizeFilters.join(", ")
+        : `${sizeFilters.length} sizes`;
+
+  async function activateModel(modelName: string) {
+    setSwitchingModel(modelName);
+    setMessage("");
+    setError("");
+    try {
+      const settingsResponse = await fetch("/api/runtime/settings", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          LAC_MODEL_NAME: modelName,
+        }),
+      });
+      const settingsData = (await settingsResponse.json()) as { error?: string };
+      if (!settingsResponse.ok) {
+        throw new Error(settingsData.error || "Unable to save runtime settings");
+      }
+
+      const restartResponse = await fetch("/api/runtime/restart", {
+        method: "POST",
+      });
+      const restartData = (await restartResponse.json()) as RuntimeStatus & { error?: string };
+      if (!restartResponse.ok) {
+        throw new Error(restartData.error || "Unable to restart daemon");
+      }
+
+      setRuntime(restartData);
+      await refreshRuntime();
+      setMessage(`${modelName} is now the active model.`);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Unable to switch active model");
+    } finally {
+      setSwitchingModel(null);
+    }
+  }
+
   return (
     <div className="stack-lg">
       <ul className="metric-list compact-metrics subtle-panel">
@@ -371,6 +460,7 @@ export function ModelsConsole({
         </li>
       </ul>
 
+      {message ? <p className="success-text">{message}</p> : null}
       {error ? <p className="error-text">{error}</p> : null}
 
       <div className="grid two-up">
@@ -437,7 +527,7 @@ export function ModelsConsole({
             <div>
               <h3>Catalog Filter</h3>
               <p className="helper-text">
-                Filter installed and library models together. The configured daemon model is always highlighted.
+                Filter the downloadable Ollama catalog without hiding installed local models. The configured daemon model is always highlighted.
               </p>
             </div>
           </div>
@@ -449,6 +539,56 @@ export function ModelsConsole({
               placeholder="qwen, llama, phi..."
             />
           </label>
+          <label>
+            Size
+            <div className="multi-select-filter" ref={sizeFilterRef}>
+              <button
+                type="button"
+                className="multi-select-filter-trigger"
+                aria-haspopup="listbox"
+                aria-expanded={sizeMenuOpen}
+                onClick={() => setSizeMenuOpen((current) => !current)}
+                disabled={sizeOptions.length === 0}
+              >
+                <span>{sizeFilterSummary}</span>
+                <ChevronDown
+                  aria-hidden="true"
+                  className={sizeMenuOpen ? "multi-select-filter-icon multi-select-filter-icon-open" : "multi-select-filter-icon"}
+                />
+              </button>
+              {sizeMenuOpen ? (
+                <div className="multi-select-filter-menu" role="menu" aria-label="Size filters">
+                  <div className="multi-select-filter-chip-grid">
+                    <button
+                      type="button"
+                      className={sizeFilters.length === 0 ? "multi-select-filter-chip active" : "multi-select-filter-chip"}
+                      onClick={() => setSizeFilters([])}
+                      aria-pressed={sizeFilters.length === 0}
+                    >
+                      <span>All sizes</span>
+                    </button>
+                    {sizeOptions.map((size) => {
+                      const selected = sizeFilters.includes(size);
+                      return (
+                        <button
+                          key={size}
+                          type="button"
+                          className={selected ? "multi-select-filter-chip active" : "multi-select-filter-chip"}
+                          onClick={() => toggleSizeFilter(size)}
+                          aria-pressed={selected}
+                        >
+                          <span>{size}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : null}
+              {sizeOptions.length === 0 ? (
+                <span className="helper-text">No size metadata available.</span>
+              ) : null}
+            </div>
+          </label>
         </div>
       </div>
 
@@ -458,20 +598,20 @@ export function ModelsConsole({
             <div>
               <h3>Installed Locally</h3>
               <p className="helper-text">
-                Remove models you no longer need. The configured daemon model cannot be removed from here.
+                Hover a row to quickly switch the daemon to another installed model or remove models you no longer need.
               </p>
             </div>
           </div>
-          <div className="model-operations-panel">
-            <div className="detail-block-header model-operations-header">
-              <div>
-                <h4>Model Operations</h4>
-                <p className="helper-text">
-                  Downloads and removals continue here across page refreshes while the console server stays running.
-                </p>
+          {operationJobs.length > 0 ? (
+            <div className="model-operations-panel">
+              <div className="detail-block-header model-operations-header">
+                <div>
+                  <h4>Model Operations</h4>
+                  <p className="helper-text">
+                    Downloads and removals continue here across page refreshes while the console server stays running.
+                  </p>
+                </div>
               </div>
-            </div>
-            {operationJobs.length > 0 ? (
               <div className="model-operation-list">
                 {[...activeOperations, ...recentOperations].map((job) => (
                   <div key={job.id} className="model-operation-item">
@@ -520,56 +660,84 @@ export function ModelsConsole({
                   </div>
                 ))}
               </div>
-            ) : (
-              <p className="helper-text">No model downloads or removals need attention.</p>
-            )}
-          </div>
+            </div>
+          ) : null}
           <div className="model-catalog-list">
             {installedModels.length > 0 ? (
               installedModels.map((model) => {
                 const isConfigured = model.name === configuredModel;
                 const isLive = modelIsLive && model.name === configuredModel;
                 const activeJob = activeOperationByModel.get(model.name) || null;
+                const canActivate = !isConfigured && !activeJob;
                 return (
                   <div key={model.name} className="model-catalog-item">
-                    <div className="model-catalog-item-header">
-                      <code>{model.name}</code>
-                      <div className="model-catalog-badges">
-                        <span className="model-status-chip model-status-chip-installed">installed</span>
+                    <div className="model-catalog-row">
+                      <div className="model-catalog-primary">
+                        <code>{model.name}</code>
                         {isConfigured ? (
-                          <span className="status-pill status-pill-running">configured</span>
+                          <span className="model-catalog-note">
+                            {hydrated ? (
+                              <>
+                                Change the <Link href="/daemon">daemon settings</Link> before removing.
+                              </>
+                            ) : (
+                              "Change the daemon settings before removing."
+                            )}
+                          </span>
+                        ) : activeJob ? (
+                          <span className="model-catalog-note">{activeJob.message}</span>
                         ) : null}
-                        {isLive ? <span className="status-pill status-pill-completed">live</span> : null}
                       </div>
-                    </div>
-                    <div className="model-catalog-item-actions">
-                      <button
-                        type="button"
-                        className="button-danger"
-                        disabled={Boolean(activeJob) || isConfigured}
-                        onClick={() => void removeModel(model.name)}
-                      >
-                        {activeJob?.action === "remove" ? "Removing" : "Remove"}
-                      </button>
-                      {isConfigured ? (
-                        <span className="helper-text">
-                          {hydrated ? (
-                            <>
-                              Change the <Link href="/daemon">daemon settings</Link> before removing.
-                            </>
-                          ) : (
-                            "Change the daemon settings before removing."
-                          )}
-                        </span>
-                      ) : activeJob ? (
-                        <span className="helper-text">{activeJob.message}</span>
-                      ) : null}
+                      <div className="model-catalog-meta">
+                        <div className="model-catalog-badges">
+                          <span className="model-status-chip model-status-chip-installed">installed</span>
+                          {model.sizeLabel ? <span className="model-meta-chip">{model.sizeLabel}</span> : null}
+                          {model.contextWindowLabel ? (
+                            <span className="model-meta-chip" title={`Context window ${model.contextWindowLabel}`}>
+                              {model.contextWindowLabel} ctx
+                            </span>
+                          ) : null}
+                          {isConfigured ? (
+                            <span className="status-pill status-pill-running">configured</span>
+                          ) : null}
+                          {isLive ? <span className="status-pill status-pill-completed">live</span> : null}
+                          {model.capabilities?.map((capability) => (
+                              <span key={`${model.name}-${capability}`} className="model-capability-chip">
+                                {capability}
+                              </span>
+                            ))}
+                        </div>
+                      </div>
+                      <div className="model-catalog-actions-inline">
+                        {canActivate ? (
+                          <button
+                            type="button"
+                            className="icon-button model-catalog-icon-button model-catalog-hover-action"
+                            disabled={switchingModel !== null}
+                            onClick={() => void activateModel(model.name)}
+                            aria-label={switchingModel === model.name ? "Activating model" : "Use as active model"}
+                            title={switchingModel === model.name ? `Activating ${model.name}` : `Use ${model.name} as the active model`}
+                          >
+                            <Play aria-hidden="true" />
+                          </button>
+                        ) : null}
+                        <button
+                          type="button"
+                          className="icon-button model-catalog-icon-button model-catalog-icon-button-danger"
+                          disabled={Boolean(activeJob) || isConfigured || switchingModel !== null}
+                          onClick={() => void removeModel(model.name)}
+                          aria-label={activeJob?.action === "remove" ? "Removing" : "Remove"}
+                          title={activeJob?.action === "remove" ? `Removing ${model.name}` : `Remove ${model.name}`}
+                        >
+                          <Trash2 aria-hidden="true" />
+                        </button>
+                      </div>
                     </div>
                   </div>
                 );
               })
             ) : (
-              <p className="muted-text">No installed models match the current filter.</p>
+              <p className="muted-text">No installed models found.</p>
             )}
           </div>
         </div>
@@ -627,56 +795,72 @@ export function ModelsConsole({
                         : "model-catalog-item"
                     }
                   >
-                    <div className="model-catalog-item-header">
-                      <code>{model.name}</code>
-                      <div className="model-catalog-badges">
-                        <span
-                          className={
-                            isRemoteOnly
-                              ? "model-status-chip model-status-chip-remote"
-                              : "model-status-chip model-status-chip-available"
-                          }
-                        >
-                          {isRemoteOnly ? "remote" : "available"}
-                        </span>
-                        {isConfigured ? (
-                          <span className="status-pill status-pill-running">configured</span>
+                    <div className="model-catalog-row">
+                      <div className="model-catalog-primary">
+                        <code>{model.name}</code>
+                        {isRemoteOnly ? (
+                          <span className="model-catalog-note">
+                            Remote/cloud model. Visible for reference, but local installation is disabled.
+                          </span>
+                        ) : activeJob ? (
+                          <span className="model-catalog-note">{activeJob.message}</span>
                         ) : null}
                       </div>
-                    </div>
-                    {model.capabilities && model.capabilities.length > 0 ? (
-                      <div className="model-catalog-capabilities">
-                        {model.capabilities.map((capability) => (
-                          <span key={`${model.name}-${capability}`} className="model-capability-chip">
-                            {capability}
+                      <div className="model-catalog-meta">
+                        <div className="model-catalog-badges">
+                          <span
+                            className={
+                              isRemoteOnly
+                                ? "model-status-chip model-status-chip-remote"
+                                : "model-status-chip model-status-chip-available"
+                            }
+                          >
+                            {isRemoteOnly ? "remote" : "available"}
                           </span>
-                        ))}
+                          {model.sizeLabel ? <span className="model-meta-chip">{model.sizeLabel}</span> : null}
+                          {model.contextWindowLabel ? (
+                            <span className="model-meta-chip" title={`Context window ${model.contextWindowLabel}`}>
+                              {model.contextWindowLabel} ctx
+                            </span>
+                          ) : null}
+                          {isConfigured ? (
+                            <span className="status-pill status-pill-running">configured</span>
+                          ) : null}
+                          {model.capabilities?.map((capability) => (
+                              <span key={`${model.name}-${capability}`} className="model-capability-chip">
+                                {capability}
+                              </span>
+                            ))}
+                        </div>
                       </div>
-                    ) : null}
-                    <div className="model-catalog-item-actions">
-                      <button
-                        type="button"
-                        disabled={Boolean(activeJob) || isRemoteOnly}
-                        onClick={() => {
-                          if (!isRemoteOnly && !activeJob) {
-                            void startDownload(model.name);
+                      <div className="model-catalog-actions-inline">
+                        <button
+                          type="button"
+                          className="icon-button model-catalog-icon-button"
+                          disabled={Boolean(activeJob) || isRemoteOnly}
+                          onClick={() => {
+                            if (!isRemoteOnly && !activeJob) {
+                              void startDownload(model.name);
+                            }
+                          }}
+                          aria-label={
+                            isRemoteOnly
+                              ? "Remote only"
+                              : activeJob?.action === "install"
+                                ? "Downloading"
+                                : "Download"
                           }
-                        }}
-                      >
-                        <Download aria-hidden="true" />
-                        {isRemoteOnly
-                          ? "Remote Only"
-                          : activeJob?.action === "install"
-                            ? "Downloading"
-                            : "Download"}
-                      </button>
-                      {isRemoteOnly ? (
-                        <span className="helper-text">
-                          Remote/cloud model. Visible for reference, but local installation is disabled.
-                        </span>
-                      ) : activeJob ? (
-                        <span className="helper-text">{activeJob.message}</span>
-                      ) : null}
+                          title={
+                            isRemoteOnly
+                              ? `Remote only model ${model.name}`
+                              : activeJob?.action === "install"
+                                ? `Downloading ${model.name}`
+                                : `Download ${model.name}`
+                          }
+                        >
+                          <Download aria-hidden="true" />
+                        </button>
+                      </div>
                     </div>
                   </div>
                 );

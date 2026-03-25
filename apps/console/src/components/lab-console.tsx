@@ -1,18 +1,23 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ModelPicker } from "@/components/model-picker";
 import { PathHoverActions } from "@/components/path-hover-actions";
 import { SuggestStrategyField } from "@/components/suggest-strategy-field";
 import { formatDurationMs, formatTimestamp } from "@/lib/format";
 import type {
+  BenchmarkAggregateSummary,
+  BenchmarkRunSummary,
   BenchmarkResultRow,
   BenchmarkRunRow,
+  BenchmarkTrack,
   OllamaModelOption,
   SuggestStrategy,
 } from "@/lib/types";
+
+const BENCHMARK_STALL_THRESHOLD_MS = 45_000;
 
 type RankingResponse = {
   model_name: string;
@@ -37,6 +42,85 @@ interface LabConsoleProps {
 
 type InventorySummary = LabConsoleProps["inventorySummary"];
 
+function emptyAggregateSummary(): BenchmarkAggregateSummary {
+  return {
+    count: 0,
+    quality: {
+      positiveCaseCount: 0,
+      negativeCaseCount: 0,
+      positiveExactHitRate: 0,
+      negativeAvoidRate: 0,
+      validWinnerRate: 0,
+      candidateRecallAt3: 0,
+      charsSavedRatio: 0,
+    },
+    latency: {
+      count: 0,
+      mean: 0,
+      median: 0,
+      p90: 0,
+      p95: 0,
+      max: 0,
+    },
+    startStates: [],
+    coldPenaltyMs: 0,
+    stages: [],
+    budgetPassRates: [],
+    categoryBreakdown: [],
+    sourceBreakdown: [],
+  };
+}
+
+function formatRecencyLabel(value?: number) {
+  if (!value) {
+    return "n/a";
+  }
+  const elapsedMs = Date.now() - value;
+  if (elapsedMs < 1000) {
+    return "just now";
+  }
+  if (elapsedMs < 60_000) {
+    return `${Math.max(1, Math.round(elapsedMs / 1000))}s ago`;
+  }
+  if (elapsedMs < 3_600_000) {
+    return `${Math.max(1, Math.round(elapsedMs / 60_000))}m ago`;
+  }
+  return formatTimestamp(value);
+}
+
+function normalizeAggregateSummary(
+  aggregate?: Partial<BenchmarkAggregateSummary> | null,
+): BenchmarkAggregateSummary {
+  return {
+    count: aggregate?.count || 0,
+    quality: {
+      positiveCaseCount: aggregate?.quality?.positiveCaseCount || 0,
+      negativeCaseCount: aggregate?.quality?.negativeCaseCount || 0,
+      positiveExactHitRate: aggregate?.quality?.positiveExactHitRate || 0,
+      negativeAvoidRate: aggregate?.quality?.negativeAvoidRate || 0,
+      validWinnerRate: aggregate?.quality?.validWinnerRate || 0,
+      candidateRecallAt3: aggregate?.quality?.candidateRecallAt3 || 0,
+      charsSavedRatio: aggregate?.quality?.charsSavedRatio || 0,
+    },
+    latency: {
+      count: aggregate?.latency?.count || 0,
+      mean: aggregate?.latency?.mean || 0,
+      median: aggregate?.latency?.median || 0,
+      p90: aggregate?.latency?.p90 || 0,
+      p95: aggregate?.latency?.p95 || 0,
+      max: aggregate?.latency?.max || 0,
+    },
+    startStates: Array.isArray(aggregate?.startStates) ? aggregate.startStates : [],
+    coldPenaltyMs: aggregate?.coldPenaltyMs || 0,
+    stages: Array.isArray(aggregate?.stages) ? aggregate.stages : [],
+    budgetPassRates: Array.isArray(aggregate?.budgetPassRates) ? aggregate.budgetPassRates : [],
+    categoryBreakdown: Array.isArray(aggregate?.categoryBreakdown)
+      ? aggregate.categoryBreakdown
+      : [],
+    sourceBreakdown: Array.isArray(aggregate?.sourceBreakdown) ? aggregate.sourceBreakdown : [],
+  };
+}
+
 export function LabConsole({
   initialRuns,
   defaultModel,
@@ -57,6 +141,11 @@ export function LabConsole({
   } | null>(null);
   const [selectedRunId, setSelectedRunId] = useState<number | null>(null);
   const [runForm, setRunForm] = useState({
+    track: "static" as BenchmarkTrack,
+    suiteName: "core",
+    timingProtocol: "full" as BenchmarkRunRow["timingProtocol"],
+    strategy: defaultSuggestStrategy,
+    replaySampleLimit: "200",
     models: [defaultModel],
     repeatCount: "2",
     timeoutMs: "5000",
@@ -75,9 +164,25 @@ export function LabConsole({
   const [testResults, setTestResults] = useState<RankingResponse[]>([]);
   const [loadingRun, setLoadingRun] = useState(false);
   const [loadingRunId, setLoadingRunId] = useState<number | null>(null);
+  const [replayingRunId, setReplayingRunId] = useState<number | null>(null);
+  const [deletingRunId, setDeletingRunId] = useState<number | null>(null);
   const [loadingTest, setLoadingTest] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [resultFilters, setResultFilters] = useState({
+    model: "all",
+    category: "all",
+    labelKind: "all",
+    startState: "all",
+    query: "",
+  });
+  const workerLogRef = useRef<HTMLPreElement | null>(null);
+  const shouldFollowWorkerLogRef = useRef(true);
+  const selectedRunRef = useRef<{
+    run: BenchmarkRunRow;
+    results: BenchmarkResultRow[];
+  } | null>(null);
+  const selectedRunIdRef = useRef<number | null>(null);
   const normalizedRunModels = useMemo(
     () => runForm.models.map((value) => value.trim()).filter(Boolean),
     [runForm.models],
@@ -99,66 +204,62 @@ export function LabConsole({
     selectedRun?.run ||
     null;
 
-  function parseRunSummary(summary: Record<string, unknown> | null) {
+  function parseRunSummary(summary: BenchmarkRunSummary | null) {
+    const fallback = {
+      progress: {
+        completed: 0,
+        total: 0,
+        percent: 0,
+        status: "",
+        currentModel: "",
+        currentCase: "",
+        currentRun: 0,
+        currentPhase: "",
+      },
+      track: "static" as BenchmarkTrack,
+      surface: "end_to_end" as const,
+      suiteName: "",
+      strategy: "",
+      timingProtocol: "full" as const,
+      datasetSize: 0,
+      positiveCaseCount: 0,
+      negativeCaseCount: 0,
+      overall: emptyAggregateSummary(),
+      models: [],
+    };
+
     if (!summary) {
-      return {
-        progress: null as null | {
-          completed: number;
-          total: number;
-          percent: number;
-          status: string;
-          currentModel: string;
-          currentCase: string;
-          currentRun: number;
-        },
-        models: [] as Array<{
-          modelName: string;
-          total: number;
-          validPrefixRate: number;
-          acceptedRate: number;
-          avgLatencyMs: number;
-        }>,
-      };
+      return fallback;
     }
 
-    const progressSource =
-      "progress" in summary && summary.progress && typeof summary.progress === "object"
-        ? (summary.progress as Record<string, unknown>)
-        : null;
-
-    const modelsSource =
-      "models" in summary && summary.models && typeof summary.models === "object"
-        ? (summary.models as Record<string, unknown>)
-        : summary;
-
-    const models = Object.entries(modelsSource)
-      .filter((entry) => entry[0] !== "progress")
-      .map(([modelName, value]) => {
-        const parsed = value as Record<string, unknown>;
-        return {
-          modelName,
-          total: Number(parsed.total || 0),
-          validPrefixRate: Number(parsed.validPrefixRate || 0),
-          acceptedRate: Number(parsed.acceptedRate || 0),
-          avgLatencyMs: Number(parsed.avgLatencyMs || 0),
-        };
-      })
-      .filter((entry) => entry.total > 0)
-      .sort((left, right) => left.modelName.localeCompare(right.modelName));
-
     return {
-      progress: progressSource
-        ? {
-            completed: Number(progressSource.completed || 0),
-            total: Number(progressSource.total || 0),
-            percent: Number(progressSource.percent || 0),
-            status: String(progressSource.status || ""),
-            currentModel: String(progressSource.currentModel || ""),
-            currentCase: String(progressSource.currentCase || ""),
-            currentRun: Number(progressSource.currentRun || 0),
-          }
-        : null,
-      models,
+      progress: {
+        completed: summary.progress?.completed || 0,
+        total: summary.progress?.total || 0,
+        percent: summary.progress?.percent || 0,
+        status: summary.progress?.status || "",
+        currentModel: summary.progress?.currentModel || "",
+        currentCase: summary.progress?.currentCase || "",
+        currentRun: summary.progress?.currentRun || 0,
+        currentPhase: summary.progress?.currentPhase || "",
+      },
+      track: summary.track || fallback.track,
+      surface: summary.surface || fallback.surface,
+      suiteName: summary.suiteName || "",
+      strategy: summary.strategy || "",
+      timingProtocol: summary.timingProtocol || fallback.timingProtocol,
+      datasetSize: summary.datasetSize || 0,
+      positiveCaseCount: summary.positiveCaseCount || 0,
+      negativeCaseCount: summary.negativeCaseCount || 0,
+      overall: normalizeAggregateSummary(summary.overall),
+      models: Array.isArray(summary.models)
+        ? summary.models.map((modelSummary) => ({
+            model: modelSummary.model || "",
+            overall: normalizeAggregateSummary(modelSummary.overall),
+            cold: normalizeAggregateSummary(modelSummary.cold),
+            hot: normalizeAggregateSummary(modelSummary.hot),
+          }))
+        : [],
     };
   }
 
@@ -166,6 +267,65 @@ export function LabConsole({
     () => parseRunSummary(selectedRun?.run.summary || selectedRunMeta?.summary || null),
     [selectedRun, selectedRunMeta],
   );
+  const selectedRunResults = useMemo(() => selectedRun?.results || [], [selectedRun]);
+  const filteredRunResults = useMemo(
+    () =>
+      selectedRunResults.filter((row) => {
+        if (resultFilters.model !== "all" && row.modelName !== resultFilters.model) {
+          return false;
+        }
+        if (resultFilters.category !== "all" && row.category !== resultFilters.category) {
+          return false;
+        }
+        if (resultFilters.labelKind !== "all" && row.labelKind !== resultFilters.labelKind) {
+          return false;
+        }
+        if (resultFilters.startState !== "all" && row.startState !== resultFilters.startState) {
+          return false;
+        }
+        if (!resultFilters.query.trim()) {
+          return true;
+        }
+        const query = resultFilters.query.trim().toLowerCase();
+        return (
+          row.caseName.toLowerCase().includes(query) ||
+          row.winnerCommand.toLowerCase().includes(query) ||
+          row.expectedCommand.toLowerCase().includes(query) ||
+          row.negativeTarget.toLowerCase().includes(query)
+        );
+      }),
+    [resultFilters, selectedRunResults],
+  );
+  const selectedRunLastEventAtMs =
+    selectedRunMeta?.lastEventAtMs || selectedRun?.run.lastEventAtMs || 0;
+  const selectedRunLogText = (selectedRunMeta?.logText || selectedRun?.run.logText || "").trim();
+  const selectedRunIsActive =
+    (selectedRunMeta?.status || selectedRun?.run.status) === "running" ||
+    (selectedRunMeta?.status || selectedRun?.run.status) === "queued";
+  const selectedRunIsStalled =
+    selectedRunIsActive &&
+    selectedRunLastEventAtMs > 0 &&
+    Date.now() - selectedRunLastEventAtMs > BENCHMARK_STALL_THRESHOLD_MS;
+
+  useEffect(() => {
+    setModelOptions(availableModels);
+  }, [availableModels]);
+
+  useEffect(() => {
+    setModelInventory(inventorySummary);
+  }, [inventorySummary]);
+
+  useEffect(() => {
+    selectedRunRef.current = selectedRun;
+  }, [selectedRun]);
+
+  useEffect(() => {
+    selectedRunIdRef.current = selectedRunId;
+  }, [selectedRunId]);
+
+  useEffect(() => {
+    setRuns(initialRuns);
+  }, [initialRuns]);
 
   useEffect(() => {
     let cancelled = false;
@@ -202,13 +362,15 @@ export function LabConsole({
               libraryError?: string;
             };
             if (!cancelled) {
-              setModelOptions(inventoryData.models || []);
-              setModelInventory({
-                installedCount: inventoryData.installedCount || 0,
-                libraryCount: inventoryData.libraryCount || 0,
+              if (Array.isArray(inventoryData.models) && inventoryData.models.length > 0) {
+                setModelOptions(inventoryData.models);
+              }
+              setModelInventory((current) => ({
+                installedCount: inventoryData.installedCount ?? current.installedCount,
+                libraryCount: inventoryData.libraryCount ?? current.libraryCount,
                 installedError: inventoryData.installedError,
                 libraryError: inventoryData.libraryError,
-              });
+              }));
             }
           }
         } catch {
@@ -220,6 +382,10 @@ export function LabConsole({
             current.models.length === 1 && current.models[0] === defaultModel
               ? [nextDefaults.model]
               : current.models,
+          strategy:
+            current.strategy === defaultSuggestStrategy
+              ? nextDefaults.suggestStrategy
+              : current.strategy,
         }));
         setTestForm((current) => ({
           ...current,
@@ -242,6 +408,18 @@ export function LabConsole({
       cancelled = true;
     };
   }, [defaultModel, defaultSuggestStrategy]);
+
+  useEffect(() => {
+    shouldFollowWorkerLogRef.current = true;
+  }, [selectedRunId]);
+
+  useEffect(() => {
+    const container = workerLogRef.current;
+    if (!container || !shouldFollowWorkerLogRef.current) {
+      return;
+    }
+    container.scrollTop = container.scrollHeight;
+  }, [selectedRunLogText]);
 
   function addModel(
     target: "run" | "test",
@@ -283,24 +461,57 @@ export function LabConsole({
     }));
   }
 
-  const refreshRuns = useCallback(async () => {
-    const response = await fetch("/api/benchmarks");
+  const refreshRuns = useCallback(async (selectedRunIdOverride?: number | null) => {
+    const response = await fetch("/api/benchmarks", { cache: "no-store" });
+    if (!response.ok) {
+      throw new Error("Unable to refresh benchmark runs");
+    }
     const data = (await response.json()) as { runs: BenchmarkRunRow[] };
     setRuns(data.runs);
-    if (selectedRunId !== null) {
-      const nextSelected = data.runs.find((run) => run.id === selectedRunId) || null;
-      if (nextSelected && selectedRun) {
+    const currentSelectedRunId = selectedRunIdOverride ?? selectedRunIdRef.current;
+    const currentSelectedRun = selectedRunRef.current;
+    if (currentSelectedRunId !== null) {
+      const nextSelected = data.runs.find((run) => run.id === currentSelectedRunId) || null;
+      if (!nextSelected) {
+        setSelectedRun(null);
+        setSelectedRunId(null);
+        return;
+      }
+      if (currentSelectedRun) {
         setSelectedRun((current) => (current ? { ...current, run: nextSelected } : current));
       }
       if (
         nextSelected &&
         (nextSelected.status === "completed" || nextSelected.status === "failed") &&
-        (!selectedRun || selectedRun.run.finishedAtMs !== nextSelected.finishedAtMs)
+        (!currentSelectedRun || currentSelectedRun.run.finishedAtMs !== nextSelected.finishedAtMs)
       ) {
-        void loadRun(selectedRunId);
+        void loadRun(currentSelectedRunId);
       }
     }
-  }, [selectedRun, selectedRunId]);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function syncRunsOnMount() {
+      try {
+        await refreshRuns();
+      } catch (requestError) {
+        if (!cancelled && initialRuns.length === 0) {
+          setError(
+            requestError instanceof Error
+              ? requestError.message
+              : "Unable to refresh benchmark runs",
+          );
+        }
+      }
+    }
+
+    void syncRunsOnMount();
+    return () => {
+      cancelled = true;
+    };
+  }, [initialRuns.length, refreshRuns]);
 
   useEffect(() => {
     if (activeRuns.length === 0) {
@@ -316,7 +527,7 @@ export function LabConsole({
     setLoadingRunId(runId);
     setError("");
     try {
-      const response = await fetch(`/api/benchmarks/${runId}`);
+      const response = await fetch(`/api/benchmarks/${runId}`, { cache: "no-store" });
       const data = (await response.json()) as
         | { error: string }
         | { run: BenchmarkRunRow; results: BenchmarkResultRow[] };
@@ -325,6 +536,13 @@ export function LabConsole({
       }
       setSelectedRun(data);
       setSelectedRunId(runId);
+      setResultFilters({
+        model: "all",
+        category: "all",
+        labelKind: "all",
+        startState: "all",
+        query: "",
+      });
     } catch (requestError) {
       setError(
         requestError instanceof Error ? requestError.message : "Unable to load benchmark run",
@@ -336,6 +554,11 @@ export function LabConsole({
 
   function resetBenchmarkForm() {
     setRunForm({
+      track: "static",
+      suiteName: "core",
+      timingProtocol: "full",
+      strategy: runtimeDefaults.suggestStrategy,
+      replaySampleLimit: "200",
       models: [runtimeDefaults.model],
       repeatCount: "2",
       timeoutMs: "5000",
@@ -373,9 +596,14 @@ export function LabConsole({
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
+          track: runForm.track,
+          suiteName: runForm.suiteName,
+          strategy: runForm.strategy,
+          timingProtocol: runForm.timingProtocol,
           models: normalizedRunModels,
           repeatCount: Number.parseInt(runForm.repeatCount || "1", 10) || 1,
           timeoutMs: Number.parseInt(runForm.timeoutMs || "5000", 10) || 5000,
+          replaySampleLimit: Number.parseInt(runForm.replaySampleLimit || "200", 10) || 200,
         }),
       });
       const data = (await response.json()) as { runId?: number; error?: string };
@@ -383,14 +611,101 @@ export function LabConsole({
         throw new Error(data.error || "Unable to start benchmark");
       }
       setMessage(`Benchmark queued as run #${data.runId}.`);
-      await refreshRuns();
       if (typeof data.runId === "number") {
         setSelectedRunId(data.runId);
+        await refreshRuns(data.runId);
+      } else {
+        await refreshRuns();
       }
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Unable to start benchmark");
     } finally {
       setLoadingRun(false);
+    }
+  }
+
+  async function replayBenchmark(run: BenchmarkRunRow) {
+    setReplayingRunId(run.id);
+    setMessage("");
+    setError("");
+    try {
+      const response = await fetch("/api/benchmarks/run", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          track: run.track,
+          suiteName: run.suiteName,
+          strategy: run.strategy,
+          timingProtocol: run.timingProtocol,
+          models: run.models,
+          repeatCount: run.repeatCount,
+          timeoutMs: run.timeoutMs,
+          replaySampleLimit: (() => {
+            try {
+              return Number((JSON.parse(run.filtersJson || "{}") as { sample_limit?: number }).sample_limit || 200);
+            } catch {
+              return 200;
+            }
+          })(),
+        }),
+      });
+      const data = (await response.json()) as { runId?: number; error?: string };
+      if (!response.ok) {
+        throw new Error(data.error || "Unable to replay benchmark");
+      }
+      setMessage(`Benchmark replay queued as run #${data.runId}.`);
+      if (typeof data.runId === "number") {
+        setSelectedRunId(data.runId);
+        await refreshRuns(data.runId);
+      } else {
+        await refreshRuns();
+      }
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Unable to replay benchmark");
+    } finally {
+      setReplayingRunId(null);
+    }
+  }
+
+  async function deleteRun(run: BenchmarkRunRow) {
+    if (run.status === "queued" || run.status === "running") {
+      setError("Queued or running benchmark runs cannot be deleted.");
+      return;
+    }
+
+    if (
+      !window.confirm(
+        `Delete benchmark run #${run.id}? This removes its saved results and JSON artifact.`,
+      )
+    ) {
+      return;
+    }
+
+    setDeletingRunId(run.id);
+    setMessage("");
+    setError("");
+    try {
+      const response = await fetch(`/api/benchmarks/${run.id}`, {
+        method: "DELETE",
+      });
+      const data = (await response.json()) as { error?: string; deletedRunId?: number };
+      if (!response.ok) {
+        throw new Error(data.error || "Unable to delete benchmark run");
+      }
+
+      setRuns((current) => current.filter((item) => item.id !== run.id));
+      if (selectedRunIdRef.current === run.id) {
+        setSelectedRun(null);
+        setSelectedRunId(null);
+      }
+      setMessage(`Deleted benchmark run #${run.id}.`);
+      await refreshRuns();
+    } catch (requestError) {
+      setError(
+        requestError instanceof Error ? requestError.message : "Unable to delete benchmark run",
+      );
+    } finally {
+      setDeletingRunId(null);
     }
   }
 
@@ -483,7 +798,7 @@ export function LabConsole({
               label="Models"
               selected={runForm.models}
               inputValue={runModelInput}
-              options={availableModels}
+              options={modelOptions}
               installedOnly
               onInputChange={setRunModelInput}
               onAdd={(value) => addModel("run", value)}
@@ -505,9 +820,97 @@ export function LabConsole({
               }
             />
             <p className="helper-text">
-              Saved benchmarks compare raw model completions against the benchmark suite. Use the ad-hoc form below to compare suggestion strategies.
+              Saved benchmarks can run the curated static suite, a replay sample from your live SQLite history, or raw prompt/model checks with richer timing breakdowns.
             </p>
             <div className="form-grid compact">
+              <label>
+                Track
+                <select
+                  value={runForm.track}
+                  onChange={(event) =>
+                    setRunForm((current) => ({
+                      ...current,
+                      track: event.target.value as BenchmarkTrack,
+                      suiteName:
+                        event.target.value === "replay"
+                          ? "live-db"
+                          : current.track === "replay"
+                            ? "core"
+                            : current.suiteName,
+                    }))
+                  }
+                >
+                  <option value="static">Static suite</option>
+                  <option value="replay">Replay from live DB</option>
+                  <option value="raw">Raw model</option>
+                </select>
+              </label>
+              <label>
+                Suite
+                <select
+                  value={runForm.suiteName}
+                  onChange={(event) =>
+                    setRunForm((current) => ({ ...current, suiteName: event.target.value }))
+                  }
+                  disabled={runForm.track === "replay"}
+                >
+                  <option value={runForm.track === "replay" ? "live-db" : "core"}>
+                    {runForm.track === "replay" ? "live-db" : "core"}
+                  </option>
+                  {runForm.track !== "replay" ? <option value="extended">extended</option> : null}
+                  {runForm.track !== "replay" ? <option value="all">all</option> : null}
+                </select>
+              </label>
+              <label>
+                Timing
+                <select
+                  value={runForm.timingProtocol}
+                  onChange={(event) =>
+                    setRunForm((current) => ({
+                      ...current,
+                      timingProtocol: event.target.value as BenchmarkRunRow["timingProtocol"],
+                    }))
+                  }
+                >
+                  <option value="full">full</option>
+                  <option value="cold_only">cold only</option>
+                  <option value="hot_only">hot only</option>
+                  <option value="mixed">mixed</option>
+                </select>
+              </label>
+              <label>
+                Strategy
+                <select
+                  value={runForm.strategy}
+                  onChange={(event) =>
+                    setRunForm((current) => ({
+                      ...current,
+                      strategy: event.target.value as SuggestStrategy,
+                    }))
+                  }
+                  disabled={runForm.track === "raw"}
+                >
+                  <option value="history+model">History + model</option>
+                  <option value="history-only">History only</option>
+                  <option value="model-only">Model only</option>
+                </select>
+              </label>
+              <label>
+                Replay Sample
+                <input
+                  type="number"
+                  min={1}
+                  inputMode="numeric"
+                  value={runForm.replaySampleLimit}
+                  disabled={runForm.track !== "replay"}
+                  onChange={(event) =>
+                    setRunForm((current) => ({
+                      ...current,
+                      replaySampleLimit: event.target.value,
+                    }))
+                  }
+                />
+              </label>
               <label>
                 Repeat Count
                 <input
@@ -748,7 +1151,7 @@ export function LabConsole({
           <div>
             <h3>Saved Benchmark Runs</h3>
             <p className="helper-text">
-              Review queued and completed runs, then drill into the saved result rows below.
+              Review queued and completed runs across static, replay, and raw tracks, then drill into the richer timing and quality breakdowns below.
             </p>
           </div>
         </div>
@@ -766,8 +1169,11 @@ export function LabConsole({
               <tr>
                 <th>Run</th>
                 <th>Status</th>
+                <th>Track</th>
                 <th>Progress</th>
                 <th>Models</th>
+                <th>Suite</th>
+                <th>Protocol</th>
                 <th>Repeat</th>
                 <th>Timeout</th>
                 <th>Created</th>
@@ -785,10 +1191,13 @@ export function LabConsole({
                     <span className={`status-pill status-pill-${run.status}`}>{run.status}</span>
                   </td>
                   <td>
+                    <span>{run.track}</span>
+                  </td>
+                  <td>
                     {(() => {
                       const summary = parseRunSummary(run.summary);
                       const progress = summary.progress;
-                      if (!progress) {
+                      if (!progress.total && run.status !== "running" && run.status !== "queued") {
                         return <span className="muted-text">{run.status === "completed" ? "Done" : "Waiting"}</span>;
                       }
                       return (
@@ -809,23 +1218,52 @@ export function LabConsole({
                     })()}
                   </td>
                   <td>{run.models.join(", ")}</td>
+                  <td>{run.suiteName}</td>
+                  <td>{run.timingProtocol}</td>
                   <td>{run.repeatCount}</td>
                   <td>{formatDurationMs(run.timeoutMs)}</td>
                   <td>{formatTimestamp(run.createdAtMs)}</td>
                   <td>
-                    <button
-                      type="button"
-                      className="button-secondary"
-                      onClick={() => void loadRun(run.id)}
-                    >
-                      {loadingRunId === run.id ? "Loading..." : "View"}
-                    </button>
+                    <div className="inline-actions">
+                      <button
+                        type="button"
+                        className="button-secondary"
+                        onClick={() => void replayBenchmark(run)}
+                        disabled={replayingRunId !== null}
+                      >
+                        {replayingRunId === run.id ? "Replaying..." : "Replay"}
+                      </button>
+                      <button
+                        type="button"
+                        className="button-secondary"
+                        onClick={() => void loadRun(run.id)}
+                      >
+                        {loadingRunId === run.id ? "Loading..." : "View"}
+                      </button>
+                      <button
+                        type="button"
+                        className="button-danger"
+                        onClick={() => void deleteRun(run)}
+                        disabled={
+                          deletingRunId !== null ||
+                          run.status === "queued" ||
+                          run.status === "running"
+                        }
+                        title={
+                          run.status === "queued" || run.status === "running"
+                            ? "Wait for the benchmark to finish before deleting it."
+                            : undefined
+                        }
+                      >
+                        {deletingRunId === run.id ? "Deleting..." : "Delete"}
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
               {runs.length === 0 ? (
                 <tr>
-                  <td colSpan={8}>No benchmark runs saved yet.</td>
+                  <td colSpan={11}>No benchmark runs saved yet.</td>
                 </tr>
               ) : null}
             </tbody>
@@ -839,8 +1277,16 @@ export function LabConsole({
             <div>
               <h3>Benchmark Run #{selectedRun.run.id}</h3>
               <p className="muted-text">
-                Status: {selectedRunMeta?.status || selectedRun.run.status} · Models: {selectedRun.run.models.join(", ")}
+                Status: {selectedRunMeta?.status || selectedRun.run.status} · Track: {selectedRun.run.track} · Suite: {selectedRun.run.suiteName} · Protocol: {selectedRun.run.timingProtocol}
               </p>
+              <p className="helper-text">
+                Last worker update: {formatRecencyLabel(selectedRunLastEventAtMs)}
+              </p>
+              {selectedRunIsStalled ? (
+                <p className="error-text">
+                  This run may be stalled. No benchmark worker updates have arrived for more than {Math.round(BENCHMARK_STALL_THRESHOLD_MS / 1000)}s.
+                </p>
+              ) : null}
               {selectedRunMeta?.errorText || selectedRun.run.errorText ? (
                 <p className="error-text">{selectedRunMeta?.errorText || selectedRun.run.errorText}</p>
               ) : null}
@@ -856,87 +1302,364 @@ export function LabConsole({
               Close Run
             </button>
           </div>
-          {selectedRunSummary.progress ? (
-            <div className="run-progress-panel">
-              <div className="run-progress-copy">
-                <strong>
-                  {selectedRunSummary.progress.total > 0
-                    ? `${selectedRunSummary.progress.completed}/${selectedRunSummary.progress.total} benchmark checks complete`
-                    : selectedRunSummary.progress.status || "Running"}
-                </strong>
-                <span>
-                  {selectedRunSummary.progress.currentModel
-                    ? `${selectedRunSummary.progress.currentModel} · ${selectedRunSummary.progress.currentCase || "warming up"}`
-                    : "Waiting for the next benchmark update."}
-                </span>
-              </div>
-              <div className="progress-bar progress-bar-large">
-                <div
-                  className="progress-bar-fill"
-                  style={{
-                    width: `${Math.max(6, selectedRunSummary.progress.percent)}%`,
-                  }}
-                />
-              </div>
+          <div className="run-progress-panel">
+            <div className="run-progress-copy">
+              <strong>
+                {selectedRunSummary.progress.total > 0
+                  ? `${selectedRunSummary.progress.completed}/${selectedRunSummary.progress.total} benchmark checks complete`
+                  : selectedRunSummary.progress.status || "Running"}
+              </strong>
+              <span>
+                {selectedRunSummary.progress.currentModel
+                  ? `${selectedRunSummary.progress.currentModel} · ${selectedRunSummary.progress.currentCase || "warming up"} · ${selectedRunSummary.progress.currentPhase || "mixed"}`
+                  : "Waiting for the next benchmark update."}
+              </span>
             </div>
-          ) : null}
+            <div className="progress-bar progress-bar-large">
+              <div
+                className="progress-bar-fill"
+                style={{
+                  width: `${Math.max(6, selectedRunSummary.progress.percent)}%`,
+                }}
+              />
+            </div>
+          </div>
+          <div className="panel subtle-panel">
+            <div className="panel-body">
+              <ul className="metric-list compact-metrics">
+                <li>
+                  <span>Dataset</span>
+                  <strong>{selectedRunSummary.datasetSize}</strong>
+                </li>
+                <li>
+                  <span>Positive exact</span>
+                  <strong>{Math.round(selectedRunSummary.overall.quality.positiveExactHitRate * 100)}%</strong>
+                </li>
+                <li>
+                  <span>Negative avoid</span>
+                  <strong>{Math.round(selectedRunSummary.overall.quality.negativeAvoidRate * 100)}%</strong>
+                </li>
+                <li>
+                  <span>Valid winner</span>
+                  <strong>{Math.round(selectedRunSummary.overall.quality.validWinnerRate * 100)}%</strong>
+                </li>
+                <li>
+                  <span>Mean latency</span>
+                  <strong>{formatDurationMs(selectedRunSummary.overall.latency.mean)}</strong>
+                </li>
+                <li>
+                  <span>P95 latency</span>
+                  <strong>{formatDurationMs(selectedRunSummary.overall.latency.p95)}</strong>
+                </li>
+              </ul>
+            </div>
+          </div>
           {selectedRunSummary.models.length > 0 ? (
             <div className="benchmark-compare-grid">
               {selectedRunSummary.models.map((summary) => (
-                <div key={summary.modelName} className="benchmark-compare-card">
+                <div key={summary.model} className="benchmark-compare-card">
                   <div className="benchmark-compare-header">
-                    <strong>{summary.modelName}</strong>
-                    <span>{summary.total} cases</span>
+                    <strong>{summary.model}</strong>
+                    <span>{summary.overall.count} attempts</span>
                   </div>
                   <dl className="benchmark-compare-stats">
                     <div>
-                      <dt>Avg. latency</dt>
-                      <dd>{formatDurationMs(summary.avgLatencyMs)}</dd>
+                      <dt>Exact</dt>
+                      <dd>{Math.round(summary.overall.quality.positiveExactHitRate * 100)}%</dd>
                     </div>
                     <div>
-                      <dt>Valid prefix</dt>
-                      <dd>{Math.round(summary.validPrefixRate * 100)}%</dd>
+                      <dt>Mean</dt>
+                      <dd>{formatDurationMs(summary.overall.latency.mean)}</dd>
                     </div>
                     <div>
-                      <dt>Accepted</dt>
-                      <dd>{Math.round(summary.acceptedRate * 100)}%</dd>
+                      <dt>Cold</dt>
+                      <dd>{formatDurationMs(summary.cold.latency.mean)}</dd>
+                    </div>
+                    <div>
+                      <dt>Hot</dt>
+                      <dd>{formatDurationMs(summary.hot.latency.mean)}</dd>
                     </div>
                   </dl>
                 </div>
               ))}
             </div>
           ) : null}
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Model</th>
-                  <th>Case</th>
-                  <th>Run</th>
-                  <th>Latency</th>
-                  <th>Valid Prefix</th>
-                  <th>Accepted</th>
-                  <th>Suggestion</th>
-                  <th>Error</th>
-                </tr>
-              </thead>
-              <tbody>
-                {selectedRun.results.map((result) => (
-                  <tr key={result.id}>
-                    <td>{result.modelName}</td>
-                    <td>{result.caseName}</td>
-                    <td>{result.runNumber}</td>
-                    <td>{formatDurationMs(result.latencyMs)}</td>
-                    <td>{result.validPrefix ? "yes" : "no"}</td>
-                    <td>{result.accepted ? "yes" : "no"}</td>
-                    <td>
-                      <code>{result.suggestionText}</code>
-                    </td>
-                    <td>{result.errorText || "n/a"}</td>
+          <div className="grid two-up">
+            <div className="detail-block">
+              <div className="detail-block-header">
+                <div>
+                  <h3>Latency By Start State</h3>
+                  <p className="helper-text">Cold/hot split using Ollama load timing when the model ran.</p>
+                </div>
+              </div>
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>State</th>
+                      <th>Count</th>
+                      <th>Share</th>
+                      <th>Mean</th>
+                      <th>P95</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {selectedRunSummary.overall.startStates.map((state) => (
+                      <tr key={state.key}>
+                        <td>{state.key}</td>
+                        <td>{state.count}</td>
+                        <td>{Math.round(state.share * 100)}%</td>
+                        <td>{formatDurationMs(state.latency.mean)}</td>
+                        <td>{formatDurationMs(state.latency.p95)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div className="detail-block">
+              <div className="detail-block-header">
+                <div>
+                  <h3>Stage Breakdown</h3>
+                  <p className="helper-text">Average request, load, prompt, decode, and non-model overhead by start state.</p>
+                </div>
+              </div>
+              <div className="stack-sm">
+                {selectedRunSummary.overall.stages.map((stage) => {
+                  const total = Math.max(
+                    stage.avgRequestLatencyMs,
+                    stage.avgLoadDurationMs +
+                      stage.avgPromptEvalDurationMs +
+                      stage.avgEvalDurationMs +
+                      stage.avgNonModelOverheadMs,
+                  );
+                  return (
+                    <div key={stage.label} className="result-card">
+                      <div className="result-card-header">
+                        <strong>{stage.label}</strong>
+                        <span>{formatDurationMs(stage.avgRequestLatencyMs)}</span>
+                      </div>
+                      <div className="benchmark-stage-bar" aria-hidden>
+                        <span style={{ width: `${(stage.avgLoadDurationMs / Math.max(total, 1)) * 100}%`, background: "var(--status-warning)" }} />
+                        <span style={{ width: `${(stage.avgPromptEvalDurationMs / Math.max(total, 1)) * 100}%`, background: "var(--primary)" }} />
+                        <span style={{ width: `${(stage.avgEvalDurationMs / Math.max(total, 1)) * 100}%`, background: "var(--status-success)" }} />
+                        <span style={{ width: `${(stage.avgNonModelOverheadMs / Math.max(total, 1)) * 100}%`, background: "var(--border-strong)" }} />
+                      </div>
+                      <p className="helper-text">
+                        load {formatDurationMs(stage.avgLoadDurationMs)} · prompt {formatDurationMs(stage.avgPromptEvalDurationMs)} · decode {formatDurationMs(stage.avgEvalDurationMs)} · overhead {formatDurationMs(stage.avgNonModelOverheadMs)}
+                      </p>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+          <div className="grid two-up">
+            <div className="detail-block">
+              <div className="detail-block-header">
+                <div>
+                  <h3>Category Breakdown</h3>
+                </div>
+              </div>
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Category</th>
+                      <th>Count</th>
+                      <th>Exact</th>
+                      <th>Avoid</th>
+                      <th>Mean</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {selectedRunSummary.overall.categoryBreakdown.map((row) => (
+                      <tr key={row.key}>
+                        <td>{row.label}</td>
+                        <td>{row.count}</td>
+                        <td>{Math.round(row.quality.positiveExactHitRate * 100)}%</td>
+                        <td>{Math.round(row.quality.negativeAvoidRate * 100)}%</td>
+                        <td>{formatDurationMs(row.latency.mean)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div className="detail-block">
+              <div className="detail-block-header">
+                <div>
+                  <h3>Source Breakdown</h3>
+                </div>
+              </div>
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Winner Source</th>
+                      <th>Count</th>
+                      <th>Share</th>
+                      <th>Mean</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {selectedRunSummary.overall.sourceBreakdown.map((row) => (
+                      <tr key={row.key}>
+                        <td>{row.label}</td>
+                        <td>{row.count}</td>
+                        <td>{Math.round(row.share * 100)}%</td>
+                        <td>{formatDurationMs(row.latency.mean)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+          <div className="detail-block">
+            <div className="detail-block-header">
+              <div>
+                <h3>Attempt Table</h3>
+                <p className="helper-text">
+                  Filter by model, category, label kind, start state, or search across case names and commands.
+                </p>
+              </div>
+            </div>
+            <div className="form-grid compact">
+              <label>
+                Model
+                <select
+                  value={resultFilters.model}
+                  onChange={(event) => setResultFilters((current) => ({ ...current, model: event.target.value }))}
+                >
+                  <option value="all">All</option>
+                  {[...new Set(selectedRunResults.map((row) => row.modelName))].map((value) => (
+                    <option key={value} value={value}>
+                      {value}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Category
+                <select
+                  value={resultFilters.category}
+                  onChange={(event) => setResultFilters((current) => ({ ...current, category: event.target.value }))}
+                >
+                  <option value="all">All</option>
+                  {[...new Set(selectedRunResults.map((row) => row.category))].map((value) => (
+                    <option key={value} value={value}>
+                      {value}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Label kind
+                <select
+                  value={resultFilters.labelKind}
+                  onChange={(event) => setResultFilters((current) => ({ ...current, labelKind: event.target.value }))}
+                >
+                  <option value="all">All</option>
+                  <option value="positive">positive</option>
+                  <option value="negative">negative</option>
+                </select>
+              </label>
+              <label>
+                Start state
+                <select
+                  value={resultFilters.startState}
+                  onChange={(event) => setResultFilters((current) => ({ ...current, startState: event.target.value }))}
+                >
+                  <option value="all">All</option>
+                  <option value="cold">cold</option>
+                  <option value="hot">hot</option>
+                  <option value="unknown">unknown</option>
+                  <option value="not_applicable">not applicable</option>
+                </select>
+              </label>
+              <label>
+                Search
+                <input
+                  value={resultFilters.query}
+                  onChange={(event) => setResultFilters((current) => ({ ...current, query: event.target.value }))}
+                  placeholder="case or command"
+                />
+              </label>
+            </div>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Model</th>
+                    <th>Case</th>
+                    <th>Phase</th>
+                    <th>Latency</th>
+                    <th>Start</th>
+                    <th>Match</th>
+                    <th>Winner</th>
+                    <th>Target</th>
+                    <th>Error</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {filteredRunResults.map((result) => (
+                    <tr key={result.id}>
+                      <td>{result.modelName}</td>
+                      <td>{result.caseName}</td>
+                      <td>{result.timingPhase}</td>
+                      <td>{formatDurationMs(result.requestLatencyMs)}</td>
+                      <td>{result.startState}</td>
+                      <td>
+                        {result.labelKind === "negative"
+                          ? result.negativeAvoided
+                            ? "avoid"
+                            : "miss"
+                          : result.exactMatch
+                            ? "exact"
+                            : result.alternativeMatch
+                              ? "alt"
+                              : "miss"}
+                      </td>
+                      <td>
+                        <code>{result.winnerCommand || "No winner"}</code>
+                      </td>
+                      <td>
+                        <code>{result.expectedCommand || result.negativeTarget || "n/a"}</code>
+                      </td>
+                      <td>{result.errorText || result.modelError || "n/a"}</td>
+                    </tr>
+                  ))}
+                  {filteredRunResults.length === 0 ? (
+                    <tr>
+                      <td colSpan={9}>No attempts matched the current filters.</td>
+                    </tr>
+                  ) : null}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div className="detail-block">
+            <div className="detail-block-header">
+              <div>
+                <h3>Worker Log</h3>
+                <p className="helper-text">
+                  Live benchmark worker stdout and stderr for this run.
+                </p>
+              </div>
+            </div>
+            <pre
+              ref={workerLogRef}
+              className="code-block benchmark-log-block"
+              onScroll={(event) => {
+                const container = event.currentTarget;
+                const distanceFromBottom =
+                  container.scrollHeight - container.clientHeight - container.scrollTop;
+                shouldFollowWorkerLogRef.current = distanceFromBottom <= 12;
+              }}
+            >
+              {selectedRunLogText || "No benchmark log output yet."}
+            </pre>
           </div>
         </div>
       ) : null}

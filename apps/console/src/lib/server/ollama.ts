@@ -18,6 +18,7 @@ type OllamaShowResponse = {
     parameter_size?: string | null;
     quantization_level?: string | null;
   };
+  model_info?: Record<string, string | number | boolean | null>;
 };
 
 type OllamaPsResponse = {
@@ -61,12 +62,25 @@ function uniqueSortedModels(models: OllamaModelOption[]) {
     }
 
     if (!existing.installed && model.installed) {
-      deduped.set(model.name, model);
+      deduped.set(model.name, { ...existing, ...model });
       continue;
     }
 
     if (existing.remoteOnly && !model.remoteOnly) {
-      deduped.set(model.name, model);
+      deduped.set(model.name, { ...existing, ...model });
+      continue;
+    }
+
+    if (!existing.sizeLabel && model.sizeLabel) {
+      deduped.set(model.name, { ...existing, sizeLabel: model.sizeLabel });
+      continue;
+    }
+
+    if (!existing.contextWindowLabel && model.contextWindowLabel) {
+      deduped.set(model.name, {
+        ...existing,
+        contextWindowLabel: model.contextWindowLabel,
+      });
     }
   }
 
@@ -76,6 +90,121 @@ function uniqueSortedModels(models: OllamaModelOption[]) {
     }
     return left.name.localeCompare(right.name);
   });
+}
+
+function normalizeSizeLabel(value?: string | null) {
+  const trimmed = value?.trim() || "";
+  if (!trimmed) {
+    return "";
+  }
+  return trimmed;
+}
+
+function formatContextWindowValue(value: number) {
+  const rounded = Math.round(value);
+  if (!Number.isFinite(rounded) || rounded <= 0) {
+    return "";
+  }
+
+  if (rounded >= 1024 && rounded % 1024 === 0) {
+    return `${rounded / 1024}K`;
+  }
+
+  if (rounded >= 1000) {
+    const thousands = rounded / 1000;
+    const precision = thousands >= 10 ? 0 : 1;
+    return `${thousands.toFixed(precision).replace(/\.0$/, "")}K`;
+  }
+
+  return `${rounded}`;
+}
+
+function normalizeContextWindowLabel(value?: string | number | null) {
+  if (typeof value === "number") {
+    return formatContextWindowValue(value);
+  }
+
+  const trimmed = value?.trim() || "";
+  if (!trimmed) {
+    return "";
+  }
+
+  const withoutSuffix = trimmed.replace(/\s+context window$/i, "").trim();
+  const compactMatch = withoutSuffix.match(/^(\d+(?:\.\d+)?)\s*([km])$/i);
+  if (compactMatch) {
+    return `${compactMatch[1]}${compactMatch[2].toUpperCase()}`;
+  }
+
+  if (/^\d+(?:\.\d+)?$/.test(withoutSuffix)) {
+    return formatContextWindowValue(Number(withoutSuffix));
+  }
+
+  return withoutSuffix.toUpperCase();
+}
+
+function extractContextWindowLabel(
+  modelInfo?: Record<string, string | number | boolean | null>,
+) {
+  if (!modelInfo) {
+    return "";
+  }
+
+  for (const [key, value] of Object.entries(modelInfo)) {
+    if (!/(^|\.)context_length$/i.test(key)) {
+      continue;
+    }
+
+    if (typeof value === "number") {
+      return normalizeContextWindowLabel(value);
+    }
+
+    if (typeof value === "string") {
+      return normalizeContextWindowLabel(value);
+    }
+  }
+
+  return "";
+}
+
+function parseSupplementalVariantMetadata(html: string, rawName: string) {
+  const href = `href="/library/${rawName}"`;
+  const start = html.indexOf(href);
+  if (start === -1) {
+    return {
+      sizeLabel: "",
+      contextWindowLabel: "",
+    };
+  }
+
+  const snippet = html.slice(start, start + 2_500);
+  const columns = Array.from(
+    snippet.matchAll(/<p class="col-span-2 text-neutral-500">([^<]+)<\/p>/gi),
+  )
+    .map((match) => match[1]?.trim() || "")
+    .filter(Boolean);
+
+  if (columns.length >= 2) {
+    return {
+      sizeLabel: normalizeSizeLabel(columns[0]),
+      contextWindowLabel: normalizeContextWindowLabel(columns[1]),
+    };
+  }
+
+  const compactSummary =
+    snippet.match(/<p class="flex text-neutral-500">([^<]+)<\/p>/i)?.[1]?.trim() || "";
+  const compactSegments = compactSummary
+    .split(/\s*\u00b7\s*/)
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+  const compactContext = compactSegments
+    .find((segment) => /context window/i.test(segment))
+    ?.replace(/\s+context window$/i, "")
+    .trim();
+
+  return {
+    sizeLabel: normalizeSizeLabel(compactSegments[0]),
+    contextWindowLabel: normalizeContextWindowLabel(compactContext),
+  };
 }
 
 async function fetchInstalledModels(baseUrl: string): Promise<OllamaModelOption[]> {
@@ -95,16 +224,18 @@ async function fetchInstalledModels(baseUrl: string): Promise<OllamaModelOption[
   const inspectionResults = await Promise.all(
     names.map(async (name) => ({
       name,
-      remoteReference: await isRemoteReferenceModel(baseUrl, name),
+      metadata: await inspectLocalModel(baseUrl, name),
     })),
   );
 
   return inspectionResults
-    .filter((model) => !model.remoteReference)
+    .filter((model) => !model.metadata.remoteReference)
     .map((model) => ({
       name: model.name,
       installed: true,
       source: "installed" as const,
+      sizeLabel: model.metadata.sizeLabel,
+      contextWindowLabel: model.metadata.contextWindowLabel,
     }));
 }
 
@@ -132,16 +263,20 @@ function parseLibraryModels(html: string): OllamaModelOption[] {
     const sizes = Array.from(
       block.matchAll(/<span[^>]*x-test-size[^>]*>([^<]+)<\/span>/gi),
     )
-      .map((match) => match[1]?.trim().toLowerCase() || "")
-      .filter(Boolean);
+      .map((match) => ({
+        raw: normalizeSizeLabel(match[1]),
+        normalized: match[1]?.trim().toLowerCase() || "",
+      }))
+      .filter((match) => Boolean(match.normalized));
 
     if (sizes.length > 0) {
       for (const size of sizes) {
-        const remoteOnly = size === "cloud" || size.endsWith("-cloud");
+        const remoteOnly = size.normalized === "cloud" || size.normalized.endsWith("-cloud");
         models.push({
-          name: `${name}:${size}`,
+          name: `${name}:${size.normalized}`,
           installed: false,
           source: "library",
+          sizeLabel: remoteOnly ? "" : size.raw,
           capabilities: localCapabilities(capabilities),
           remoteOnly,
         });
@@ -169,6 +304,7 @@ function parseLibraryModels(html: string): OllamaModelOption[] {
       name,
       installed: false,
       source: "library",
+      sizeLabel: "",
       capabilities: localCapabilities(capabilities),
       remoteOnly: false,
     });
@@ -218,11 +354,15 @@ function parseSupplementalFamilyVariants(
       continue;
     }
 
+    const metadata = parseSupplementalVariantMetadata(html, rawName);
+
     seen.add(name);
     models.push({
       name,
       installed: false,
       source: "library",
+      sizeLabel: metadata.sizeLabel,
+      contextWindowLabel: metadata.contextWindowLabel,
       capabilities: localCapabilities(capabilities),
       remoteOnly: normalizedTag.endsWith("-cloud") || normalizedTag === "cloud",
     });
@@ -257,6 +397,7 @@ async function fetchLibraryModels(): Promise<OllamaModelOption[]> {
         name,
         installed: false,
         source: "library" as const,
+        sizeLabel: "",
         capabilities: [],
         remoteOnly: isRemoteOnlyModelName(name),
       }));
@@ -300,7 +441,7 @@ async function fetchLibraryModels(): Promise<OllamaModelOption[]> {
   }
 }
 
-async function isRemoteReferenceModel(baseUrl: string, modelName: string) {
+async function inspectLocalModel(baseUrl: string, modelName: string) {
   try {
     const response = await fetch(`${normalizeBaseUrl(baseUrl)}/api/show`, {
       method: "POST",
@@ -315,7 +456,11 @@ async function isRemoteReferenceModel(baseUrl: string, modelName: string) {
     });
 
     if (!response.ok) {
-      return false;
+      return {
+        remoteReference: false,
+        sizeLabel: "",
+        contextWindowLabel: "",
+      };
     }
 
     const parsed = (await response.json()) as OllamaShowResponse;
@@ -327,9 +472,17 @@ async function isRemoteReferenceModel(baseUrl: string, modelName: string) {
         parsed.details?.quantization_level,
     );
 
-    return hasRemoteRef && !hasLocalDetails;
+    return {
+      remoteReference: hasRemoteRef && !hasLocalDetails,
+      sizeLabel: normalizeSizeLabel(parsed.details?.parameter_size),
+      contextWindowLabel: extractContextWindowLabel(parsed.model_info),
+    };
   } catch {
-    return false;
+    return {
+      remoteReference: false,
+      sizeLabel: "",
+      contextWindowLabel: "",
+    };
   }
 }
 

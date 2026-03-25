@@ -43,6 +43,7 @@ npm run e2e
 The Playwright suite currently covers a seeded local happy path for:
 
 - overview dashboard rendering
+- performance dashboard rendering, filter wiring including the all-time preset, and the default active-model analysis path
 - shared shell navigation collapse and expand behavior
 - suggestions explorer filtering
 - suggestions explorer sorting, pagination, persisted good/bad grading, structured context hover previews, and empty-buffer placeholder rendering without hydrated text rewrites
@@ -55,9 +56,9 @@ The Playwright suite currently covers a seeded local happy path for:
 - inspector `model-only` states for successful raw model output, empty-output fallback rendering, and surfaced model timeout diagnostics
 - model lab guardrails, default state, and reset flows
 - model lab sync against live runtime defaults for current model and saved suggestion strategy
-- model lab benchmark queueing, running-progress indicators, refreshed run lists, fail-fast failed-run handling with partial results, closable detail views, and stricter picker validation
+- model lab benchmark queueing, first-load saved-run refresh, replay actions from saved runs, per-run deletion for completed or failed runs, running-progress indicators, refreshed run lists, fail-fast failed-run handling with partial results, closable detail views, and stricter picker validation
 - model lab ad-hoc multi-model test results, strategy overrides, session-or-cwd context wiring, picker interactions, and clear-results flow
-- models page concurrent download, tracked removal, refresh-safe operation hydration, automatic completed-job cleanup, stalled-job cancellation, dismissed cancelled jobs, available-catalog pagination, and capability-display flows for local Ollama inventory management
+- models page concurrent download, stable operation ordering during multi-download progress, in-place operation polling for multi-download progress, active-model quick switching for installed rows, tracked removal, refresh-safe operation hydration, automatic completed-job cleanup, stalled-job cancellation, dismissed cancelled jobs, available-catalog pagination, capability-display flows, and dropdown multi-select size-filtering flows for local Ollama inventory management
 - overview live activity stream updates through the browser EventSource client
 - daemon page settings save flow, shared model-picker interactions, live log rendering, and danger-zone ordering below the log section
 - daemon runtime strategy persistence through the shared settings form
@@ -87,6 +88,12 @@ This now verifies both package integrity and a first slice of focused engine beh
 - empty-buffer suggestions that use the last recorded command as model context for typo correction or likely follow-up commands
 - runtime-env parsing for multiline and escaped persisted system-prompt values
 - Ollama request payload wiring for configured `keep_alive` values
+- benchmark hot-phase keep-alive selection so prewarm requests reuse a valid Ollama duration
+- Ollama request payload wiring for no-thinking controls on known reasoning-capable models, with a lowest-level fallback for `gpt-oss`
+- Ollama non-200 error propagation including the response body for actionable benchmark failure messages
+- SQLite store startup pragmas for WAL mode and busy-timeout handling
+- inspect remaining read-only so benchmark inspection does not create session rows
+- hot-phase benchmark classification tolerating small residual Ollama load durations instead of mislabeling warmed runs as cold
 - filesystem retrieval for path-oriented buffers like `git add s`
 - git branch retrieval for branch-oriented buffers like `git switch fea`
 - retrieved history matches surfacing in inspect context and prompts
@@ -188,24 +195,30 @@ This is the targeted regression test for the lazy PTY wrapper installation path 
 Command:
 
 ```bash
-make bench-models
+make bench-static
+make bench-replay
 ```
 
 or:
 
 ```bash
-./bin/model-bench -models qwen2.5-coder:7b
+./bin/model-bench static --models qwen3-coder:latest --suite core --protocol full
+./bin/model-bench replay --models qwen3-coder:latest --sample-limit 50 --protocol mixed
+./bin/model-bench raw --models qwen3-coder:latest --suite core --protocol hot_only
 ```
 
 This is primarily a measurement tool for:
 
-- latency
-- valid prefix completion rate
-- acceptable suggestion rate
+- end-to-end quality across curated static cases
+- end-to-end quality across replayed real usage from SQLite
+- raw prompt/model diagnostics against the same static fixtures
+- rich latency summaries, including cold vs hot runs and model stage timing
 
-It is useful for comparing local models and prompt changes against a fixed case list.
+Saved artifacts now include sampled cases, aggregate summaries, and per-attempt rows so replay runs remain auditable even when they were created from the live database.
 
 The CLI now fails fast by default when a model request errors. That stops wasting time on the rest of the matrix, writes whatever partial results have already been collected, and exits non-zero so the saved benchmark job can be marked failed instead of completed.
+
+The control app also keeps a live per-run worker log and last-update timestamp in SQLite. That lets the benchmark detail view surface stdout/stderr while a run is active and warn when a queued or running benchmark appears stalled.
 
 ## Manual Validation We Have Used
 
@@ -235,6 +248,7 @@ These checks matter because terminal UX issues often do not show up in pure unit
 - model comparison on representative cases
 - console app compilation and route wiring
 - persisted runtime settings flow from the control app into the shell startup path
+- request-level latency instrumentation plumbed from Ollama through the daemon into SQLite, with compile-only Go coverage and a dedicated console smoke route for the new dashboard
 
 ## What The Current Tests Do Not Yet Cover Well
 
@@ -248,6 +262,7 @@ These checks matter because terminal UX issues often do not show up in pure unit
 - daemon control route tests from the control app surface
 - benchmark job lifecycle tests for queue, run, and persistence behavior
 - broader engine microbenchmarks for model-including paths and larger SQLite histories
+- more unit tests around replay-case sampling and benchmark aggregation math
 
 ## Recommended Next Test Additions
 

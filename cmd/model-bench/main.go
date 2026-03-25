@@ -6,78 +6,143 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
-	"github.com/SuperCorks/llm-cli-suggestions/internal/api"
+	"github.com/SuperCorks/llm-cli-suggestions/internal/benchmark"
+	"github.com/SuperCorks/llm-cli-suggestions/internal/config"
 	"github.com/SuperCorks/llm-cli-suggestions/internal/db"
-	"github.com/SuperCorks/llm-cli-suggestions/internal/engine"
-	"github.com/SuperCorks/llm-cli-suggestions/internal/model/ollama"
 )
 
-type benchmarkCase struct {
-	Name       string
-	Request    api.SuggestRequest
-	Acceptable []string
-}
-
-type runResult struct {
-	Model       string `json:"model"`
-	CaseName    string `json:"case_name"`
-	Run         int    `json:"run"`
-	LatencyMS   int64  `json:"latency_ms"`
-	Suggestion  string `json:"suggestion"`
-	ValidPrefix bool   `json:"valid_prefix"`
-	Accepted    bool   `json:"accepted"`
-	Error       string `json:"error,omitempty"`
-}
-
-type suggestClient interface {
-	Suggest(ctx context.Context, prompt string) (string, error)
-}
-
-type benchmarkConfig struct {
-	models    []string
-	repeat    int
-	timeout   time.Duration
-	failFast  bool
-	newClient func(modelName string) suggestClient
-	cases     []benchmarkCase
-}
-
 func main() {
-	modelsFlag := flag.String("models", "llama3.2:latest", "comma-separated list of models to benchmark")
-	baseURL := flag.String("model-url", "http://127.0.0.1:11434", "local model base URL")
-	repeat := flag.Int("repeat", 1, "runs per test case")
-	timeoutMS := flag.Int("timeout-ms", 5000, "timeout per model request in milliseconds")
-	failFast := flag.Bool("fail-fast", true, "stop the benchmark run after the first model request error")
-	outputJSON := flag.String("output-json", "", "optional path to write raw benchmark results as json")
-	flag.Parse()
+	cfg, err := config.Load()
+	if err != nil {
+		fatalf("load config: %v", err)
+	}
+
+	command, args := parseCommand(os.Args[1:])
+	switch command {
+	case "static":
+		runBenchCommand(benchmark.TrackStatic, benchmark.SurfaceEndToEnd, cfg, args)
+	case "replay":
+		runBenchCommand(benchmark.TrackReplay, benchmark.SurfaceEndToEnd, cfg, args)
+	case "raw":
+		runBenchCommand(benchmark.TrackRaw, benchmark.SurfaceRawModel, cfg, args)
+	case "compare":
+		runCompareCommand(args)
+	case "mine-static":
+		runMineStaticCommand(cfg, args)
+	default:
+		fatalf("unknown subcommand %q", command)
+	}
+}
+
+func parseCommand(args []string) (string, []string) {
+	if len(args) == 0 {
+		return "static", nil
+	}
+	switch args[0] {
+	case "static", "replay", "raw", "compare", "mine-static":
+		return args[0], args[1:]
+	default:
+		if strings.HasPrefix(args[0], "-") {
+			return "static", args
+		}
+		return args[0], args[1:]
+	}
+}
+
+func runBenchCommand(track benchmark.Track, surface benchmark.Surface, runtime config.Config, args []string) {
+	flags := flag.NewFlagSet(string(track), flag.ExitOnError)
+	modelsFlag := flags.String("models", runtime.ModelName, "comma-separated list of models to benchmark")
+	suiteFlag := flags.String("suite", defaultSuiteName(track), "benchmark suite name")
+	repeatFlag := flags.Int("repeat", 1, "runs per test case")
+	timeoutMSFlag := flags.Int("timeout-ms", 5000, "timeout per request in milliseconds")
+	failFastFlag := flags.Bool("fail-fast", true, "stop after the first benchmark error")
+	outputJSONFlag := flags.String("output-json", "", "optional path to write the benchmark artifact json")
+	protocolFlag := flags.String("protocol", "full", "timing protocol: cold, hot, mixed, or full")
+	strategyFlag := flags.String("strategy", runtime.SuggestStrategy, "suggest strategy for end-to-end benchmarks")
+	modelURLFlag := flags.String("model-url", runtime.ModelBaseURL, "local model base URL")
+	keepAliveFlag := flags.String("keep-alive", runtime.ModelKeepAlive, "ollama keep_alive value for mixed mode")
+	dbPathFlag := flags.String("db-path", runtime.DBPath, "sqlite path for replay benchmarks and engine context")
+	replayLimitFlag := flags.Int("sample-limit", 200, "maximum replay cases to sample")
+	flags.Parse(args)
 
 	models := splitCSV(*modelsFlag)
 	if len(models) == 0 {
 		fatalf("no models provided")
 	}
 
-	results, runErr := runBenchmarks(benchmarkConfig{
-		models:   models,
-		repeat:   *repeat,
-		timeout:  time.Duration(*timeoutMS) * time.Millisecond,
-		failFast: *failFast,
-		newClient: func(modelName string) suggestClient {
-			return ollama.New(*baseURL, modelName, "")
-		},
+	timingProtocol, err := parseTimingProtocol(*protocolFlag)
+	if err != nil {
+		fatalf("%v", err)
+	}
+
+	filtersJSON := ""
+	if track == benchmark.TrackReplay {
+		filtersJSON = fmt.Sprintf(`{"sample_limit":%d}`, max(1, *replayLimitFlag))
+	}
+
+	runConfig := benchmark.RunConfig{
+		Track:           track,
+		Surface:         surface,
+		SuiteName:       strings.TrimSpace(*suiteFlag),
+		Strategy:        config.NormalizeSuggestStrategy(*strategyFlag),
+		TimingProtocol:  timingProtocol,
+		Models:          models,
+		RepeatCount:     max(1, *repeatFlag),
+		Timeout:         time.Duration(max(500, *timeoutMSFlag)) * time.Millisecond,
+		FailFast:        *failFastFlag,
+		DBPath:          *dbPathFlag,
+		ModelBaseURL:    *modelURLFlag,
+		ModelKeepAlive:  *keepAliveFlag,
+		ActiveModelName: runtime.ModelName,
+		SystemPrompt:    runtime.SystemPromptStatic,
+		ReplayLimit:     max(1, *replayLimitFlag),
+		FiltersJSON:     filtersJSON,
+	}
+
+	var wroteIntro bool
+	artifact, runErr := benchmark.Run(context.Background(), runConfig, func(update benchmark.Progress) {
+		if !wroteIntro && update.Total > 0 {
+			fmt.Printf(
+				"Benchmarking track=%s surface=%s suite=%s models=%d cases=%d attempts=%d protocol=%s repeat=%d\n",
+				runConfig.Track,
+				runConfig.Surface,
+				runConfig.SuiteName,
+				len(runConfig.Models),
+				update.Total/(len(runConfig.Models)*max(1, runConfig.RepeatCount)*len(timingPhasesForProtocol(runConfig.TimingProtocol))),
+				update.Total,
+				runConfig.TimingProtocol,
+				runConfig.RepeatCount,
+			)
+			wroteIntro = true
+		}
+		if update.CurrentCase == "" {
+			return
+		}
+		fmt.Printf(
+			"[progress] completed=%d/%d model=%s case=%s run=%d phase=%s status=%s\n",
+			update.Completed,
+			update.Total,
+			update.CurrentModel,
+			update.CurrentCase,
+			update.CurrentRun,
+			update.CurrentPhase,
+			update.Status,
+		)
 	})
 
 	fmt.Println()
-	printSummary(results)
+	printArtifactSummary(artifact)
 
-	if *outputJSON != "" {
-		if err := writeJSON(*outputJSON, results); err != nil {
-			fatalf("write benchmark results: %v", err)
+	if outputPath := strings.TrimSpace(*outputJSONFlag); outputPath != "" {
+		if err := writeArtifact(outputPath, artifact); err != nil {
+			fatalf("write benchmark artifact: %v", err)
 		}
-		fmt.Printf("\nWrote raw results to %s\n", *outputJSON)
+		fmt.Printf("\nWrote benchmark artifact to %s\n", outputPath)
 	}
 
 	if runErr != nil {
@@ -85,329 +150,186 @@ func main() {
 	}
 }
 
-func runBenchmarks(config benchmarkConfig) ([]runResult, error) {
-	cases := config.cases
-	if len(cases) == 0 {
-		cases = benchmarkCases()
+func runCompareCommand(args []string) {
+	flags := flag.NewFlagSet("compare", flag.ExitOnError)
+	artifactsFlag := flags.String("artifacts", "", "comma-separated artifact json paths")
+	flags.Parse(args)
+
+	paths := append(splitCSV(*artifactsFlag), flags.Args()...)
+	if len(paths) == 0 {
+		fatalf("no artifact paths provided")
 	}
 
-	results := make([]runResult, 0, len(config.models)*len(cases)*config.repeat)
-	fmt.Printf("Benchmarking %d model(s) across %d case(s), repeat=%d\n", len(config.models), len(cases), config.repeat)
-
-	for _, modelName := range config.models {
-		client := config.newClient(modelName)
-		for _, testCase := range cases {
-			for run := 1; run <= config.repeat; run++ {
-				prompt := engine.BuildPrompt(
-					"",
-					testCase.Request,
-					testCase.Request.RecentCommands,
-					db.CommandContext{},
-					nil,
-					nil,
-					api.InspectRetrievedContext{},
-				)
-				ctx, cancel := context.WithTimeout(context.Background(), config.timeout)
-				startedAt := time.Now()
-				raw, err := client.Suggest(ctx, prompt)
-				cancel()
-
-				result := runResult{
-					Model:     modelName,
-					CaseName:  testCase.Name,
-					Run:       run,
-					LatencyMS: time.Since(startedAt).Milliseconds(),
-				}
-				if err != nil {
-					result.Error = err.Error()
-				} else {
-					result.Suggestion = engine.CleanSuggestion(testCase.Request.Buffer, raw)
-					result.ValidPrefix = strings.HasPrefix(result.Suggestion, testCase.Request.Buffer) && result.Suggestion != testCase.Request.Buffer
-					result.Accepted = containsExact(testCase.Acceptable, result.Suggestion)
-				}
-
-				results = append(results, result)
-				printRun(result)
-
-				if result.Error != "" && config.failFast {
-					return results, fmt.Errorf(
-						"model %s failed on %s run %d: %s",
-						modelName,
-						testCase.Name,
-						run,
-						result.Error,
-					)
-				}
-			}
+	type compareRow struct {
+		Label string
+		Run   benchmark.Artifact
+	}
+	rows := make([]compareRow, 0, len(paths))
+	for _, path := range paths {
+		artifact, err := readArtifact(path)
+		if err != nil {
+			fatalf("read artifact %s: %v", path, err)
 		}
+		rows = append(rows, compareRow{Label: filepath.Base(path), Run: artifact})
 	}
 
-	return results, nil
-}
-
-func benchmarkCases() []benchmarkCase {
-	return []benchmarkCase{
-		{
-			Name: "git_status_after_repo_navigation",
-			Request: api.SuggestRequest{
-				SessionID:    "bench",
-				Buffer:       "git st",
-				CWD:          "/Users/example/projects/llm-cli-suggestions",
-				RepoRoot:     "/Users/example/projects/llm-cli-suggestions",
-				Branch:       "main",
-				LastExitCode: 0,
-				RecentCommands: []string{
-					"cd /Users/example/projects/llm-cli-suggestions",
-					"git checkout main",
-					"git pull",
-					"go test ./...",
-				},
-			},
-			Acceptable: []string{"git status", "git stash"},
-		},
-		{
-			Name: "npm_dev_server",
-			Request: api.SuggestRequest{
-				SessionID:    "bench",
-				Buffer:       "npm run d",
-				CWD:          "/Users/example/app",
-				RepoRoot:     "/Users/example/app",
-				Branch:       "feature/autocomplete",
-				LastExitCode: 0,
-				RecentCommands: []string{
-					"npm install",
-					"npm test",
-					"npm run lint",
-				},
-			},
-			Acceptable: []string{"npm run dev"},
-		},
-		{
-			Name: "docker_compose_logs",
-			Request: api.SuggestRequest{
-				SessionID:    "bench",
-				Buffer:       "docker comp",
-				CWD:          "/Users/example/services",
-				RepoRoot:     "/Users/example/services",
-				Branch:       "main",
-				LastExitCode: 1,
-				RecentCommands: []string{
-					"docker compose up -d",
-					"docker compose ps",
-					"docker compose restart web",
-				},
-			},
-			Acceptable: []string{"docker compose logs -f", "docker compose up -d", "docker compose ps"},
-		},
-		{
-			Name: "kubectl_get_pods",
-			Request: api.SuggestRequest{
-				SessionID:    "bench",
-				Buffer:       "kubectl get p",
-				CWD:          "/Users/example",
-				RepoRoot:     "",
-				Branch:       "",
-				LastExitCode: 0,
-				RecentCommands: []string{
-					"kubectl config use-context prod",
-					"kubectl get nodes",
-					"kubectl describe pod api-123",
-				},
-			},
-			Acceptable: []string{"kubectl get pods"},
-		},
-		{
-			Name: "git_checkout_branch",
-			Request: api.SuggestRequest{
-				SessionID:    "bench",
-				Buffer:       "git chec",
-				CWD:          "/Users/example/projects/llm-cli-suggestions",
-				RepoRoot:     "/Users/example/projects/llm-cli-suggestions",
-				Branch:       "main",
-				LastExitCode: 0,
-				RecentCommands: []string{
-					"git branch",
-					"git fetch origin",
-					"git checkout -b spike/autocomplete",
-				},
-			},
-			Acceptable: []string{"git checkout", "git checkout -b spike/autocomplete"},
-		},
-		{
-			Name: "git_log_oneline_recent",
-			Request: api.SuggestRequest{
-				SessionID:    "bench",
-				Buffer:       "git log --oneline -",
-				CWD:          "/Users/example/projects/gleamery",
-				RepoRoot:     "/Users/example/projects/gleamery",
-				Branch:       "develop",
-				LastExitCode: 0,
-				RecentCommands: []string{
-					"git status",
-					"git checkout develop",
-					"git pull --rebase",
-				},
-			},
-			Acceptable: []string{"git log --oneline -5", "git log --oneline -10"},
-		},
-		{
-			Name: "gcloud_auth_list",
-			Request: api.SuggestRequest{
-				SessionID:    "bench",
-				Buffer:       "gcloud auth l",
-				CWD:          "/Users/example",
-				RepoRoot:     "",
-				Branch:       "",
-				LastExitCode: 0,
-				RecentCommands: []string{
-					"gcloud auth",
-					"gcloud list",
-					"gcloud config set project my-project-1478832460965",
-				},
-			},
-			Acceptable: []string{"gcloud auth list"},
-		},
-		{
-			Name: "envpull_push",
-			Request: api.SuggestRequest{
-				SessionID:    "bench",
-				Buffer:       "envpull p",
-				CWD:          "/Users/example/projects/gleamery/gleamery-appointments",
-				RepoRoot:     "/Users/example/projects/gleamery/gleamery-appointments",
-				Branch:       "main",
-				LastExitCode: 0,
-				RecentCommands: []string{
-					"envpull init",
-					"envpull ls",
-					"envpull help",
-				},
-			},
-			Acceptable: []string{"envpull push .env.prod.local .env.sandbox.local"},
-		},
-		{
-			Name: "gswitch_private_project",
-			Request: api.SuggestRequest{
-				SessionID:    "bench",
-				Buffer:       "gswitch new p",
-				CWD:          "/Users/example/projects/blvd-events-pipelines",
-				RepoRoot:     "/Users/example/projects/blvd-events-pipelines",
-				Branch:       "main",
-				LastExitCode: 0,
-				RecentCommands: []string{
-					"npx gswitch new peachy --private",
-					"gswitch new rk",
-					"npm login",
-				},
-			},
-			Acceptable: []string{"gswitch new peachy --private"},
-		},
-	}
-}
-
-func printRun(result runResult) {
-	status := "ok"
-	if result.Error != "" {
-		status = "error"
-	}
-	fmt.Printf("[%s] model=%s case=%s run=%d latency=%dms valid=%t accepted=%t suggestion=%q error=%q\n",
-		status,
-		result.Model,
-		result.CaseName,
-		result.Run,
-		result.LatencyMS,
-		result.ValidPrefix,
-		result.Accepted,
-		result.Suggestion,
-		result.Error,
-	)
-}
-
-func printSummary(results []runResult) {
-	type summary struct {
-		Count         int
-		Errors        int
-		ValidCount    int
-		AcceptedCount int
-		LatencyTotal  int64
-	}
-
-	summaries := map[string]*summary{}
-	for _, result := range results {
-		entry := summaries[result.Model]
-		if entry == nil {
-			entry = &summary{}
-			summaries[result.Model] = entry
-		}
-		entry.Count++
-		entry.LatencyTotal += result.LatencyMS
-		if result.Error != "" {
-			entry.Errors++
-		}
-		if result.ValidPrefix {
-			entry.ValidCount++
-		}
-		if result.Accepted {
-			entry.AcceptedCount++
-		}
-	}
-
-	models := make([]string, 0, len(summaries))
-	for model := range summaries {
-		models = append(models, model)
-	}
-	sort.Strings(models)
-
-	fmt.Println("Summary")
-	for _, model := range models {
-		entry := summaries[model]
-		averageLatency := int64(0)
-		if entry.Count > 0 {
-			averageLatency = entry.LatencyTotal / int64(entry.Count)
-		}
+	fmt.Println("Benchmark Comparison")
+	for _, row := range rows {
 		fmt.Printf(
-			"- %s: avg_latency=%dms valid=%d/%d accepted=%d/%d errors=%d\n",
-			model,
-			averageLatency,
-			entry.ValidCount,
-			entry.Count,
-			entry.AcceptedCount,
-			entry.Count,
-			entry.Errors,
+			"- %s: track=%s suite=%s exact=%.0f%% avoid=%.0f%% valid=%.0f%% mean=%.0fms p95=%.0fms dataset=%d\n",
+			row.Label,
+			row.Run.Run.Track,
+			row.Run.Run.SuiteName,
+			row.Run.Summary.Overall.Quality.PositiveExactHitRate*100,
+			row.Run.Summary.Overall.Quality.NegativeAvoidRate*100,
+			row.Run.Summary.Overall.Quality.ValidWinnerRate*100,
+			row.Run.Summary.Overall.Latency.Mean,
+			row.Run.Summary.Overall.Latency.P95,
+			row.Run.Run.DatasetSize,
 		)
 	}
+}
+
+func runMineStaticCommand(runtime config.Config, args []string) {
+	flags := flag.NewFlagSet("mine-static", flag.ExitOnError)
+	dbPathFlag := flags.String("db-path", runtime.DBPath, "sqlite path to mine")
+	limitFlag := flags.Int("limit", 25, "number of replay cases to propose")
+	outputFlag := flags.String("output-json", "", "optional path to write proposed fixture json")
+	flags.Parse(args)
+
+	store, err := db.NewStore(*dbPathFlag)
+	if err != nil {
+		fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	cases, err := benchmark.LoadReplayCases(context.Background(), store, max(1, *limitFlag))
+	if err != nil {
+		fatalf("load replay cases: %v", err)
+	}
+	for index := range cases {
+		cases[index].Origin = "mined"
+	}
+
+	payload, err := benchmark.EncodeArtifact(benchmark.Artifact{
+		SchemaVersion: 1,
+		Cases:         cases,
+	})
+	if err != nil {
+		fatalf("encode mined cases: %v", err)
+	}
+	if strings.TrimSpace(*outputFlag) != "" {
+		if err := os.WriteFile(*outputFlag, payload, 0o644); err != nil {
+			fatalf("write mined cases: %v", err)
+		}
+		fmt.Printf("Wrote mined cases to %s\n", *outputFlag)
+		return
+	}
+	fmt.Println(string(payload))
+}
+
+func writeArtifact(path string, artifact benchmark.Artifact) error {
+	payload, err := benchmark.EncodeArtifact(artifact)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, payload, 0o644)
+}
+
+func readArtifact(path string) (benchmark.Artifact, error) {
+	payload, err := os.ReadFile(path)
+	if err != nil {
+		return benchmark.Artifact{}, err
+	}
+	var artifact benchmark.Artifact
+	if err := json.Unmarshal(payload, &artifact); err != nil {
+		return benchmark.Artifact{}, err
+	}
+	return artifact, nil
+}
+
+func printArtifactSummary(artifact benchmark.Artifact) {
+	fmt.Printf(
+		"Summary track=%s surface=%s suite=%s dataset=%d exact=%.0f%% avoid=%.0f%% valid=%.0f%% mean=%.0fms p95=%.0fms\n",
+		artifact.Run.Track,
+		artifact.Run.Surface,
+		artifact.Run.SuiteName,
+		artifact.Run.DatasetSize,
+		artifact.Summary.Overall.Quality.PositiveExactHitRate*100,
+		artifact.Summary.Overall.Quality.NegativeAvoidRate*100,
+		artifact.Summary.Overall.Quality.ValidWinnerRate*100,
+		artifact.Summary.Overall.Latency.Mean,
+		artifact.Summary.Overall.Latency.P95,
+	)
+
+	models := append([]benchmark.ModelSummary(nil), artifact.Summary.Models...)
+	sort.Slice(models, func(left, right int) bool { return models[left].Model < models[right].Model })
+	for _, summary := range models {
+		fmt.Printf(
+			"- %s: exact=%.0f%% avoid=%.0f%% valid=%.0f%% mean=%.0fms p95=%.0fms cold=%.0fms hot=%.0fms\n",
+			summary.Model,
+			summary.Overall.Quality.PositiveExactHitRate*100,
+			summary.Overall.Quality.NegativeAvoidRate*100,
+			summary.Overall.Quality.ValidWinnerRate*100,
+			summary.Overall.Latency.Mean,
+			summary.Overall.Latency.P95,
+			summary.Cold.Latency.Mean,
+			summary.Hot.Latency.Mean,
+		)
+	}
+}
+
+func parseTimingProtocol(value string) (benchmark.TimingProtocol, error) {
+	switch strings.TrimSpace(strings.ToLower(value)) {
+	case "", "full":
+		return benchmark.TimingProtocolFull, nil
+	case "cold", "cold_only":
+		return benchmark.TimingProtocolColdOnly, nil
+	case "hot", "hot_only":
+		return benchmark.TimingProtocolHotOnly, nil
+	case "mixed":
+		return benchmark.TimingProtocolMixed, nil
+	default:
+		return "", fmt.Errorf("unsupported timing protocol %q", value)
+	}
+}
+
+func timingPhasesForProtocol(protocol benchmark.TimingProtocol) []benchmark.TimingPhase {
+	switch protocol {
+	case benchmark.TimingProtocolColdOnly:
+		return []benchmark.TimingPhase{benchmark.TimingPhaseCold}
+	case benchmark.TimingProtocolHotOnly:
+		return []benchmark.TimingPhase{benchmark.TimingPhaseHot}
+	case benchmark.TimingProtocolFull:
+		return []benchmark.TimingPhase{benchmark.TimingPhaseCold, benchmark.TimingPhaseHot}
+	default:
+		return []benchmark.TimingPhase{benchmark.TimingPhaseMixed}
+	}
+}
+
+func defaultSuiteName(track benchmark.Track) string {
+	if track == benchmark.TrackReplay {
+		return "live-db"
+	}
+	return "core"
 }
 
 func splitCSV(value string) []string {
 	parts := strings.Split(value, ",")
 	result := make([]string, 0, len(parts))
 	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if part != "" {
+		if part = strings.TrimSpace(part); part != "" {
 			result = append(result, part)
 		}
 	}
 	return result
 }
 
-func containsExact(values []string, target string) bool {
-	for _, value := range values {
-		if strings.TrimSpace(value) == strings.TrimSpace(target) {
-			return true
-		}
+func max(a, b int) int {
+	if a >= b {
+		return a
 	}
-	return false
-}
-
-func writeJSON(path string, payload any) error {
-	file, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	encoder := json.NewEncoder(file)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(payload)
+	return b
 }
 
 func fatalf(format string, args ...any) {

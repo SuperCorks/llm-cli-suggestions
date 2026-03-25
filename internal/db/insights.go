@@ -362,7 +362,15 @@ func (s *Store) InspectSummary(ctx context.Context) (Summary, error) {
 	}
 	if err := s.db.QueryRowContext(
 		ctx,
-		`SELECT COALESCE(AVG(CASE WHEN latency_ms > 0 THEN latency_ms END), 0) FROM suggestions`,
+		`SELECT COALESCE(
+			AVG(
+				CASE
+					WHEN request_latency_ms > 0 THEN request_latency_ms
+					WHEN latency_ms > 0 THEN latency_ms
+				END
+			),
+			0
+		) FROM suggestions`,
 	).Scan(&summary.AverageModelLatency); err != nil {
 		return Summary{}, fmt.Errorf("avg latency: %w", err)
 	}

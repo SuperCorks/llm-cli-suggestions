@@ -2,6 +2,7 @@
 
 import type { LucideIcon } from "lucide-react";
 import {
+  Activity,
   Boxes,
   ChartColumnBig,
   FlaskConical,
@@ -15,6 +16,7 @@ import { usePathname } from "next/navigation";
 
 const NAV_ITEMS = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/performance", label: "Performance", icon: Activity },
   { href: "/suggestions", label: "Suggestions", icon: SearchCode },
   { href: "/commands", label: "Signals", icon: Sparkles },
   { href: "/inspector", label: "Inspector", icon: ChartColumnBig },

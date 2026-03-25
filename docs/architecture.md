@@ -58,11 +58,13 @@ It is intentionally hybrid:
 
 - analytics pages query SQLite directly from Next server code
 - control actions call local server routes that manage the daemon, run benchmark jobs, or export data
+- benchmark jobs persist rich JSON artifacts plus flattened SQLite result rows for the Model Lab
 - live dashboard activity and daemon log panels subscribe to local server-sent event routes hosted by the same Next app
 
 The current app sections are:
 
 - overview
+- performance
 - suggestions
 - commands and feedback
 - inspector
@@ -151,10 +153,30 @@ SQLite is used as the single local state store. The main tables are:
 - `feedback_events`
 - `benchmark_runs`
 - `benchmark_results`
+- `suggestion_reviews`
 
 This database supports both runtime behavior and future learning work. It already stores enough information to build offline eval sets and personalized reranking later.
 
 Suggestion rows now also persist the exact prompt text and a structured context snapshot used at decision time, so the control app can inspect and replay historical suggestions more faithfully.
+
+They now also persist request-level timing fields alongside the older winner-candidate latency:
+
+- end-to-end request latency for the stored suggestion
+- request model name, even when the model was invoked but did not produce the winning suggestion
+- Ollama total, load, prompt-eval, and eval durations
+- Ollama prompt-eval and eval token counts
+
+That lets the performance dashboard distinguish hot resident requests from cold wake-up requests and estimate how much of the tail comes from model loading versus other overhead in the engine or control path.
+
+The benchmark tables now store benchmark metadata separately from per-attempt rows:
+
+- run-level metadata such as track, suite, strategy, timing protocol, sampled dataset size, and environment fingerprint
+- per-attempt quality fields such as exact-match, alternative-match, negative-avoidance, and candidate-hit-at-3
+- per-attempt timing fields such as request latency, model total/load/prompt/decode durations, token counts, decode throughput, and non-model overhead
+
+Benchmark artifacts are also written to JSON so replay runs derived from the live database can be inspected and compared later even after the underlying suggestion history changes.
+
+Because the detached benchmark worker, the console server, and the Go benchmark command can all touch the same SQLite file, both the Next.js and Go storage layers now enable WAL mode and a busy timeout. The engine inspect path also avoids session creation writes so read-only benchmark inspection does not introduce unnecessary lock contention.
 
 ## Runtime Settings
 
@@ -197,6 +219,8 @@ The daemon uses the persisted runtime strategy for live shell suggestions, while
 ## Local Model Layer
 
 The current model backend is Ollama. The daemon sends a single prompt and expects a single-line command completion in response.
+
+For latency-sensitive suggestion traffic, the Ollama adapter now explicitly asks known thinking-capable model families to avoid reasoning traces when the API supports it. For `gpt-oss`, where Ollama documents only level-based reasoning controls, the adapter requests the lowest available thinking level instead of a full-off switch.
 
 Current defaults:
 

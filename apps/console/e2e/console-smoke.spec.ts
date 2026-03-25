@@ -121,6 +121,24 @@ test("overview and daemon panels apply streamed updates", async ({ page }) => {
   await expect(logPanel.getByText("stream attached")).toBeVisible();
 });
 
+test("performance dashboard renders latency analysis controls and charts", async ({ page }) => {
+  await page.goto("/performance");
+
+  await expect(page.getByRole("heading", { name: "Latency Dashboard" })).toBeVisible();
+  await expect(page.getByText("Avg. request latency")).toBeVisible();
+  await expect(page.getByText("Cold-start penalty")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Latency Trend" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Where Time Goes" })).toBeVisible();
+  await expect(page.getByText("qwen2.5-coder:7b").first()).toBeVisible();
+
+  await page.getByLabel("Range Preset").selectOption("yesterday");
+  await page.getByRole("button", { name: "Apply" }).click();
+  await expect(page).toHaveURL(/preset=yesterday/);
+  await page.getByLabel("Range Preset").selectOption("all-time");
+  await page.getByRole("button", { name: "Apply" }).click();
+  await expect(page).toHaveURL(/preset=all-time/);
+});
+
 test("suggestions and commands pages render seeded history", async ({ page }) => {
   await page.goto("/suggestions");
 
@@ -737,6 +755,18 @@ test("model lab guardrails and defaults work with local fixtures", async ({ page
 });
 
 test("model lab benchmark flow works with local fixtures", async ({ page }) => {
+  let benchmarkRunRequestCount = 0;
+  const benchmarkRunPayloads: Array<{
+    track?: string;
+    suiteName?: string;
+    strategy?: string;
+    timingProtocol?: string;
+    replaySampleLimit?: number;
+    models?: string[];
+    repeatCount?: number;
+    timeoutMs?: number;
+  }> = [];
+
   await page.route("**/api/runtime", async (route) => {
     await route.fulfill({
       status: 200,
@@ -785,59 +815,197 @@ test("model lab benchmark flow works with local fixtures", async ({ page }) => {
   });
 
   await page.route("**/api/benchmarks/run", async (route) => {
+    benchmarkRunRequestCount += 1;
+    benchmarkRunPayloads.push(
+      route.request().postDataJSON() as {
+        models?: string[];
+        repeatCount?: number;
+        timeoutMs?: number;
+      },
+    );
     await route.fulfill({
       status: 202,
       contentType: "application/json",
       body: JSON.stringify({
-        runId: 77,
+        runId: benchmarkRunRequestCount === 1 ? 77 : 78,
       }),
     });
   });
 
   await page.route("**/api/benchmarks", async (route) => {
+    const runs: Array<{
+      id: number;
+      status: string;
+      track: string;
+      surface: string;
+      suiteName: string;
+      strategy: string;
+      timingProtocol: string;
+      models: string[];
+      repeatCount: number;
+      timeoutMs: number;
+      filtersJson: string;
+      datasetSize: number;
+      environment: Record<string, unknown> | null;
+      outputJsonPath: string;
+      summary: Record<string, unknown> | null;
+      errorText: string;
+      createdAtMs: number;
+      startedAtMs: number;
+      finishedAtMs: number;
+    }> = [
+      {
+        id: 77,
+        status: "running",
+        track: "static",
+        surface: "end_to_end",
+        suiteName: "core",
+        strategy: "history+model",
+        timingProtocol: "full",
+        models: ["qwen2.5-coder:7b", "mistral-small"],
+        repeatCount: 2,
+        timeoutMs: 5000,
+        filtersJson: "",
+        datasetSize: 9,
+        environment: null,
+        outputJsonPath: "/tmp/run-77.json",
+        summary: {
+          track: "static",
+          surface: "end_to_end",
+          suiteName: "core",
+          strategy: "history+model",
+          timingProtocol: "full",
+          datasetSize: 9,
+          positiveCaseCount: 7,
+          negativeCaseCount: 2,
+          progress: {
+            completed: 3,
+            total: 18,
+            percent: 17,
+            status: "running",
+            currentModel: "mistral-small",
+            currentCase: "npm_dev_server",
+            currentRun: 1,
+            currentPhase: "cold",
+          },
+          overall: {
+            count: 3,
+            quality: {
+              positiveCaseCount: 2,
+              negativeCaseCount: 1,
+              positiveExactHitRate: 0.5,
+              negativeAvoidRate: 1,
+              validWinnerRate: 1,
+              candidateRecallAt3: 1,
+              charsSavedRatio: 0.42,
+            },
+            latency: { count: 3, mean: 241, median: 233, p90: 290, p95: 290, max: 290 },
+            startStates: [],
+            coldPenaltyMs: 0,
+            stages: [],
+            budgetPassRates: [],
+            categoryBreakdown: [],
+            sourceBreakdown: [],
+          },
+          models: [],
+        },
+        errorText: "",
+        createdAtMs: Date.now(),
+        startedAtMs: Date.now() - 2000,
+        finishedAtMs: 0,
+      },
+    ];
+
+    if (benchmarkRunRequestCount > 1) {
+      runs.unshift({
+        id: 78,
+        status: "queued",
+        track: "static",
+        surface: "end_to_end",
+        suiteName: "core",
+        strategy: "history+model",
+        timingProtocol: "full",
+        models: ["qwen2.5-coder:7b"],
+        repeatCount: 2,
+        timeoutMs: 5000,
+        filtersJson: "",
+        datasetSize: 9,
+        environment: null,
+        outputJsonPath: "/tmp/run-78.json",
+        summary: {
+          track: "static",
+          surface: "end_to_end",
+          suiteName: "core",
+          strategy: "history+model",
+          timingProtocol: "full",
+          datasetSize: 9,
+          positiveCaseCount: 0,
+          negativeCaseCount: 0,
+          progress: {
+            completed: 0,
+            total: 0,
+            percent: 0,
+            status: "queued",
+            currentModel: "",
+            currentCase: "",
+            currentRun: 0,
+            currentPhase: "",
+          },
+          overall: {
+            count: 0,
+            quality: {
+              positiveCaseCount: 0,
+              negativeCaseCount: 0,
+              positiveExactHitRate: 0,
+              negativeAvoidRate: 0,
+              validWinnerRate: 0,
+              candidateRecallAt3: 0,
+              charsSavedRatio: 0,
+            },
+            latency: { count: 0, mean: 0, median: 0, p90: 0, p95: 0, max: 0 },
+            startStates: [],
+            coldPenaltyMs: 0,
+            stages: [],
+            budgetPassRates: [],
+            categoryBreakdown: [],
+            sourceBreakdown: [],
+          },
+          models: [],
+        },
+        errorText: "",
+        createdAtMs: Date.now() + 1000,
+        startedAtMs: 0,
+        finishedAtMs: 0,
+      });
+    }
+
+    runs.push({
+      id: 1,
+      status: "completed",
+      track: "static",
+      surface: "end_to_end",
+      suiteName: "core",
+      strategy: "history+model",
+      timingProtocol: "full",
+      models: ["qwen2.5-coder:7b"],
+      repeatCount: 2,
+      timeoutMs: 5000,
+      filtersJson: "",
+      datasetSize: 4,
+      environment: null,
+      outputJsonPath: "/tmp/run-1.json",
+      summary: null,
+      errorText: "",
+      createdAtMs: Date.now() - 1000,
+      startedAtMs: Date.now() - 1000,
+      finishedAtMs: Date.now(),
+    });
+
     await route.fulfill({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        runs: [
-          {
-            id: 77,
-            status: "running",
-            models: ["qwen2.5-coder:7b", "mistral-small"],
-            repeatCount: 2,
-            timeoutMs: 5000,
-            outputJsonPath: "/tmp/run-77.json",
-            summary: {
-              progress: {
-                completed: 3,
-                total: 18,
-                percent: 17,
-                status: "running",
-                currentModel: "mistral-small",
-                currentCase: "npm_dev_server",
-                currentRun: 1,
-              },
-              models: {},
-            },
-            errorText: "",
-            createdAtMs: Date.now(),
-            startedAtMs: Date.now() - 2000,
-            finishedAtMs: 0,
-          },
-          {
-            id: 1,
-            status: "completed",
-            models: ["qwen2.5-coder:7b"],
-            repeatCount: 2,
-            timeoutMs: 5000,
-            outputJsonPath: "/tmp/run-1.json",
-            summary: null,
-            errorText: "",
-            createdAtMs: Date.now() - 1000,
-            startedAtMs: Date.now() - 1000,
-            finishedAtMs: Date.now(),
-          },
-        ],
+        runs,
       }),
     });
   });
@@ -850,11 +1018,27 @@ test("model lab benchmark flow works with local fixtures", async ({ page }) => {
         run: {
           id: 77,
           status: "completed",
+          track: "static",
+          surface: "end_to_end",
+          suiteName: "core",
+          strategy: "history+model",
+          timingProtocol: "full",
           models: ["qwen2.5-coder:7b", "mistral-small"],
           repeatCount: 2,
           timeoutMs: 5000,
+          filtersJson: "",
+          datasetSize: 9,
+          environment: null,
           outputJsonPath: "/tmp/run-77.json",
           summary: {
+            track: "static",
+            surface: "end_to_end",
+            suiteName: "core",
+            strategy: "history+model",
+            timingProtocol: "full",
+            datasetSize: 9,
+            positiveCaseCount: 7,
+            negativeCaseCount: 2,
             progress: {
               completed: 18,
               total: 18,
@@ -863,21 +1047,222 @@ test("model lab benchmark flow works with local fixtures", async ({ page }) => {
               currentModel: "mistral-small",
               currentCase: "npm_dev_server",
               currentRun: 2,
+              currentPhase: "hot",
             },
-            models: {
-              "mistral-small": {
-                total: 9,
-                validPrefixRate: 0.88,
-                acceptedRate: 0.66,
-                avgLatencyMs: 192,
+            overall: {
+              count: 18,
+              quality: {
+                positiveCaseCount: 14,
+                negativeCaseCount: 4,
+                positiveExactHitRate: 0.71,
+                negativeAvoidRate: 0.75,
+                validWinnerRate: 0.89,
+                candidateRecallAt3: 0.94,
+                charsSavedRatio: 0.53,
               },
-              "qwen2.5-coder:7b": {
-                total: 9,
-                validPrefixRate: 1,
-                acceptedRate: 0.77,
-                avgLatencyMs: 174,
-              },
+              latency: { count: 18, mean: 183, median: 176, p90: 241, p95: 260, max: 301 },
+              startStates: [
+                {
+                  key: "cold",
+                  count: 9,
+                  share: 0.5,
+                  latency: { count: 9, mean: 232, median: 228, p90: 280, p95: 290, max: 301 },
+                },
+                {
+                  key: "hot",
+                  count: 9,
+                  share: 0.5,
+                  latency: { count: 9, mean: 134, median: 132, p90: 160, p95: 170, max: 176 },
+                },
+              ],
+              coldPenaltyMs: 98,
+              stages: [
+                {
+                  label: "cold",
+                  count: 9,
+                  avgRequestLatencyMs: 232,
+                  avgModelTotalDurationMs: 210,
+                  avgLoadDurationMs: 61,
+                  avgPromptEvalDurationMs: 52,
+                  avgEvalDurationMs: 81,
+                  avgNonModelOverheadMs: 22,
+                  decodeTokensPerSecond: 142,
+                },
+                {
+                  label: "hot",
+                  count: 9,
+                  avgRequestLatencyMs: 134,
+                  avgModelTotalDurationMs: 117,
+                  avgLoadDurationMs: 0,
+                  avgPromptEvalDurationMs: 41,
+                  avgEvalDurationMs: 58,
+                  avgNonModelOverheadMs: 17,
+                  decodeTokensPerSecond: 166,
+                },
+              ],
+              budgetPassRates: [
+                { budgetMs: 150, rate: 0.61 },
+                { budgetMs: 300, rate: 1 },
+              ],
+              categoryBreakdown: [
+                {
+                  key: "git",
+                  label: "git",
+                  count: 8,
+                  share: 0.44,
+                  quality: {
+                    positiveCaseCount: 6,
+                    negativeCaseCount: 2,
+                    positiveExactHitRate: 0.83,
+                    negativeAvoidRate: 1,
+                    validWinnerRate: 1,
+                    candidateRecallAt3: 1,
+                    charsSavedRatio: 0.58,
+                  },
+                  latency: { count: 8, mean: 172, median: 169, p90: 220, p95: 230, max: 235 },
+                },
+              ],
+              sourceBreakdown: [
+                {
+                  key: "model",
+                  label: "model",
+                  count: 12,
+                  share: 0.67,
+                  quality: {
+                    positiveCaseCount: 10,
+                    negativeCaseCount: 2,
+                    positiveExactHitRate: 0.7,
+                    negativeAvoidRate: 0.5,
+                    validWinnerRate: 0.83,
+                    candidateRecallAt3: 0.92,
+                    charsSavedRatio: 0.51,
+                  },
+                  latency: { count: 12, mean: 188, median: 182, p90: 244, p95: 260, max: 301 },
+                },
+              ],
             },
+            models: [
+              {
+                model: "mistral-small",
+                overall: {
+                  count: 9,
+                  quality: {
+                    positiveCaseCount: 7,
+                    negativeCaseCount: 2,
+                    positiveExactHitRate: 0.66,
+                    negativeAvoidRate: 0.5,
+                    validWinnerRate: 0.78,
+                    candidateRecallAt3: 0.89,
+                    charsSavedRatio: 0.48,
+                  },
+                  latency: { count: 9, mean: 192, median: 187, p90: 245, p95: 255, max: 260 },
+                  startStates: [],
+                  coldPenaltyMs: 94,
+                  stages: [],
+                  budgetPassRates: [],
+                  categoryBreakdown: [],
+                  sourceBreakdown: [],
+                },
+                cold: {
+                  count: 4,
+                  quality: {
+                    positiveCaseCount: 3,
+                    negativeCaseCount: 1,
+                    positiveExactHitRate: 0.5,
+                    negativeAvoidRate: 0,
+                    validWinnerRate: 0.75,
+                    candidateRecallAt3: 0.75,
+                    charsSavedRatio: 0.4,
+                  },
+                  latency: { count: 4, mean: 246, median: 241, p90: 260, p95: 260, max: 260 },
+                  startStates: [],
+                  coldPenaltyMs: 0,
+                  stages: [],
+                  budgetPassRates: [],
+                  categoryBreakdown: [],
+                  sourceBreakdown: [],
+                },
+                hot: {
+                  count: 5,
+                  quality: {
+                    positiveCaseCount: 4,
+                    negativeCaseCount: 1,
+                    positiveExactHitRate: 0.8,
+                    negativeAvoidRate: 1,
+                    validWinnerRate: 0.8,
+                    candidateRecallAt3: 1,
+                    charsSavedRatio: 0.54,
+                  },
+                  latency: { count: 5, mean: 149, median: 145, p90: 170, p95: 170, max: 170 },
+                  startStates: [],
+                  coldPenaltyMs: 0,
+                  stages: [],
+                  budgetPassRates: [],
+                  categoryBreakdown: [],
+                  sourceBreakdown: [],
+                },
+              },
+              {
+                model: "qwen2.5-coder:7b",
+                overall: {
+                  count: 9,
+                  quality: {
+                    positiveCaseCount: 7,
+                    negativeCaseCount: 2,
+                    positiveExactHitRate: 0.77,
+                    negativeAvoidRate: 1,
+                    validWinnerRate: 1,
+                    candidateRecallAt3: 1,
+                    charsSavedRatio: 0.58,
+                  },
+                  latency: { count: 9, mean: 174, median: 170, p90: 221, p95: 231, max: 235 },
+                  startStates: [],
+                  coldPenaltyMs: 87,
+                  stages: [],
+                  budgetPassRates: [],
+                  categoryBreakdown: [],
+                  sourceBreakdown: [],
+                },
+                cold: {
+                  count: 5,
+                  quality: {
+                    positiveCaseCount: 4,
+                    negativeCaseCount: 1,
+                    positiveExactHitRate: 0.6,
+                    negativeAvoidRate: 1,
+                    validWinnerRate: 1,
+                    candidateRecallAt3: 1,
+                    charsSavedRatio: 0.51,
+                  },
+                  latency: { count: 5, mean: 221, median: 219, p90: 235, p95: 235, max: 235 },
+                  startStates: [],
+                  coldPenaltyMs: 0,
+                  stages: [],
+                  budgetPassRates: [],
+                  categoryBreakdown: [],
+                  sourceBreakdown: [],
+                },
+                hot: {
+                  count: 4,
+                  quality: {
+                    positiveCaseCount: 3,
+                    negativeCaseCount: 1,
+                    positiveExactHitRate: 1,
+                    negativeAvoidRate: 1,
+                    validWinnerRate: 1,
+                    candidateRecallAt3: 1,
+                    charsSavedRatio: 0.66,
+                  },
+                  latency: { count: 4, mean: 116, median: 114, p90: 128, p95: 128, max: 128 },
+                  startStates: [],
+                  coldPenaltyMs: 0,
+                  stages: [],
+                  budgetPassRates: [],
+                  categoryBreakdown: [],
+                  sourceBreakdown: [],
+                },
+              },
+            ],
           },
           errorText: "",
           createdAtMs: Date.now(),
@@ -889,13 +1274,49 @@ test("model lab benchmark flow works with local fixtures", async ({ page }) => {
             id: 701,
             runId: 77,
             modelName: "mistral-small",
+            track: "static",
+            surface: "end_to_end",
+            suiteName: "core",
+            strategy: "history+model",
+            timingProtocol: "full",
+            timingPhase: "hot",
+            startState: "hot",
+            caseId: "git-status",
             caseName: "git status prompt",
+            category: "git",
+            tags: ["git", "core"],
+            labelKind: "positive",
             runNumber: 1,
-            latencyMs: 192,
-            suggestionText: "git status --short",
+            requestJson: JSON.stringify({ buffer: "git st" }),
+            expectedCommand: "git status",
+            expectedAlternatives: ["git status --short"],
+            negativeTarget: "",
+            winnerCommand: "git status --short",
+            winnerSource: "model",
+            candidatesJson: JSON.stringify([
+              { command: "git status --short", source: "model", score: 0.92 },
+            ]),
+            rawModelOutput: "git status --short",
+            cleanedModelOutput: "git status --short",
+            exactMatch: false,
+            alternativeMatch: true,
+            negativeAvoided: false,
             validPrefix: true,
-            accepted: true,
+            candidateHitAt3: true,
+            charsSavedRatio: 0.58,
+            commandEditDistance: 8,
+            requestLatencyMs: 192,
+            modelTotalDurationMs: 171,
+            modelLoadDurationMs: 0,
+            modelPromptEvalDurationMs: 46,
+            modelEvalDurationMs: 88,
+            modelPromptEvalCount: 31,
+            modelEvalCount: 12,
+            decodeTokensPerSecond: 146,
+            nonModelOverheadDurationMs: 21,
+            modelError: "",
             errorText: "",
+            replaySourceJson: "",
             createdAtMs: Date.now(),
           },
         ],
@@ -914,11 +1335,12 @@ test("model lab benchmark flow works with local fixtures", async ({ page }) => {
     .click();
   await expect(benchmarkModelInput).toHaveValue("");
   await expect(benchmarkPanel.getByText("mistral-small")).toBeVisible();
-  await benchmarkModelInput.fill("llama3");
-  await expect(benchmarkPanel.getByRole("button", { name: "Add" })).toBeDisabled();
-  await benchmarkModelInput.fill("llama3.2:latest");
-  await benchmarkPanel.getByRole("button", { name: "Add" }).click();
-  await expect(benchmarkPanel.getByText("llama3.2:latest")).toBeVisible();
+  await benchmarkModelInput.click();
+  await expect(
+    benchmarkPanel.getByRole("option", { name: /phi4.*installed/i }).first(),
+  ).toBeVisible();
+  await benchmarkPanel.getByRole("option", { name: /phi4.*installed/i }).first().click();
+  await expect(benchmarkPanel.getByText("phi4")).toBeVisible();
 
   await Promise.all([
     page.waitForResponse((response) =>
@@ -931,6 +1353,16 @@ test("model lab benchmark flow works with local fixtures", async ({ page }) => {
   await expect(page.getByRole("cell", { name: "#77" })).toBeVisible();
   await expect(page.getByText("1 benchmark run active")).toBeVisible();
   await expect(page.getByText("3/18")).toBeVisible();
+  expect(benchmarkRunPayloads[0]).toMatchObject({
+    track: "static",
+    suiteName: "core",
+    strategy: "history+model",
+    timingProtocol: "full",
+    replaySampleLimit: 200,
+    models: ["qwen2.5-coder:7b", "mistral-small", "phi4"],
+    repeatCount: 2,
+    timeoutMs: 5000,
+  });
 
   const queuedRunRow = page.locator("tr").filter({ has: page.getByRole("cell", { name: "#77" }) });
   await Promise.all([
@@ -942,10 +1374,244 @@ test("model lab benchmark flow works with local fixtures", async ({ page }) => {
 
   await expect(page.getByRole("heading", { name: "Benchmark Run #77" })).toBeVisible();
   await expect(page.getByText("18/18 benchmark checks complete")).toBeVisible();
-  await expect(page.getByText("Avg. latency").first()).toBeVisible();
+  await expect(page.getByText("Mean latency").first()).toBeVisible();
   await expect(page.getByText("git status --short")).toBeVisible();
   await page.getByRole("button", { name: "Close Run" }).click();
   await expect(page.getByRole("heading", { name: "Benchmark Run #77" })).toHaveCount(0);
+
+  const completedRunRow = page.locator("tr").filter({ has: page.getByRole("cell", { name: "#1" }) });
+  await Promise.all([
+    page.waitForResponse((response) =>
+      response.url().includes("/api/benchmarks/run") && response.request().method() === "POST",
+    ),
+    completedRunRow.getByRole("button", { name: "Replay" }).click(),
+  ]);
+  await expect(page.getByText("Benchmark replay queued as run #78.")).toBeVisible();
+  await expect(page.getByRole("cell", { name: "#78" })).toBeVisible();
+  expect(benchmarkRunPayloads[1]).toMatchObject({
+    track: "static",
+    suiteName: "core",
+    strategy: "history+model",
+    timingProtocol: "full",
+    replaySampleLimit: 200,
+    models: ["qwen2.5-coder:7b"],
+    repeatCount: 2,
+    timeoutMs: 5000,
+  });
+});
+
+test("model lab refreshes saved benchmarks on first load and deletes completed runs", async ({
+  page,
+}) => {
+  const deletedRunIds = new Set<number>();
+
+  await page.addInitScript(() => {
+    window.confirm = () => true;
+  });
+
+  await page.route("**/api/runtime", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        health: {
+          ok: true,
+          modelName: "qwen2.5-coder:7b",
+          socket: "/tmp/daemon.sock",
+        },
+        settings: {
+          stateDir: "/tmp/lac",
+          runtimeEnvPath: "/tmp/lac/runtime.env",
+          socketPath: "/tmp/daemon.sock",
+          dbPath: "/tmp/lac/autocomplete.sqlite",
+          modelName: "qwen2.5-coder:7b",
+          modelBaseUrl: "http://127.0.0.1:11434",
+          modelKeepAlive: "5m",
+          suggestStrategy: "history+model",
+          systemPromptStatic: "",
+          suggestTimeoutMs: 1200,
+          ptyCaptureAllowlist: "",
+        },
+        logPath: "/tmp/lac/daemon.log",
+        pidPath: "/tmp/lac/daemon.pid",
+        pid: 12345,
+        recentLog: "",
+      }),
+    });
+  });
+
+  await page.route("**/api/ollama/models?*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        models: [{ name: "qwen2.5-coder:7b", installed: true, source: "installed" }],
+        installedCount: 1,
+        libraryCount: 0,
+      }),
+    });
+  });
+
+  await page.route("**/api/benchmarks", async (route) => {
+    const runs = [
+      {
+        id: 901,
+        status: "completed",
+        track: "static",
+        surface: "end_to_end",
+        suiteName: "core",
+        strategy: "history+model",
+        timingProtocol: "full",
+        models: ["qwen2.5-coder:7b"],
+        repeatCount: 2,
+        timeoutMs: 5000,
+        filtersJson: "",
+        datasetSize: 4,
+        environment: null,
+        outputJsonPath: "/tmp/run-901.json",
+        summary: null,
+        logText: "",
+        lastEventAtMs: 0,
+        errorText: "",
+        createdAtMs: Date.now() - 2_000,
+        startedAtMs: Date.now() - 2_000,
+        finishedAtMs: Date.now() - 1_000,
+      },
+      {
+        id: 902,
+        status: "failed",
+        track: "replay",
+        surface: "end_to_end",
+        suiteName: "live-db",
+        strategy: "history+model",
+        timingProtocol: "mixed",
+        models: ["qwen2.5-coder:7b"],
+        repeatCount: 1,
+        timeoutMs: 7000,
+        filtersJson: '{"sample_limit":50}',
+        datasetSize: 50,
+        environment: null,
+        outputJsonPath: "/tmp/run-902.json",
+        summary: {
+          track: "replay",
+          surface: "end_to_end",
+          suiteName: "live-db",
+          strategy: "history+model",
+          timingProtocol: "mixed",
+          datasetSize: 50,
+          positiveCaseCount: 0,
+          negativeCaseCount: 0,
+          progress: {
+            completed: 6,
+            total: 50,
+            percent: 12,
+            status: "failed",
+            currentModel: "qwen2.5-coder:7b",
+            currentCase: "git status prompt",
+            currentRun: 1,
+            currentPhase: "mixed",
+          },
+          overall: {
+            count: 6,
+            quality: {
+              positiveCaseCount: 0,
+              negativeCaseCount: 0,
+              positiveExactHitRate: 0,
+              negativeAvoidRate: 0,
+              validWinnerRate: 0,
+              candidateRecallAt3: 0,
+              charsSavedRatio: 0,
+            },
+            latency: { count: 6, mean: 210, median: 205, p90: 240, p95: 250, max: 250 },
+            startStates: [],
+            coldPenaltyMs: 0,
+            stages: [],
+            budgetPassRates: [],
+            categoryBreakdown: [],
+            sourceBreakdown: [],
+          },
+          models: [],
+        },
+        logText: "",
+        lastEventAtMs: Date.now() - 500,
+        errorText: "benchmark replay failed on fixture row 6",
+        createdAtMs: Date.now() - 1_000,
+        startedAtMs: Date.now() - 900,
+        finishedAtMs: Date.now() - 400,
+      },
+    ].filter((run) => !deletedRunIds.has(run.id));
+
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ runs }),
+    });
+  });
+
+  await page.route("**/api/benchmarks/901", async (route) => {
+    if (route.request().method() === "DELETE") {
+      deletedRunIds.add(901);
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ deletedRunId: 901 }),
+      });
+      return;
+    }
+
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        run: {
+          id: 901,
+          status: "completed",
+          track: "static",
+          surface: "end_to_end",
+          suiteName: "core",
+          strategy: "history+model",
+          timingProtocol: "full",
+          models: ["qwen2.5-coder:7b"],
+          repeatCount: 2,
+          timeoutMs: 5000,
+          filtersJson: "",
+          datasetSize: 4,
+          environment: null,
+          outputJsonPath: "/tmp/run-901.json",
+          summary: null,
+          logText: "",
+          lastEventAtMs: 0,
+          errorText: "",
+          createdAtMs: Date.now() - 2_000,
+          startedAtMs: Date.now() - 2_000,
+          finishedAtMs: Date.now() - 1_000,
+        },
+        results: [],
+      }),
+    });
+  });
+
+  await page.goto("/lab");
+
+  const completedRunRow = page.locator("tr").filter({ has: page.getByRole("cell", { name: "#901" }) });
+  await expect(completedRunRow).toBeVisible();
+  const deleteButton = completedRunRow.getByRole("button", { name: "Delete" });
+  await expect(deleteButton).toBeVisible();
+  await expect(deleteButton).toBeEnabled();
+
+  const remainingRunRow = page.locator("tr").filter({ has: page.getByRole("cell", { name: "#902" }) });
+  await expect(remainingRunRow).toBeVisible();
+
+  const deleteResponse = page.waitForResponse(
+    (response) =>
+      response.url().includes("/api/benchmarks/901") && response.request().method() === "DELETE",
+  );
+  await deleteButton.click();
+  await deleteResponse;
+
+  await expect(page.getByText("Deleted benchmark run #901.")).toBeVisible();
+  await expect(completedRunRow).toHaveCount(0);
+  await expect(remainingRunRow).toBeVisible();
 });
 
 test("model lab benchmark runs fail early and preserve partial results", async ({ page }) => {
@@ -1122,7 +1788,6 @@ test("model lab benchmark runs fail early and preserve partial results", async (
   ]);
 
   await expect(page.getByText("Benchmark queued as run #88.")).toBeVisible();
-  await expect(page.getByText("1 benchmark run active")).toBeVisible();
   await expect.poll(() => benchmarkListRequests).toBeGreaterThan(1);
   await expect(page.getByRole("cell", { name: "#88" })).toBeVisible();
   await expect(page.getByText("failed").first()).toBeVisible();
@@ -1131,6 +1796,165 @@ test("model lab benchmark runs fail early and preserve partial results", async (
   await expect(page.getByText(/benchmark failed early:/)).toBeVisible();
   await expect(page.getByText("docker_compose_logs").first()).toBeVisible();
   await expect(page.getByText(/context deadline exceeded/).first()).toBeVisible();
+});
+
+test("model lab benchmark warns when a run stalls and shows live worker logs", async ({
+  page,
+}) => {
+  const now = Date.now();
+
+  await page.route("**/api/runtime", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        health: {
+          ok: true,
+          modelName: "qwen3-coder:latest",
+          socket: "/tmp/daemon.sock",
+        },
+        settings: {
+          stateDir: "/tmp/lac",
+          runtimeEnvPath: "/tmp/lac/runtime.env",
+          socketPath: "/tmp/daemon.sock",
+          dbPath: "/tmp/lac/autocomplete.sqlite",
+          modelName: "qwen3-coder:latest",
+          modelBaseUrl: "http://127.0.0.1:11434",
+          suggestStrategy: "model-only",
+          suggestTimeoutMs: 5000,
+        },
+        logPath: "/tmp/lac/daemon.log",
+        pidPath: "/tmp/lac/daemon.pid",
+        pid: 12345,
+        recentLog: "",
+      }),
+    });
+  });
+
+  await page.route("**/api/ollama/models?*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        models: [{ name: "qwen3-coder:latest", installed: true, source: "installed" }],
+        installedCount: 1,
+        libraryCount: 0,
+      }),
+    });
+  });
+
+  const stalledRun = {
+    id: 91,
+    status: "running",
+    track: "static",
+    surface: "end_to_end",
+    suiteName: "core",
+    strategy: "model-only",
+    timingProtocol: "full",
+    models: ["qwen3-coder:latest"],
+    repeatCount: 2,
+    timeoutMs: 5000,
+    filtersJson: "",
+    datasetSize: 18,
+    environment: null,
+    outputJsonPath: "/tmp/run-91.json",
+    logText: [
+      "[start] track=static suite=core protocol=full strategy=model-only models=qwen3-coder:latest",
+      "[stdout] Benchmarking track=static surface=end_to_end suite=core models=qwen3-coder:latest cases=18 attempts=36 protocol=full repeat=2",
+      "[stdout] [progress] completed=18/36 model=qwen3-coder:latest case=kubectl_get_pods run=1 phase=hot status=running",
+      "[stderr] waiting for ollama response",
+    ].join("\n"),
+    lastEventAtMs: now - 120_000,
+    summary: {
+      track: "static",
+      surface: "end_to_end",
+      suiteName: "core",
+      strategy: "model-only",
+      timingProtocol: "full",
+      datasetSize: 18,
+      positiveCaseCount: 15,
+      negativeCaseCount: 3,
+      progress: {
+        completed: 18,
+        total: 36,
+        percent: 50,
+        status: "running",
+        currentModel: "qwen3-coder:latest",
+        currentCase: "kubectl_get_pods",
+        currentRun: 1,
+        currentPhase: "hot",
+      },
+      overall: {
+        count: 18,
+        quality: {
+          positiveCaseCount: 15,
+          negativeCaseCount: 3,
+          positiveExactHitRate: 0.73,
+          negativeAvoidRate: 0.67,
+          validWinnerRate: 0.88,
+          candidateRecallAt3: 0.94,
+          charsSavedRatio: 0.49,
+        },
+        latency: { count: 18, mean: 241, median: 220, p90: 450, p95: 520, max: 801 },
+        startStates: [],
+        coldPenaltyMs: 77,
+        stages: [],
+        budgetPassRates: [],
+        categoryBreakdown: [],
+        sourceBreakdown: [],
+      },
+      models: [],
+    },
+    errorText: "",
+    createdAtMs: now - 180_000,
+    startedAtMs: now - 175_000,
+    finishedAtMs: 0,
+  };
+
+  await page.route("**/api/benchmarks", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ runs: [stalledRun] }),
+    });
+  });
+
+  await page.route("**/api/benchmarks/91", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        run: stalledRun,
+        results: [],
+      }),
+    });
+  });
+
+  await page.goto("/lab");
+  const benchmarkPanel = getDetailBlock(page, "Run Saved Benchmarks");
+  await Promise.all([
+    page.waitForResponse((response) =>
+      response.url().includes("/api/benchmarks") && response.request().method() === "GET",
+    ),
+    benchmarkPanel.getByRole("button", { name: "Refresh Runs" }).click(),
+  ]);
+  await expect(page.getByText("1 benchmark run active")).toBeVisible();
+
+  const runRow = page.locator("tr").filter({ has: page.getByRole("cell", { name: "#91" }) });
+  await Promise.all([
+    page.waitForResponse((response) =>
+      response.url().includes("/api/benchmarks/91") && response.request().method() === "GET",
+    ),
+    runRow.getByRole("button", { name: "View" }).click(),
+  ]);
+
+  await expect(page.getByRole("heading", { name: "Benchmark Run #91" })).toBeVisible();
+  await expect(page.getByText(/This run may be stalled/)).toBeVisible();
+  await expect(page.getByText(/Last worker update:/)).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Worker Log" })).toBeVisible();
+  await expect(page.getByText("Benchmarking track=static surface=end_to_end suite=core")).toBeVisible();
+  await expect(page.getByText("[progress] completed=18/36 model=qwen3-coder:latest case=kubectl_get_pods run=1 phase=hot status=running")).toBeVisible();
+  await expect(page.getByText("[stderr] waiting for ollama response")).toBeVisible();
 });
 
 test("model lab ad-hoc flow works with local fixtures", async ({ page }) => {
@@ -1612,10 +2436,12 @@ test("models page manages installed and downloadable Ollama models", async ({ pa
   let gemmaInstalled = false;
   let phiInstalled = false;
   let llamaInstalled = true;
+  let configuredModel = "qwen2.5-coder:7b";
   const extraLibraryModels = Array.from({ length: 28 }, (_, index) => ({
     name: `catalog-model-${String(index + 1).padStart(2, "0")}`,
     installed: false,
     source: "library" as const,
+    sizeLabel: index % 2 === 0 ? "7B" : "13B",
   }));
   type MockJob = {
     id: string;
@@ -1709,14 +2535,35 @@ test("models page manages installed and downloadable Ollama models", async ({ pa
     }
   }
 
-  await page.route("**/api/runtime", async (route) => {
+  await page.route("**/api/runtime/settings", async (route) => {
+    const payload = route.request().postDataJSON() as {
+      LAC_MODEL_NAME?: string;
+    };
+    configuredModel = payload.LAC_MODEL_NAME || configuredModel;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        stateDir: "/tmp/lac",
+        runtimeEnvPath: "/tmp/lac/runtime.env",
+        socketPath: "/tmp/daemon.sock",
+        dbPath: "/tmp/lac/autocomplete.sqlite",
+        modelName: configuredModel,
+        modelBaseUrl: "http://127.0.0.1:11434",
+        suggestStrategy: "history+model",
+        suggestTimeoutMs: 1200,
+      }),
+    });
+  });
+
+  await page.route("**/api/runtime/restart", async (route) => {
     await route.fulfill({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
         health: {
           ok: true,
-          modelName: "qwen2.5-coder:7b",
+          modelName: configuredModel,
           socket: "/tmp/daemon.sock",
         },
         settings: {
@@ -1724,7 +2571,35 @@ test("models page manages installed and downloadable Ollama models", async ({ pa
           runtimeEnvPath: "/tmp/lac/runtime.env",
           socketPath: "/tmp/daemon.sock",
           dbPath: "/tmp/lac/autocomplete.sqlite",
-          modelName: "qwen2.5-coder:7b",
+          modelName: configuredModel,
+          modelBaseUrl: "http://127.0.0.1:11434",
+          suggestStrategy: "history+model",
+          suggestTimeoutMs: 1200,
+        },
+        logPath: "/tmp/lac/daemon.log",
+        pidPath: "/tmp/lac/daemon.pid",
+        pid: 43210,
+        recentLog: "daemon ready",
+      }),
+    });
+  });
+
+  await page.route("**/api/runtime", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        health: {
+          ok: true,
+          modelName: configuredModel,
+          socket: "/tmp/daemon.sock",
+        },
+        settings: {
+          stateDir: "/tmp/lac",
+          runtimeEnvPath: "/tmp/lac/runtime.env",
+          socketPath: "/tmp/daemon.sock",
+          dbPath: "/tmp/lac/autocomplete.sqlite",
+          modelName: configuredModel,
           modelBaseUrl: "http://127.0.0.1:11434",
           suggestStrategy: "history+model",
           suggestTimeoutMs: 1200,
@@ -1743,22 +2618,25 @@ test("models page manages installed and downloadable Ollama models", async ({ pa
       contentType: "application/json",
       body: JSON.stringify({
         models: [
-          { name: "qwen2.5-coder:7b", installed: true, source: "installed" },
+          { name: "qwen2.5-coder:7b", installed: true, source: "installed", sizeLabel: "7B" },
           {
             name: "llama3.2:latest",
             installed: llamaInstalled,
             source: llamaInstalled ? "installed" : "library",
+            sizeLabel: "3B",
           },
           {
             name: "gemma3:4b",
             installed: gemmaInstalled,
             source: gemmaInstalled ? "installed" : "library",
+            sizeLabel: "4B",
             capabilities: ["vision", "tools"],
           },
           {
             name: "phi4",
             installed: phiInstalled,
             source: phiInstalled ? "installed" : "library",
+            sizeLabel: "14B",
           },
           ...extraLibraryModels,
         ],
@@ -1883,11 +2761,22 @@ test("models page manages installed and downloadable Ollama models", async ({ pa
   await page.goto("/models");
   await expect(page.getByRole("heading", { name: "Models" })).toBeVisible();
   await expect(page.getByText("qwen2.5-coder:7b").first()).toBeVisible();
+  await expect(page.getByText("7B").first()).toBeVisible();
 
   const qwenRow = page.locator(".model-catalog-item").filter({
     has: page.getByText("qwen2.5-coder:7b"),
   });
   await expect(qwenRow.getByRole("button", { name: "Remove" })).toBeDisabled();
+
+  const installedBlock = getDetailBlock(page, "Installed Locally");
+  const llamaRow = installedBlock.locator(".model-catalog-item").filter({
+    has: page.getByText("llama3.2:latest"),
+  });
+  await llamaRow.hover();
+  await llamaRow.getByRole("button", { name: "Use as active model" }).click();
+  await expect(page.getByText("llama3.2:latest is now the active model.")).toBeVisible();
+  await expect(llamaRow.getByText("configured")).toBeVisible();
+  await expect(qwenRow.getByText("configured")).toHaveCount(0);
 
   await expect(page.getByText("Page 1 of 2")).toBeVisible();
   await expect(page.getByText("catalog-model-01")).toBeVisible();
@@ -1903,9 +2792,15 @@ test("models page manages installed and downloadable Ollama models", async ({ pa
   await page.getByRole("textbox", { name: "Search" }).fill("gemma");
   await expect(page.getByText("vision")).toBeVisible();
   await expect(page.getByText("tools")).toBeVisible();
+  await page.getByRole("button", { name: "All sizes" }).click();
+  await page.getByRole("menu", { name: "Size filters" }).getByRole("button", { name: "4B" }).click();
+  await expect(page.getByText("gemma3:4b").first()).toBeVisible();
+  await expect(page.getByText("phi4")).toHaveCount(0);
+  await page.getByRole("button", { name: "4B" }).click();
+  await page.getByRole("menu", { name: "Size filters" }).getByRole("button", { name: "All sizes" }).click();
+  await page.getByRole("textbox", { name: "Search" }).fill("");
 
   const downloadBlock = getDetailBlock(page, "Download Model");
-  const installedBlock = getDetailBlock(page, "Installed Locally");
   await downloadBlock.getByLabel("Model").fill("gemma");
   await page.getByRole("option", { name: /gemma3:4b/i }).click();
   await downloadBlock.getByRole("button", { name: "Download", exact: true }).click();
@@ -1916,6 +2811,28 @@ test("models page manages installed and downloadable Ollama models", async ({ pa
   await expect(installedBlock.getByText("Download stalled-download:latest")).toBeVisible();
   await expect(installedBlock.getByText("Download gemma3:4b")).toBeVisible();
   await expect(installedBlock.getByText("Download phi4")).toBeVisible();
+  await expect(installedBlock.locator(".model-operation-item strong").nth(0)).toHaveText(
+    "Download stalled-download:latest",
+  );
+  await expect(installedBlock.locator(".model-operation-item strong").nth(1)).toHaveText(
+    "Download gemma3:4b",
+  );
+  await expect(installedBlock.locator(".model-operation-item strong").nth(2)).toHaveText(
+    "Download phi4",
+  );
+
+  await expect.poll(async () => {
+    return await installedBlock.locator(".model-catalog-item code").filter({
+      hasText: "gemma3:4b",
+    }).count();
+  }).toBe(1);
+  await expect.poll(async () => {
+    return await installedBlock.locator(".model-catalog-item code").filter({
+      hasText: "phi4",
+    }).count();
+  }).toBe(1);
+  await expect(installedBlock.getByText("Download gemma3:4b")).toHaveCount(0);
+  await expect(installedBlock.getByText("Download phi4")).toHaveCount(0);
 
   await page.reload();
   await expect(installedBlock.getByText("Download stalled-download:latest")).toBeVisible();
@@ -1941,10 +2858,6 @@ test("models page manages installed and downloadable Ollama models", async ({ pa
   await expect(stalledOperation).toHaveCount(0);
 
   await page.getByRole("textbox", { name: "Search" }).fill("");
-
-  const llamaRow = installedBlock.locator(".model-catalog-item").filter({
-    has: page.getByText("llama3.2:latest"),
-  });
   await llamaRow.getByRole("button", { name: "Remove" }).click();
   await expect(installedBlock.getByText("Removal llama3.2:latest")).toBeVisible();
   await expect.poll(async () => await llamaRow.count()).toBe(0);

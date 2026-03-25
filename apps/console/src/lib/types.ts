@@ -35,6 +35,8 @@ export interface OllamaModelOption {
   name: string;
   installed: boolean;
   source: "installed" | "library";
+  sizeLabel?: string;
+  contextWindowLabel?: string;
   capabilities?: string[];
   remoteOnly?: boolean;
 }
@@ -159,14 +161,138 @@ export interface PagedResult<T> {
   rows: T[];
 }
 
+export type BenchmarkTrack = "static" | "replay" | "raw";
+export type BenchmarkSurface = "end_to_end" | "raw_model";
+export type BenchmarkTimingProtocol = "cold_only" | "hot_only" | "mixed" | "full";
+export type BenchmarkTimingPhase = "cold" | "hot" | "mixed";
+export type BenchmarkStartState = "cold" | "hot" | "unknown" | "not_applicable";
+export type BenchmarkLabelKind = "positive" | "negative";
+
+export interface BenchmarkEnvironment {
+  hostname: string;
+  os: string;
+  arch: string;
+  goVersion: string;
+  modelBaseURL: string;
+  modelKeepAlive: string;
+  activeModelName: string;
+  dbPath: string;
+}
+
+export interface BenchmarkProgress {
+  completed: number;
+  total: number;
+  percent: number;
+  status: string;
+  currentModel: string;
+  currentCase: string;
+  currentRun: number;
+  currentPhase: string;
+}
+
+export interface BenchmarkLatencyStats {
+  count: number;
+  mean: number;
+  median: number;
+  p90: number;
+  p95: number;
+  max: number;
+}
+
+export interface BenchmarkQualitySummary {
+  positiveCaseCount: number;
+  negativeCaseCount: number;
+  positiveExactHitRate: number;
+  negativeAvoidRate: number;
+  validWinnerRate: number;
+  candidateRecallAt3: number;
+  charsSavedRatio: number;
+}
+
+export interface BenchmarkStartStateSummary {
+  key: BenchmarkStartState;
+  count: number;
+  share: number;
+  latency: BenchmarkLatencyStats;
+}
+
+export interface BenchmarkStageSummary {
+  label: string;
+  count: number;
+  avgRequestLatencyMs: number;
+  avgModelTotalDurationMs: number;
+  avgLoadDurationMs: number;
+  avgPromptEvalDurationMs: number;
+  avgEvalDurationMs: number;
+  avgNonModelOverheadMs: number;
+  decodeTokensPerSecond: number;
+}
+
+export interface BenchmarkBudgetPassRate {
+  budgetMs: number;
+  rate: number;
+}
+
+export interface BenchmarkBucketSummary {
+  key: string;
+  label: string;
+  count: number;
+  share: number;
+  quality: BenchmarkQualitySummary;
+  latency: BenchmarkLatencyStats;
+}
+
+export interface BenchmarkAggregateSummary {
+  count: number;
+  quality: BenchmarkQualitySummary;
+  latency: BenchmarkLatencyStats;
+  startStates: BenchmarkStartStateSummary[];
+  coldPenaltyMs: number;
+  stages: BenchmarkStageSummary[];
+  budgetPassRates: BenchmarkBudgetPassRate[];
+  categoryBreakdown: BenchmarkBucketSummary[];
+  sourceBreakdown: BenchmarkBucketSummary[];
+}
+
+export interface BenchmarkModelSummary {
+  model: string;
+  overall: BenchmarkAggregateSummary;
+  cold: BenchmarkAggregateSummary;
+  hot: BenchmarkAggregateSummary;
+}
+
+export interface BenchmarkRunSummary {
+  progress: BenchmarkProgress;
+  track: BenchmarkTrack;
+  surface: BenchmarkSurface;
+  suiteName: string;
+  strategy: string;
+  timingProtocol: BenchmarkTimingProtocol;
+  datasetSize: number;
+  positiveCaseCount: number;
+  negativeCaseCount: number;
+  overall: BenchmarkAggregateSummary;
+  models: BenchmarkModelSummary[];
+}
+
 export interface BenchmarkRunRow {
   id: number;
   status: string;
+  track: BenchmarkTrack;
+  surface: BenchmarkSurface;
+  suiteName: string;
+  strategy: string;
+  timingProtocol: BenchmarkTimingProtocol;
   models: string[];
   repeatCount: number;
   timeoutMs: number;
+  filtersJson: string;
+  datasetSize: number;
+  environment: BenchmarkEnvironment | null;
   outputJsonPath: string;
-  summary: Record<string, unknown> | null;
+  summary: BenchmarkRunSummary | null;
+  logText: string;
+  lastEventAtMs: number;
   errorText: string;
   createdAtMs: number;
   startedAtMs: number;
@@ -177,12 +303,46 @@ export interface BenchmarkResultRow {
   id: number;
   runId: number;
   modelName: string;
+  track: BenchmarkTrack;
+  surface: BenchmarkSurface;
+  suiteName: string;
+  strategy: string;
+  timingProtocol: BenchmarkTimingProtocol;
+  timingPhase: BenchmarkTimingPhase;
+  startState: BenchmarkStartState;
+  caseId: string;
   caseName: string;
+  category: string;
+  tags: string[];
+  labelKind: BenchmarkLabelKind;
   runNumber: number;
-  latencyMs: number;
-  suggestionText: string;
+  requestJson: string;
+  expectedCommand: string;
+  expectedAlternatives: string[];
+  negativeTarget: string;
+  winnerCommand: string;
+  winnerSource: string;
+  candidatesJson: string;
+  rawModelOutput: string;
+  cleanedModelOutput: string;
+  exactMatch: boolean;
+  alternativeMatch: boolean;
+  negativeAvoided: boolean;
   validPrefix: boolean;
-  accepted: boolean;
+  candidateHitAt3: boolean;
+  charsSavedRatio: number;
+  commandEditDistance: number;
+  requestLatencyMs: number;
+  modelTotalDurationMs: number;
+  modelLoadDurationMs: number;
+  modelPromptEvalDurationMs: number;
+  modelEvalDurationMs: number;
+  modelPromptEvalCount: number;
+  modelEvalCount: number;
+  decodeTokensPerSecond: number;
+  nonModelOverheadDurationMs: number;
+  modelError: string;
   errorText: string;
+  replaySourceJson: string;
   createdAtMs: number;
 }

@@ -13,6 +13,7 @@ It gives the project a usable local UI for:
 - exports and safe maintenance actions
 - a minimal shared shell that keeps primary navigation and runtime status visible without duplicate footer shortcuts or topbar quick actions
 - a collapsible left navigation so wider operational pages can reclaim horizontal space when needed
+- a dedicated performance dashboard for slicing latency by time window, including rolling, custom, and all-time presets, plus model, source, and cold versus hot model starts
 
 ## Main Sections
 
@@ -28,6 +29,21 @@ Shows:
 - recent suggestions
 - latency by model
 - acceptance by working directory path
+
+### Performance
+
+Shows:
+
+- a server-rendered latency dashboard focused on end-to-end suggestion request time rather than only winner-model latency
+- date and time filtering with presets for today, yesterday, last 24 hours, last 7 days, last 30 days, and custom windows
+- current-model defaulting so the dashboard opens on the active daemon model without extra setup
+- source and start-state filtering so you can isolate model-backed requests, history-only traffic, or rows with missing timing metadata
+- cold versus hot start splits based on persisted Ollama load-duration metadata, with graceful fallback to an unknown state for historical rows that predate the instrumentation
+- comparison against the immediately previous matching window for average latency, p95 latency, and cold-start share
+- a Plotly-powered latency trend and latency-distribution charts for better date-axis handling and hover inspection
+- request-phase breakdowns for load, prompt evaluation, decode, and non-model overhead
+- path and buffer hotspot leaderboards for slow tails
+- source-level latency cards to compare history, retrieval, and model-heavy traffic at a glance
 
 ### Suggestions
 
@@ -94,6 +110,9 @@ Supports:
 - ad-hoc tests that accept an optional `session id` and `cwd`, then let the backend infer repo root, branch, and recent session context when available
 - saved benchmark run history
 - persisted benchmark results stored in SQLite
+- track selection between static, replay, and raw benchmark modes
+- timing protocol selection for cold-only, hot-only, mixed, and full passes
+- replay sample-size control for live-DB benchmark runs
 - installed-only model pickers for benchmarks and ad-hoc tests, with the wider Ollama library managed from the Models page
 - stricter multi-model picker validation so models must exist in the local installed inventory before they can be added
 - selection-first multi pickers that keep the textbox empty and rely on chips for the actual chosen models
@@ -102,7 +121,8 @@ Supports:
 - benchmark run progress indicators with auto-refresh while queued or running
 - fail-fast saved benchmark execution so hard model request errors stop the run early, preserve partial result rows, and surface the failure message in the saved run detail view
 - comparison-first ad-hoc results and saved benchmark summaries that make model-to-model tradeoffs easier to scan
-- clearer benchmark drill-down with a closable run detail view
+- richer benchmark drill-down with cold/hot latency cards, stage breakdowns, category/source tables, and filtered per-attempt rows
+- replay actions on saved benchmark runs so a prior model set, repeat count, and timeout can be queued again directly from the run list
 
 ### Models
 
@@ -112,13 +132,16 @@ Supports:
 - pagination for the larger `Available From Ollama` catalog so library browsing stays usable without overwhelming the page
 - supplemental family-page loading for important Ollama model families whose local tags do not reliably appear on the top-level library landing page, so models like `qwen3-coder` still show up in the console catalog
 - capability chips on downloadable library models so vision, tools, and thinking support are visible at a glance
+- model-size chips on installed and library entries, using Ollama parameter-size metadata for local models and catalog size labels for library entries when available
+- context-window chips on installed and supported library entries, using Ollama local model metadata when a model is already downloaded and family-page catalog details when the public library exposes them
 - exclusion of Ollama cloud-only catalog entries from the local console inventory so remote models do not appear as downloadable local options, while mixed cloud-plus-local families like `qwen3.5` still surface their local tags
 - visible but disabled cloud and remote-only catalog entries, styled as greyed-out reference items so unsupported downloads are explicit instead of silently disappearing
 - visibility into the daemon's configured model and the current live model
 - a dedicated `Installed Locally` operations panel that tracks both downloads and removals, survives page refreshes, supports multiple concurrent model jobs, and lets you cancel stalled work or dismiss cancelled and failed jobs
 - automatic cleanup of completed model operations so finished downloads and removals drop out of the attention list once the inventory refreshes
+- hover actions on installed-model rows so any non-active local model can be promoted to the daemon's active model and applied through an immediate daemon restart
 - safe local model removal, with the configured daemon model protected from removal
-- searchable installed and available model lists so the page can act as the main Ollama control surface
+- searchable available-model catalog controls plus a compact dropdown multi-select size filter, while installed local models stay visible as a stable inventory list
 
 ### Daemon
 
@@ -131,6 +154,7 @@ Supports:
 - the same installed-only model picker used in the lab
 - a persisted suggestion-strategy selector shared with the daemon and shell runtime
 - an Ollama keep-alive setting persisted to `runtime.env` and applied on daemon inference requests so loaded models can stay warm longer between suggestions
+- latency-oriented Ollama request shaping for live suggestions, with known thinking-capable models asked to skip reasoning when supported and `gpt-oss` constrained to the lowest documented reasoning level
 - a multiline editor for the system prompt used by the daemon, prefilled with the built-in autosuggestion instructions and resettable back to that default
 - a shell accept-key selector that persists whether `Tab` or Right Arrow accepts a visible suggestion in new shells, while leaving the non-selected key on its normal shell behavior
 - shell-facing PTY capture mode selection plus allow-list and block-list editing, persisted to `runtime.env` so new shells can pick up the wrapper rules, with one exact command name or one `/regex/` per line so the UI can exclude only the interactive command shapes that the lightweight PTY shell tends to mangle
@@ -152,6 +176,7 @@ The control app is intentionally server-first:
 - pages read SQLite directly from Next server code
 - live operations go through local Next API routes
 - live dashboard and daemon tapes subscribe to local server-sent event routes exposed by Next
+- the performance dashboard runs its aggregations server-side from filtered SQLite rows so percentile and phase calculations stay local and do not require browser-side data fetching
 - the browser never talks directly to SQLite or the Unix socket daemon
 
 This keeps the app local-only, simple to reason about, and aligned with the existing daemon and storage boundaries.

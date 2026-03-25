@@ -249,7 +249,29 @@ export function listOllamaInstallJobs(baseUrl?: string) {
   const normalizedBaseUrl = baseUrl?.trim().replace(/\/$/, "") || "";
   return Array.from(installStore.jobs.values())
     .filter((job) => (normalizedBaseUrl ? job.baseUrl === normalizedBaseUrl : true))
-    .sort((left, right) => right.updatedAtMs - left.updatedAtMs)
+    .sort((left, right) => {
+      const leftActive = isActiveJob(left);
+      const rightActive = isActiveJob(right);
+      if (leftActive !== rightActive) {
+        return leftActive ? -1 : 1;
+      }
+
+      if (leftActive && rightActive) {
+        return (
+          left.startedAtMs - right.startedAtMs ||
+          left.model.localeCompare(right.model) ||
+          left.id.localeCompare(right.id)
+        );
+      }
+
+      const leftFinishedAt = left.finishedAtMs || left.updatedAtMs;
+      const rightFinishedAt = right.finishedAtMs || right.updatedAtMs;
+      return (
+        rightFinishedAt - leftFinishedAt ||
+        left.model.localeCompare(right.model) ||
+        left.id.localeCompare(right.id)
+      );
+    })
     .map((job) => serializeJob(job));
 }
 

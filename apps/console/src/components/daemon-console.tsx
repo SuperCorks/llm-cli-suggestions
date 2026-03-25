@@ -867,30 +867,37 @@ export function DaemonConsole({
             </p>
           </div>
         </div>
-        <div className="stack-sm danger-zone-content">
+        <div className="danger-zone-content">
           {(["suggestions", "feedback", "benchmarks"] as ClearDataset[]).map((dataset) => (
-            <div key={dataset} className="destructive-card">
-              <strong>{dataset}</strong>
-              <p className="muted-text">
-                Type <code>{CONFIRMATIONS[dataset]}</code> to confirm.
-              </p>
-              <input
-                value={confirmations[dataset]}
-                onChange={(event) =>
-                  setConfirmations((current) => ({
-                    ...current,
-                    [dataset]: event.target.value,
-                  }))
-                }
-              />
-              <button
-                type="button"
-                className="button-danger"
-                disabled={busy !== ""}
-                onClick={() => void clearDataset(dataset)}
-              >
-                Clear {dataset}
-              </button>
+            <div key={dataset} className="danger-zone-row">
+              <div className="danger-zone-copy">
+                <strong>{dataset}</strong>
+                <p className="muted-text">
+                  Permanently delete stored {dataset} data from this local control app.
+                </p>
+                <label className="danger-zone-confirmation">
+                  <span>Confirm with <code>{CONFIRMATIONS[dataset]}</code></span>
+                  <input
+                    value={confirmations[dataset]}
+                    onChange={(event) =>
+                      setConfirmations((current) => ({
+                        ...current,
+                        [dataset]: event.target.value,
+                      }))
+                    }
+                  />
+                </label>
+              </div>
+              <div className="danger-zone-actions">
+                <button
+                  type="button"
+                  className="button-danger"
+                  disabled={busy !== ""}
+                  onClick={() => void clearDataset(dataset)}
+                >
+                  Clear {dataset}
+                </button>
+              </div>
             </div>
           ))}
         </div>

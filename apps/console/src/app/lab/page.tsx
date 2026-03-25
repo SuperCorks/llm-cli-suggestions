@@ -28,7 +28,7 @@ export default async function LabPage() {
 
       <Panel
         title="Benchmarks And Ad-Hoc Tests"
-        subtitle="Run the existing benchmark suite in the background and save results to SQLite for later comparison."
+        subtitle="Run static, replay, and raw benchmark tracks in the background and save rich timing and quality results to SQLite for later comparison."
       >
         <LabConsole
           initialRuns={runs}

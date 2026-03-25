@@ -46,8 +46,11 @@ type rankedCandidate struct {
 }
 
 type inspectResult struct {
-	response        api.InspectResponse
-	resolvedRequest api.SuggestRequest
+	response         api.InspectResponse
+	resolvedRequest  api.SuggestRequest
+	winner           *rankedCandidate
+	requestModelName string
+	modelMetrics     model.SuggestMetrics
 }
 
 const (
@@ -81,6 +84,7 @@ func (e *Engine) Suggest(ctx context.Context, request api.SuggestRequest) (api.S
 		return api.SuggestResponse{}, err
 	}
 
+	requestStartedAt := time.Now()
 	recentCommands := request.RecentCommands
 	var err error
 	inspection, err := e.inspectDetailed(ctx, api.InspectRequest{
@@ -98,26 +102,10 @@ func (e *Engine) Suggest(ctx context.Context, request api.SuggestRequest) (api.S
 		return api.SuggestResponse{}, err
 	}
 
-	if len(inspection.response.Candidates) == 0 || inspection.response.Winner == nil {
+	if len(inspection.response.Candidates) == 0 || inspection.winner == nil {
 		return api.SuggestResponse{}, nil
 	}
-	winner := inspection.response.Winner
-	return e.recordSuggestion(ctx, inspection, rankedCandidate{
-		Command:      winner.Command,
-		Source:       winner.Source,
-		Score:        winner.Score,
-		LatencyMS:    winner.LatencyMS,
-		HistoryScore: winner.HistoryScore,
-		Feedback: db.CommandFeedbackStats{
-			AcceptedCount: winner.AcceptedCount,
-			RejectedCount: winner.RejectedCount,
-		},
-		RetrievalScore: winner.Breakdown.Retrieval,
-		ModelScore:     winner.Breakdown.Model,
-		FeedbackAdj:    winner.Breakdown.Feedback,
-		RecentAdj:      winner.Breakdown.RecentUsage,
-		LastCtxAdj:     winner.Breakdown.LastContext,
-	})
+	return e.recordSuggestion(ctx, inspection, *inspection.winner, time.Since(requestStartedAt).Milliseconds())
 }
 
 func (e *Engine) Inspect(ctx context.Context, request api.InspectRequest) (api.InspectResponse, error) {
@@ -134,10 +122,6 @@ func (e *Engine) Inspect(ctx context.Context, request api.InspectRequest) (api.I
 }
 
 func (e *Engine) inspectDetailed(ctx context.Context, request api.InspectRequest, modelTimeout time.Duration) (inspectResult, error) {
-	if err := e.store.EnsureSession(ctx, request.SessionID); err != nil {
-		return inspectResult{}, err
-	}
-
 	limit := request.Limit
 	if limit <= 0 {
 		limit = 8
@@ -249,6 +233,8 @@ func (e *Engine) inspectDetailed(ctx context.Context, request api.InspectRequest
 	cleanedModelOutput := ""
 	modelError := ""
 	activeModelName := e.modelName
+	requestModelName := ""
+	modelMetrics := model.SuggestMetrics{}
 
 	if useModel && (strategy == config.SuggestStrategyModelOnly || !historyTrusted) {
 		modelClient := e.modelClient
@@ -262,13 +248,15 @@ func (e *Engine) inspectDetailed(ctx context.Context, request api.InspectRequest
 		}
 
 		if modelClient != nil {
+			requestModelName = activeModelName
 			modelCtx, cancel := context.WithTimeout(ctx, modelTimeout)
 			startedAt := time.Now()
-			rawSuggestion, modelErr := modelClient.Suggest(modelCtx, prompt)
+			suggestResult, modelErr := modelClient.Suggest(modelCtx, prompt)
 			cancel()
 			if modelErr == nil {
-				rawModelOutput = rawSuggestion
-				cleanedModelOutput = CleanSuggestion(buffer, rawSuggestion)
+				modelMetrics = suggestResult.Metrics
+				rawModelOutput = suggestResult.Response
+				cleanedModelOutput = CleanSuggestion(buffer, suggestResult.Response)
 				if cleanedModelOutput != "" {
 					candidate := candidateMap[cleanedModelOutput]
 					if candidate == nil {
@@ -284,7 +272,7 @@ func (e *Engine) inspectDetailed(ctx context.Context, request api.InspectRequest
 					candidate.LatencyMS = time.Since(startedAt).Milliseconds()
 					candidate.ModelScore = scoreModelCandidate(cleanedModelOutput, resolvedSuggestRequest, recentCommands, lastContext)
 					candidate.Score = max(candidate.Score, candidate.ModelScore)
-				} else if strings.TrimSpace(rawSuggestion) == "" {
+				} else if strings.TrimSpace(suggestResult.Response) == "" {
 					modelError = fmt.Sprintf("%s returned an empty response.", activeModelName)
 				} else {
 					modelError = fmt.Sprintf("%s returned output that did not start with the current buffer %q.", activeModelName, buffer)
@@ -297,21 +285,28 @@ func (e *Engine) inspectDetailed(ctx context.Context, request api.InspectRequest
 
 	if len(candidateMap) == 0 {
 		return inspectResult{response: api.InspectResponse{
-			ModelName:           activeModelName,
-			HistoryTrusted:      historyTrusted,
-			ModelError:          modelError,
-			Prompt:              prompt,
-			RawModelOutput:      rawModelOutput,
-			CleanedModelOutput:  cleanedModelOutput,
-			RecentCommands:      recentCommands,
-			LastCommand:         lastContext.Command,
-			LastStdoutExcerpt:   lastContext.StdoutExcerpt,
-			LastStderrExcerpt:   lastContext.StderrExcerpt,
-			LastCommandContext:  inspectLastCommandContext,
-			RecentOutputContext: selectedRecentOutput,
-			RetrievedContext:    retrievedContext,
-			Candidates:          []api.InspectCandidate{},
-		}, resolvedRequest: resolvedSuggestRequest}, nil
+			ModelName:                 activeModelName,
+			RequestModelName:          requestModelName,
+			HistoryTrusted:            historyTrusted,
+			ModelError:                modelError,
+			Prompt:                    prompt,
+			RawModelOutput:            rawModelOutput,
+			CleanedModelOutput:        cleanedModelOutput,
+			ModelTotalDurationMS:      modelMetrics.TotalDurationMS,
+			ModelLoadDurationMS:       modelMetrics.LoadDurationMS,
+			ModelPromptEvalDurationMS: modelMetrics.PromptEvalDurationMS,
+			ModelEvalDurationMS:       modelMetrics.EvalDurationMS,
+			ModelPromptEvalCount:      modelMetrics.PromptEvalCount,
+			ModelEvalCount:            modelMetrics.EvalCount,
+			RecentCommands:            recentCommands,
+			LastCommand:               lastContext.Command,
+			LastStdoutExcerpt:         lastContext.StdoutExcerpt,
+			LastStderrExcerpt:         lastContext.StderrExcerpt,
+			LastCommandContext:        inspectLastCommandContext,
+			RecentOutputContext:       selectedRecentOutput,
+			RetrievedContext:          retrievedContext,
+			Candidates:                []api.InspectCandidate{},
+		}, resolvedRequest: resolvedSuggestRequest, requestModelName: requestModelName, modelMetrics: modelMetrics}, nil
 	}
 
 	feedbackStats, err := e.store.GetCommandFeedbackStats(ctx, candidateCommands(candidateMap))
@@ -358,25 +353,41 @@ func (e *Engine) inspectDetailed(ctx context.Context, request api.InspectRequest
 	}
 
 	response := api.InspectResponse{
-		ModelName:           activeModelName,
-		HistoryTrusted:      historyTrusted,
-		ModelError:          modelError,
-		Prompt:              prompt,
-		RawModelOutput:      rawModelOutput,
-		CleanedModelOutput:  cleanedModelOutput,
-		RecentCommands:      recentCommands,
-		LastCommand:         lastContext.Command,
-		LastStdoutExcerpt:   lastContext.StdoutExcerpt,
-		LastStderrExcerpt:   lastContext.StderrExcerpt,
-		LastCommandContext:  inspectLastCommandContext,
-		RecentOutputContext: selectedRecentOutput,
-		RetrievedContext:    retrievedContext,
-		Candidates:          inspectCandidates,
+		ModelName:                 activeModelName,
+		RequestModelName:          requestModelName,
+		HistoryTrusted:            historyTrusted,
+		ModelError:                modelError,
+		Prompt:                    prompt,
+		RawModelOutput:            rawModelOutput,
+		CleanedModelOutput:        cleanedModelOutput,
+		ModelTotalDurationMS:      modelMetrics.TotalDurationMS,
+		ModelLoadDurationMS:       modelMetrics.LoadDurationMS,
+		ModelPromptEvalDurationMS: modelMetrics.PromptEvalDurationMS,
+		ModelEvalDurationMS:       modelMetrics.EvalDurationMS,
+		ModelPromptEvalCount:      modelMetrics.PromptEvalCount,
+		ModelEvalCount:            modelMetrics.EvalCount,
+		RecentCommands:            recentCommands,
+		LastCommand:               lastContext.Command,
+		LastStdoutExcerpt:         lastContext.StdoutExcerpt,
+		LastStderrExcerpt:         lastContext.StderrExcerpt,
+		LastCommandContext:        inspectLastCommandContext,
+		RecentOutputContext:       selectedRecentOutput,
+		RetrievedContext:          retrievedContext,
+		Candidates:                inspectCandidates,
 	}
+	var winner *rankedCandidate
 	if len(inspectCandidates) > 0 {
 		response.Winner = &inspectCandidates[0]
+		winnerCopy := *ranked[0]
+		winner = &winnerCopy
 	}
-	return inspectResult{response: response, resolvedRequest: resolvedSuggestRequest}, nil
+	return inspectResult{
+		response:         response,
+		resolvedRequest:  resolvedSuggestRequest,
+		winner:           winner,
+		requestModelName: requestModelName,
+		modelMetrics:     modelMetrics,
+	}, nil
 }
 
 func (e *Engine) resolveInspectContext(ctx context.Context, request api.InspectRequest) (api.SuggestRequest, []string, db.CommandContext, []db.RecentCommandContext, []db.RecentOutputContext, error) {
@@ -652,7 +663,7 @@ func intPtr(value int) *int {
 	return &value
 }
 
-func (e *Engine) recordSuggestion(ctx context.Context, inspection inspectResult, candidate rankedCandidate) (api.SuggestResponse, error) {
+func (e *Engine) recordSuggestion(ctx context.Context, inspection inspectResult, candidate rankedCandidate, requestLatencyMS int64) (api.SuggestResponse, error) {
 	suggestionID, err := e.store.CreateSuggestion(ctx, db.SuggestionRecord{
 		SessionID:             inspection.resolvedRequest.SessionID,
 		Buffer:                inspection.resolvedRequest.Buffer,
@@ -663,7 +674,15 @@ func (e *Engine) recordSuggestion(ctx context.Context, inspection inspectResult,
 		Branch:                inspection.resolvedRequest.Branch,
 		LastExitCode:          inspection.resolvedRequest.LastExitCode,
 		LatencyMS:             candidate.LatencyMS,
+		RequestLatencyMS:      requestLatencyMS,
 		ModelName:             modelNameForSource(inspection.response.ModelName, candidate.Source),
+		RequestModelName:      inspection.requestModelName,
+		ModelTotalDurationMS:  inspection.modelMetrics.TotalDurationMS,
+		ModelLoadDurationMS:   inspection.modelMetrics.LoadDurationMS,
+		ModelPromptEvalMS:     inspection.modelMetrics.PromptEvalDurationMS,
+		ModelEvalDurationMS:   inspection.modelMetrics.EvalDurationMS,
+		ModelPromptEvalCount:  inspection.modelMetrics.PromptEvalCount,
+		ModelEvalCount:        inspection.modelMetrics.EvalCount,
 		PromptText:            inspection.response.Prompt,
 		StructuredContextJSON: marshalSuggestionContext(inspection),
 		CreatedAtMS:           time.Now().UnixMilli(),

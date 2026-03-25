@@ -15,6 +15,8 @@ type Store struct {
 	db *sql.DB
 }
 
+const sqliteBusyTimeoutMS = 15_000
+
 type CommandCandidate struct {
 	Command      string
 	Score        int
@@ -32,7 +34,15 @@ type SuggestionRecord struct {
 	Branch                string
 	LastExitCode          int
 	LatencyMS             int64
+	RequestLatencyMS      int64
 	ModelName             string
+	RequestModelName      string
+	ModelTotalDurationMS  int64
+	ModelLoadDurationMS   int64
+	ModelPromptEvalMS     int64
+	ModelEvalDurationMS   int64
+	ModelPromptEvalCount  int64
+	ModelEvalCount        int64
 	PromptText            string
 	StructuredContextJSON string
 	CreatedAtMS           int64
@@ -68,14 +78,32 @@ func NewStore(path string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite db: %w", err)
 	}
+	db.SetMaxOpenConns(1)
 
 	store := &Store{db: db}
+	if err := store.configureSQLite(context.Background()); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	if err := store.migrate(context.Background()); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
 
 	return store, nil
+}
+
+func (s *Store) configureSQLite(ctx context.Context) error {
+	pragmas := []string{
+		"PRAGMA journal_mode = WAL",
+		fmt.Sprintf("PRAGMA busy_timeout = %d", sqliteBusyTimeoutMS),
+	}
+	for _, pragma := range pragmas {
+		if _, err := s.db.ExecContext(ctx, pragma); err != nil {
+			return fmt.Errorf("configure sqlite pragma %q: %w", pragma, err)
+		}
+	}
+	return nil
 }
 
 func (s *Store) Close() error {
@@ -115,7 +143,15 @@ func (s *Store) migrate(ctx context.Context) error {
 			branch TEXT NOT NULL,
 			last_exit_code INTEGER NOT NULL,
 			latency_ms INTEGER NOT NULL,
+			request_latency_ms INTEGER NOT NULL DEFAULT -1,
 			model_name TEXT NOT NULL,
+			request_model_name TEXT NOT NULL DEFAULT '',
+			model_total_duration_ms INTEGER NOT NULL DEFAULT -1,
+			model_load_duration_ms INTEGER NOT NULL DEFAULT -1,
+			model_prompt_eval_duration_ms INTEGER NOT NULL DEFAULT -1,
+			model_eval_duration_ms INTEGER NOT NULL DEFAULT -1,
+			model_prompt_eval_count INTEGER NOT NULL DEFAULT -1,
+			model_eval_count INTEGER NOT NULL DEFAULT -1,
 			prompt_text TEXT NOT NULL DEFAULT '',
 			structured_context_json TEXT NOT NULL DEFAULT '',
 			created_at_ms INTEGER NOT NULL
@@ -131,33 +167,6 @@ func (s *Store) migrate(ctx context.Context) error {
 			actual_command TEXT NOT NULL,
 			created_at_ms INTEGER NOT NULL
 		);`,
-		`CREATE TABLE IF NOT EXISTS benchmark_runs (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			status TEXT NOT NULL,
-			models TEXT NOT NULL,
-			repeat_count INTEGER NOT NULL,
-			timeout_ms INTEGER NOT NULL,
-			output_json_path TEXT NOT NULL,
-			summary_json TEXT NOT NULL DEFAULT '',
-			error_text TEXT NOT NULL DEFAULT '',
-			created_at_ms INTEGER NOT NULL,
-			started_at_ms INTEGER NOT NULL DEFAULT 0,
-			finished_at_ms INTEGER NOT NULL DEFAULT 0
-		);`,
-		`CREATE TABLE IF NOT EXISTS benchmark_results (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			run_id INTEGER NOT NULL,
-			model_name TEXT NOT NULL,
-			case_name TEXT NOT NULL,
-			run_number INTEGER NOT NULL,
-			latency_ms INTEGER NOT NULL,
-			suggestion_text TEXT NOT NULL,
-			valid_prefix INTEGER NOT NULL,
-			accepted INTEGER NOT NULL,
-			error_text TEXT NOT NULL DEFAULT '',
-			created_at_ms INTEGER NOT NULL
-		);`,
-		`CREATE INDEX IF NOT EXISTS idx_benchmark_results_run_id ON benchmark_results(run_id);`,
 	}
 
 	for _, statement := range statements {
@@ -172,14 +181,189 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := s.ensureColumn(ctx, "suggestions", "structured_context_json", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
+	if err := s.ensureColumn(ctx, "suggestions", "request_latency_ms", "INTEGER NOT NULL DEFAULT -1"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "suggestions", "request_model_name", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "suggestions", "model_total_duration_ms", "INTEGER NOT NULL DEFAULT -1"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "suggestions", "model_load_duration_ms", "INTEGER NOT NULL DEFAULT -1"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "suggestions", "model_prompt_eval_duration_ms", "INTEGER NOT NULL DEFAULT -1"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "suggestions", "model_eval_duration_ms", "INTEGER NOT NULL DEFAULT -1"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "suggestions", "model_prompt_eval_count", "INTEGER NOT NULL DEFAULT -1"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "suggestions", "model_eval_count", "INTEGER NOT NULL DEFAULT -1"); err != nil {
+		return err
+	}
+	if err := s.ensureBenchmarkTables(ctx); err != nil {
+		return err
+	}
 
 	return nil
 }
 
-func (s *Store) ensureColumn(ctx context.Context, table, column, definition string) error {
+func (s *Store) ensureBenchmarkTables(ctx context.Context) error {
+	resetRuns, err := s.shouldResetBenchmarkTable(ctx, "benchmark_runs", "track")
+	if err != nil {
+		return err
+	}
+	hasLogText := true
+	hasLastEvent := true
+	if exists, err := s.tableExists(ctx, "benchmark_runs"); err != nil {
+		return err
+	} else if exists {
+		if hasLogText, err = s.hasColumn(ctx, "benchmark_runs", "log_text"); err != nil {
+			return err
+		}
+		if hasLastEvent, err = s.hasColumn(ctx, "benchmark_runs", "last_event_at_ms"); err != nil {
+			return err
+		}
+	}
+	resetResults, err := s.shouldResetBenchmarkTable(ctx, "benchmark_results", "case_id")
+	if err != nil {
+		return err
+	}
+	if resetRuns || resetResults || !hasLogText || !hasLastEvent {
+		if _, err := s.db.ExecContext(ctx, `DROP TABLE IF EXISTS benchmark_results; DROP TABLE IF EXISTS benchmark_runs;`); err != nil {
+			return fmt.Errorf("reset benchmark tables: %w", err)
+		}
+	}
+
+	statements := []string{
+		`CREATE TABLE IF NOT EXISTS benchmark_runs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			status TEXT NOT NULL,
+			track TEXT NOT NULL,
+			surface TEXT NOT NULL,
+			suite_name TEXT NOT NULL,
+			strategy TEXT NOT NULL,
+			timing_protocol TEXT NOT NULL,
+			models TEXT NOT NULL,
+			repeat_count INTEGER NOT NULL,
+			timeout_ms INTEGER NOT NULL,
+			filters_json TEXT NOT NULL DEFAULT '',
+			dataset_size INTEGER NOT NULL DEFAULT 0,
+			environment_json TEXT NOT NULL DEFAULT '',
+			output_json_path TEXT NOT NULL,
+			summary_json TEXT NOT NULL DEFAULT '',
+			log_text TEXT NOT NULL DEFAULT '',
+			last_event_at_ms INTEGER NOT NULL DEFAULT 0,
+			error_text TEXT NOT NULL DEFAULT '',
+			created_at_ms INTEGER NOT NULL,
+			started_at_ms INTEGER NOT NULL DEFAULT 0,
+			finished_at_ms INTEGER NOT NULL DEFAULT 0
+		);`,
+		`CREATE TABLE IF NOT EXISTS benchmark_results (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			run_id INTEGER NOT NULL,
+			model_name TEXT NOT NULL,
+			track TEXT NOT NULL,
+			surface TEXT NOT NULL,
+			suite_name TEXT NOT NULL,
+			strategy TEXT NOT NULL,
+			timing_protocol TEXT NOT NULL,
+			timing_phase TEXT NOT NULL,
+			start_state TEXT NOT NULL,
+			case_id TEXT NOT NULL,
+			case_name TEXT NOT NULL,
+			category TEXT NOT NULL,
+			tags_json TEXT NOT NULL DEFAULT '',
+			label_kind TEXT NOT NULL,
+			run_number INTEGER NOT NULL,
+			request_json TEXT NOT NULL DEFAULT '',
+			expected_command TEXT NOT NULL DEFAULT '',
+			expected_alternatives_json TEXT NOT NULL DEFAULT '',
+			negative_target TEXT NOT NULL DEFAULT '',
+			winner_command TEXT NOT NULL DEFAULT '',
+			winner_source TEXT NOT NULL DEFAULT '',
+			candidates_json TEXT NOT NULL DEFAULT '',
+			raw_model_output TEXT NOT NULL DEFAULT '',
+			cleaned_model_output TEXT NOT NULL DEFAULT '',
+			exact_match INTEGER NOT NULL DEFAULT 0,
+			alternative_match INTEGER NOT NULL DEFAULT 0,
+			negative_avoided INTEGER NOT NULL DEFAULT 0,
+			valid_prefix INTEGER NOT NULL DEFAULT 0,
+			candidate_hit_at_3 INTEGER NOT NULL DEFAULT 0,
+			chars_saved_ratio REAL NOT NULL DEFAULT 0,
+			command_edit_distance INTEGER NOT NULL DEFAULT 0,
+			request_latency_ms INTEGER NOT NULL DEFAULT 0,
+			model_total_duration_ms INTEGER NOT NULL DEFAULT 0,
+			model_load_duration_ms INTEGER NOT NULL DEFAULT 0,
+			model_prompt_eval_duration_ms INTEGER NOT NULL DEFAULT 0,
+			model_eval_duration_ms INTEGER NOT NULL DEFAULT 0,
+			model_prompt_eval_count INTEGER NOT NULL DEFAULT 0,
+			model_eval_count INTEGER NOT NULL DEFAULT 0,
+			decode_tokens_per_second REAL NOT NULL DEFAULT 0,
+			non_model_overhead_duration_ms INTEGER NOT NULL DEFAULT 0,
+			model_error TEXT NOT NULL DEFAULT '',
+			error_text TEXT NOT NULL DEFAULT '',
+			replay_source_json TEXT NOT NULL DEFAULT '',
+			created_at_ms INTEGER NOT NULL
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_benchmark_results_run_id ON benchmark_results(run_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_benchmark_results_model ON benchmark_results(model_name, run_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_benchmark_results_category ON benchmark_results(category, run_id);`,
+		`CREATE TABLE IF NOT EXISTS suggestion_reviews (
+			suggestion_id INTEGER PRIMARY KEY,
+			review_label TEXT NOT NULL,
+			updated_at_ms INTEGER NOT NULL
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_suggestion_reviews_label
+			ON suggestion_reviews(review_label, updated_at_ms DESC);`,
+	}
+	for _, statement := range statements {
+		if _, err := s.db.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("create benchmark table: %w", err)
+		}
+	}
+	return nil
+}
+
+func (s *Store) shouldResetBenchmarkTable(ctx context.Context, table, requiredColumn string) (bool, error) {
+	exists, err := s.tableExists(ctx, table)
+	if err != nil {
+		return false, err
+	}
+	if !exists {
+		return false, nil
+	}
+	hasColumn, err := s.hasColumn(ctx, table, requiredColumn)
+	if err != nil {
+		return false, err
+	}
+	return !hasColumn, nil
+}
+
+func (s *Store) tableExists(ctx context.Context, table string) (bool, error) {
+	var name string
+	err := s.db.QueryRowContext(
+		ctx,
+		`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`,
+		table,
+	).Scan(&name)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("inspect table %s: %w", table, err)
+	}
+	return true, nil
+}
+
+func (s *Store) hasColumn(ctx context.Context, table, column string) (bool, error) {
 	rows, err := s.db.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", table))
 	if err != nil {
-		return fmt.Errorf("inspect %s columns: %w", table, err)
+		return false, fmt.Errorf("inspect %s columns: %w", table, err)
 	}
 	defer rows.Close()
 
@@ -191,16 +375,26 @@ func (s *Store) ensureColumn(ctx context.Context, table, column, definition stri
 		var defaultValue sql.NullString
 		var primaryKey int
 		if err := rows.Scan(&cid, &name, &colType, &notNull, &defaultValue, &primaryKey); err != nil {
-			return fmt.Errorf("scan %s column: %w", table, err)
+			return false, fmt.Errorf("scan %s column: %w", table, err)
 		}
 		if name == column {
-			return nil
+			return true, nil
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("read %s columns: %w", table, err)
+		return false, fmt.Errorf("read %s columns: %w", table, err)
 	}
+	return false, nil
+}
 
+func (s *Store) ensureColumn(ctx context.Context, table, column, definition string) error {
+	hasColumn, err := s.hasColumn(ctx, table, column)
+	if err != nil {
+		return err
+	}
+	if hasColumn {
+		return nil
+	}
 	if _, err := s.db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, definition)); err != nil {
 		return fmt.Errorf("add %s.%s: %w", table, column, err)
 	}
@@ -372,8 +566,11 @@ func (s *Store) CreateSuggestion(ctx context.Context, record SuggestionRecord) (
 		ctx,
 		`INSERT INTO suggestions(
 			session_id, buffer, suggestion_text, source, cwd, repo_root, branch,
-			last_exit_code, latency_ms, model_name, prompt_text, structured_context_json, created_at_ms
-		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			last_exit_code, latency_ms, request_latency_ms, model_name, request_model_name,
+			model_total_duration_ms, model_load_duration_ms, model_prompt_eval_duration_ms,
+			model_eval_duration_ms, model_prompt_eval_count, model_eval_count,
+			prompt_text, structured_context_json, created_at_ms
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		record.SessionID,
 		record.Buffer,
 		record.Suggestion,
@@ -383,7 +580,15 @@ func (s *Store) CreateSuggestion(ctx context.Context, record SuggestionRecord) (
 		record.Branch,
 		record.LastExitCode,
 		record.LatencyMS,
+		record.RequestLatencyMS,
 		record.ModelName,
+		record.RequestModelName,
+		record.ModelTotalDurationMS,
+		record.ModelLoadDurationMS,
+		record.ModelPromptEvalMS,
+		record.ModelEvalDurationMS,
+		record.ModelPromptEvalCount,
+		record.ModelEvalCount,
 		record.PromptText,
 		record.StructuredContextJSON,
 		record.CreatedAtMS,

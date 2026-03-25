@@ -1,104 +1,56 @@
 package main
 
 import (
-	"context"
-	"errors"
-	"strings"
 	"testing"
-	"time"
 
-	"github.com/SuperCorks/llm-cli-suggestions/internal/api"
+	"github.com/SuperCorks/llm-cli-suggestions/internal/benchmark"
 )
 
-type fakeSuggestClient struct {
-	suggest func(context.Context, string) (string, error)
-}
-
-func (c fakeSuggestClient) Suggest(ctx context.Context, prompt string) (string, error) {
-	return c.suggest(ctx, prompt)
-}
-
-func testBenchmarkCases() []benchmarkCase {
-	return []benchmarkCase{
-		{
-			Name: "case_one",
-			Request: api.SuggestRequest{
-				SessionID: "bench",
-				Buffer:    "git st",
-			},
-			Acceptable: []string{"git status"},
-		},
-		{
-			Name: "case_two",
-			Request: api.SuggestRequest{
-				SessionID: "bench",
-				Buffer:    "npm run d",
-			},
-			Acceptable: []string{"npm run dev"},
-		},
+func TestParseCommandDefaultsToStatic(t *testing.T) {
+	command, args := parseCommand(nil)
+	if command != "static" {
+		t.Fatalf("expected static default, got %q", command)
+	}
+	if len(args) != 0 {
+		t.Fatalf("expected no args, got %v", args)
 	}
 }
 
-func TestRunBenchmarksFailsFastOnFirstError(t *testing.T) {
-	callCount := 0
-	results, err := runBenchmarks(benchmarkConfig{
-		models:   []string{"phi4"},
-		repeat:   2,
-		timeout:  50 * time.Millisecond,
-		failFast: true,
-		cases:    testBenchmarkCases(),
-		newClient: func(modelName string) suggestClient {
-			return fakeSuggestClient{suggest: func(context.Context, string) (string, error) {
-				callCount++
-				return "", errors.New("context deadline exceeded")
-			}}
-		},
-	})
-	if err == nil {
-		t.Fatal("expected fail-fast benchmark error")
+func TestParseCommandTreatsFlagsAsStatic(t *testing.T) {
+	command, args := parseCommand([]string{"-models", "qwen3"})
+	if command != "static" {
+		t.Fatalf("expected static for flag-only invocation, got %q", command)
 	}
-	if !strings.Contains(err.Error(), "phi4") || !strings.Contains(err.Error(), "case_one") {
-		t.Fatalf("expected model and case in error, got %q", err.Error())
-	}
-	if callCount != 1 {
-		t.Fatalf("expected 1 call before fail-fast stop, got %d", callCount)
-	}
-	if len(results) != 1 {
-		t.Fatalf("expected 1 partial result, got %d", len(results))
-	}
-	if results[0].Error == "" {
-		t.Fatal("expected first result to record the request error")
+	if len(args) != 2 {
+		t.Fatalf("expected original args to remain intact, got %v", args)
 	}
 }
 
-func TestRunBenchmarksCanContinueWhenFailFastDisabled(t *testing.T) {
-	callCount := 0
-	results, err := runBenchmarks(benchmarkConfig{
-		models:   []string{"phi4"},
-		repeat:   2,
-		timeout:  50 * time.Millisecond,
-		failFast: false,
-		cases:    testBenchmarkCases(),
-		newClient: func(modelName string) suggestClient {
-			return fakeSuggestClient{suggest: func(context.Context, string) (string, error) {
-				callCount++
-				if callCount%2 == 1 {
-					return "", errors.New("temporary model error")
-				}
-				return "git status", nil
-			}}
-		},
-	})
-	if err != nil {
-		t.Fatalf("expected benchmark to continue when fail-fast is disabled: %v", err)
+func TestParseTimingProtocol(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected benchmark.TimingProtocol
+	}{
+		{input: "", expected: benchmark.TimingProtocolFull},
+		{input: "full", expected: benchmark.TimingProtocolFull},
+		{input: "cold", expected: benchmark.TimingProtocolColdOnly},
+		{input: "hot_only", expected: benchmark.TimingProtocolHotOnly},
+		{input: "mixed", expected: benchmark.TimingProtocolMixed},
 	}
-	if callCount != 4 {
-		t.Fatalf("expected all runs to execute, got %d calls", callCount)
+
+	for _, test := range tests {
+		actual, err := parseTimingProtocol(test.input)
+		if err != nil {
+			t.Fatalf("parseTimingProtocol(%q): %v", test.input, err)
+		}
+		if actual != test.expected {
+			t.Fatalf("parseTimingProtocol(%q) = %q, want %q", test.input, actual, test.expected)
+		}
 	}
-	if len(results) != 4 {
-		t.Fatalf("expected 4 results, got %d", len(results))
-	}
-	if results[0].Error == "" || results[2].Error == "" {
-		t.Fatal("expected odd-numbered runs to keep their errors")
+}
+
+func TestParseTimingProtocolRejectsUnknownValues(t *testing.T) {
+	if _, err := parseTimingProtocol("mystery"); err == nil {
+		t.Fatal("expected parseTimingProtocol to reject unknown values")
 	}
 }

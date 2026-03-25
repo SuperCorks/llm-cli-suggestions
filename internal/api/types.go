@@ -113,19 +113,26 @@ type InspectCommandContext struct {
 }
 
 type InspectResponse struct {
-	ModelName           string                       `json:"model_name"`
-	HistoryTrusted      bool                         `json:"history_trusted"`
-	ModelError          string                       `json:"model_error,omitempty"`
-	Prompt              string                       `json:"prompt"`
-	RawModelOutput      string                       `json:"raw_model_output"`
-	CleanedModelOutput  string                       `json:"cleaned_model_output"`
-	RecentCommands      []string                     `json:"recent_commands"`
-	LastCommand         string                       `json:"last_command"`
-	LastStdoutExcerpt   string                       `json:"last_stdout_excerpt"`
-	LastStderrExcerpt   string                       `json:"last_stderr_excerpt"`
-	LastCommandContext  []InspectCommandContext      `json:"last_command_context"`
-	RecentOutputContext []InspectRecentOutputContext `json:"recent_output_context"`
-	RetrievedContext    InspectRetrievedContext      `json:"retrieved_context"`
-	Winner              *InspectCandidate            `json:"winner"`
-	Candidates          []InspectCandidate           `json:"candidates"`
+	ModelName                 string                       `json:"model_name"`
+	RequestModelName          string                       `json:"request_model_name,omitempty"`
+	HistoryTrusted            bool                         `json:"history_trusted"`
+	ModelError                string                       `json:"model_error,omitempty"`
+	Prompt                    string                       `json:"prompt"`
+	RawModelOutput            string                       `json:"raw_model_output"`
+	CleanedModelOutput        string                       `json:"cleaned_model_output"`
+	ModelTotalDurationMS      int64                        `json:"model_total_duration_ms,omitempty"`
+	ModelLoadDurationMS       int64                        `json:"model_load_duration_ms,omitempty"`
+	ModelPromptEvalDurationMS int64                        `json:"model_prompt_eval_duration_ms,omitempty"`
+	ModelEvalDurationMS       int64                        `json:"model_eval_duration_ms,omitempty"`
+	ModelPromptEvalCount      int64                        `json:"model_prompt_eval_count,omitempty"`
+	ModelEvalCount            int64                        `json:"model_eval_count,omitempty"`
+	RecentCommands            []string                     `json:"recent_commands"`
+	LastCommand               string                       `json:"last_command"`
+	LastStdoutExcerpt         string                       `json:"last_stdout_excerpt"`
+	LastStderrExcerpt         string                       `json:"last_stderr_excerpt"`
+	LastCommandContext        []InspectCommandContext      `json:"last_command_context"`
+	RecentOutputContext       []InspectRecentOutputContext `json:"recent_output_context"`
+	RetrievedContext          InspectRetrievedContext      `json:"retrieved_context"`
+	Winner                    *InspectCandidate            `json:"winner"`
+	Candidates                []InspectCandidate           `json:"candidates"`
 }

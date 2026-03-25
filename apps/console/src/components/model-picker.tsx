@@ -2,7 +2,7 @@
 
 import { X } from "lucide-react";
 import type { ReactNode } from "react";
-import { useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 
 import type { OllamaModelOption } from "@/lib/types";
 
@@ -41,6 +41,18 @@ export function ModelPicker(props: ModelPickerProps) {
   const [validationMessage, setValidationMessage] = useState("");
   const inputRef = useRef<HTMLInputElement | null>(null);
   const inputId = useId();
+
+  useEffect(() => {
+    if (!inputRef.current) {
+      return;
+    }
+
+    inputRef.current.setAttribute("autocomplete", "off");
+    inputRef.current.setAttribute("autocorrect", "off");
+    inputRef.current.setAttribute("autocapitalize", "none");
+    inputRef.current.spellcheck = false;
+  }, []);
+
   const selectableOptions = useMemo(
     () =>
       props.installedOnly
@@ -162,6 +174,12 @@ export function ModelPicker(props: ModelPickerProps) {
             id={inputId}
             ref={inputRef}
             value={inputValue}
+            onMouseDown={(event) => {
+              if (document.activeElement === inputRef.current) {
+                event.preventDefault();
+                setIsOpen((current) => !current);
+              }
+            }}
             onFocus={() => {
               setIsOpen(true);
             }}

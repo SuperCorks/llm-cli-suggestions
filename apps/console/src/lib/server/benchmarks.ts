@@ -7,11 +7,17 @@ import { getDb } from "@/lib/server/db";
 import { getBenchOutputDir, getProjectRoot, getResolvedRuntimeSettings } from "@/lib/server/config";
 
 export function createBenchmarkRun(input: {
+  track: "static" | "replay" | "raw";
+  suiteName: string;
+  strategy: string;
+  timingProtocol: "cold_only" | "hot_only" | "mixed" | "full";
   models: string[];
   repeatCount: number;
   timeoutMs: number;
+  replaySampleLimit: number;
 }) {
   const db = getDb();
+  const runtime = getResolvedRuntimeSettings();
   const createdAtMs = Date.now();
   const outputJsonPath = path.join(
     getBenchOutputDir(),
@@ -27,23 +33,57 @@ export function createBenchmarkRun(input: {
       currentModel: "",
       currentCase: "",
       currentRun: 0,
+      currentPhase: "",
     },
-    models: {},
+    track: input.track,
+    surface: input.track === "raw" ? "raw_model" : "end_to_end",
+    suiteName: input.suiteName,
+    strategy: input.strategy,
+    timingProtocol: input.timingProtocol,
+    datasetSize: 0,
+    positiveCaseCount: 0,
+    negativeCaseCount: 0,
+    overall: {},
+    models: [],
+  });
+  const filtersJson =
+    input.track === "replay" ? JSON.stringify({ sample_limit: input.replaySampleLimit }) : "";
+  const environmentJson = JSON.stringify({
+    hostname: "",
+    os: process.platform,
+    arch: process.arch,
+    goVersion: "",
+    modelBaseURL: runtime.modelBaseUrl,
+    modelKeepAlive: runtime.modelKeepAlive,
+    activeModelName: runtime.modelName,
+    dbPath: runtime.dbPath,
   });
 
   const result = db
     .prepare(
       `INSERT INTO benchmark_runs(
-         status, models, repeat_count, timeout_ms, output_json_path, summary_json, error_text, created_at_ms
-       ) VALUES(?, ?, ?, ?, ?, ?, '', ?)`,
+         status, track, surface, suite_name, strategy, timing_protocol,
+      models, repeat_count, timeout_ms, filters_json, dataset_size, environment_json,
+      output_json_path, summary_json, log_text, last_event_at_ms, error_text, created_at_ms
+       ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?)`,
     )
     .run(
       "queued",
+      input.track,
+      input.track === "raw" ? "raw_model" : "end_to_end",
+      input.suiteName,
+      input.strategy,
+      input.timingProtocol,
       input.models.join(","),
       input.repeatCount,
       input.timeoutMs,
+      filtersJson,
+      0,
+      environmentJson,
       outputJsonPath,
       initialSummary,
+      `[queued] track=${input.track} suite=${input.suiteName} protocol=${input.timingProtocol} models=${input.models.join(",")}`,
+      createdAtMs,
       createdAtMs,
     );
 
@@ -59,12 +99,22 @@ export function createBenchmarkRun(input: {
       String(runId),
       "--root",
       getProjectRoot(),
+      "--track",
+      input.track,
+      "--suite",
+      input.suiteName,
+      "--strategy",
+      input.strategy,
+      "--protocol",
+      input.timingProtocol,
       "--models",
       input.models.join(","),
       "--repeat",
       String(input.repeatCount),
       "--timeout-ms",
       String(input.timeoutMs),
+      "--sample-limit",
+      String(input.replaySampleLimit),
       "--output-json",
       outputJsonPath,
     ],

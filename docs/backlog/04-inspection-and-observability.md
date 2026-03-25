@@ -20,6 +20,7 @@ The CLI currently exposes:
 The control app currently exposes:
 
 - overview metrics
+- a dedicated latency performance dashboard with time-range filters, cold versus hot model-start splits, request-phase breakdowns, and hotspot leaderboards
 - suggestion and command history pages
 - acceptance rate by repo
 - top rejected suggestions
@@ -31,6 +32,7 @@ The control app currently exposes:
 
 - richer session drill-down
 - more powerful export and comparison views
+- saved performance presets and alerting thresholds for latency regressions
 - saved inspection presets
 - query performance profiling for larger local datasets
 - better log viewing and daemon diagnostics
