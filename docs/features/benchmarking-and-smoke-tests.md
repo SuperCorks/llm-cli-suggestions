@@ -10,6 +10,10 @@ The repo includes several checks and measurement tools that protect the shell UX
 - `replay` for live-DB cases mined from accepted, rejected, and manually reviewed suggestions
 - `raw` for prompt/model-only diagnostics against the static suite
 
+It also now supports a dedicated offline-eval export path:
+
+- `export-eval` for confidence-labeled JSON or JSONL examples derived from the same replay mining flow
+
 The default benchmark surface is end-to-end ranking through the engine, not raw model output.
 
 It reports richer results than the original suite:
@@ -39,7 +43,21 @@ make bench-all
 ./bin/model-bench raw --models qwen3-coder:latest --suite core
 ./bin/model-bench compare path/to/run-a.json path/to/run-b.json
 ./bin/model-bench mine-static --limit 25
+./bin/model-bench export-eval --limit 250 --min-confidence strong --format jsonl --output eval.jsonl
 ```
+
+`export-eval` is the first bridge from the live SQLite logs into a stable offline dataset. Each exported example can include:
+
+- prompt-state request fields such as buffer, cwd, repo root, branch, and last exit code
+- the stored prompt text and structured context snapshot when available
+- repo and command-family metadata for later slicing and scorecards
+- confidence labels that reflect what the current logging model really proves
+
+The current confidence rules are intentionally conservative:
+
+- manually reviewed `good` and `bad` suggestions are `strong`
+- rejected suggestions are `strong`
+- accepted suggestions are `medium`, because acceptance confirms the suggestion entered the buffer but does not yet prove the final executed command remained unchanged after later manual edits
 
 The same benchmark workflow is also exposed through the control app Model Lab, which refreshes saved runs on page load, can queue or delete saved runs, persists results to SQLite, and drills into per-model or per-case detail views.
 

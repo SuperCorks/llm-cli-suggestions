@@ -197,6 +197,7 @@ Command:
 ```bash
 make bench-static
 make bench-replay
+./bin/model-bench export-eval --limit 250 --min-confidence strong --format jsonl --output /tmp/eval.jsonl
 ```
 
 or:
@@ -212,9 +213,12 @@ This is primarily a measurement tool for:
 - end-to-end quality across curated static cases
 - end-to-end quality across replayed real usage from SQLite
 - raw prompt/model diagnostics against the same static fixtures
+- confidence-labeled offline eval export for later ranking or model-training work
 - rich latency summaries, including cold vs hot runs and model stage timing
 
 Saved artifacts now include sampled cases, aggregate summaries, and per-attempt rows so replay runs remain auditable even when they were created from the live database.
+
+The eval export path now reuses that same replay-mining logic and writes either JSONL examples for downstream offline eval or one wrapped JSON payload when a single-file schema is more convenient. The current export labels accepted suggestions as medium confidence and reviewed or rejected suggestions as strong confidence, matching the current limits of the feedback model.
 
 The CLI now fails fast by default when a model request errors. That stops wasting time on the rest of the matrix, writes whatever partial results have already been collected, and exits non-zero so the saved benchmark job can be marked failed instead of completed.
 
@@ -263,6 +267,7 @@ These checks matter because terminal UX issues often do not show up in pure unit
 - benchmark job lifecycle tests for queue, run, and persistence behavior
 - broader engine microbenchmarks for model-including paths and larger SQLite histories
 - more unit tests around replay-case sampling and benchmark aggregation math
+- end-to-end tests around eval-export output shape and filtering
 
 ## Recommended Next Test Additions
 

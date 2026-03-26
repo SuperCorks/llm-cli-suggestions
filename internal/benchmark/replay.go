@@ -11,96 +11,57 @@ import (
 	"github.com/SuperCorks/llm-cli-suggestions/internal/db"
 )
 
-const defaultReplayQueryLimit = 1000
-
 func LoadReplayCases(ctx context.Context, store *db.Store, limit int) ([]Case, error) {
-	rows, err := store.ListReplayBenchmarkCandidates(ctx, defaultReplayQueryLimit)
+	examples, err := LoadEvalExamples(ctx, store, defaultReplayQueryLimit)
 	if err != nil {
 		return nil, err
 	}
 
-	deduped := make([]Case, 0, len(rows))
-	seen := map[string]struct{}{}
-	for _, row := range rows {
-		replayCase, ok := buildReplayCase(row)
+	cases := make([]Case, 0, len(examples))
+	for _, example := range examples {
+		replayCase, ok := buildReplayCase(example)
 		if !ok {
 			continue
 		}
-		key := replayDedupKey(replayCase)
-		if _, exists := seen[key]; exists {
-			continue
-		}
-		seen[key] = struct{}{}
-		deduped = append(deduped, replayCase)
+		cases = append(cases, replayCase)
 	}
 
-	sort.SliceStable(deduped, func(left, right int) bool {
-		if deduped[left].LabelKind != deduped[right].LabelKind {
-			return deduped[left].LabelKind < deduped[right].LabelKind
+	sort.SliceStable(cases, func(left, right int) bool {
+		if cases[left].LabelKind != cases[right].LabelKind {
+			return cases[left].LabelKind < cases[right].LabelKind
 		}
-		if deduped[left].Category != deduped[right].Category {
-			return deduped[left].Category < deduped[right].Category
+		if cases[left].Category != cases[right].Category {
+			return cases[left].Category < cases[right].Category
 		}
-		return deduped[left].ID > deduped[right].ID
+		return cases[left].ID > cases[right].ID
 	})
 
-	return stratifiedReplaySample(deduped, limit), nil
+	return stratifiedReplaySample(cases, limit), nil
 }
 
-func buildReplayCase(row db.ReplayBenchmarkCandidate) (Case, bool) {
-	request := api.SuggestRequest{
-		SessionID:    "bench-replay",
-		Buffer:       row.Buffer,
-		CWD:          row.CWD,
-		RepoRoot:     row.RepoRoot,
-		Branch:       row.Branch,
-		LastExitCode: row.LastExitCode,
-	}
-	if contextRequest, recentCommands, ok := decodeReplayRequest(row.StructuredContextJSON); ok {
-		request = contextRequest
+func buildReplayCase(example EvalExample) (Case, bool) {
+	request := example.Request
+	if request.SessionID == "" {
 		request.SessionID = "bench-replay"
-		request.RecentCommands = recentCommands
 	}
-
-	labelKind := LabelKindPositive
-	if row.QualityLabel == "bad" || row.FeedbackEvent == "rejected" {
-		labelKind = LabelKindNegative
+	if example.LabelKind == LabelKindPositive && strings.TrimSpace(example.ExpectedCommand) == "" {
+		return Case{}, false
 	}
-
-	expected := strings.TrimSpace(row.AcceptedCommand)
-	if expected == "" {
-		expected = strings.TrimSpace(row.ActualCommand)
-	}
-	if expected == "" && row.QualityLabel == "good" {
-		expected = strings.TrimSpace(row.SuggestionText)
-	}
-
-	negative := ""
-	if labelKind == LabelKindNegative {
-		negative = strings.TrimSpace(row.SuggestionText)
-		if negative == "" {
-			return Case{}, false
-		}
-	}
-	if labelKind == LabelKindPositive && expected == "" {
+	if example.LabelKind == LabelKindNegative && strings.TrimSpace(example.NegativeCommand) == "" {
 		return Case{}, false
 	}
 
 	return Case{
-		ID:        replayCaseID(row.SuggestionID),
-		Name:      replayCaseName(row.Buffer, expected, negative),
-		Category:  categorizeCommand(request.Buffer, expected, negative),
-		Tags:      replayTags(labelKind, request.Buffer, row.Source),
-		LabelKind: labelKind,
-		Request:   request,
-		Expected:  expected,
-		Negative:  negative,
-		Origin:    "replay",
-		ReplaySource: ReplaySource{
-			SuggestionID: row.SuggestionID,
-			EventType:    row.FeedbackEvent,
-			QualityLabel: row.QualityLabel,
-		},
+		ID:           example.ID,
+		Name:         replayCaseName(request.Buffer, example.ExpectedCommand, example.NegativeCommand),
+		Category:     example.CommandFamily,
+		Tags:         replayTags(example.LabelKind, request.Buffer, example.SuggestionSource),
+		LabelKind:    example.LabelKind,
+		Request:      request,
+		Expected:     example.ExpectedCommand,
+		Negative:     example.NegativeCommand,
+		Origin:       "replay",
+		ReplaySource: example.ReplaySource,
 	}, true
 }
 
@@ -134,16 +95,6 @@ func decodeReplayRequest(payload string) (api.SuggestRequest, []string, bool) {
 		RecentCommands: append([]string(nil), parsed.RecentCommands...),
 		Strategy:       parsed.Request.Strategy,
 	}, append([]string(nil), parsed.RecentCommands...), true
-}
-
-func replayDedupKey(candidate Case) string {
-	return strings.Join([]string{
-		string(candidate.LabelKind),
-		normalizeCommand(candidate.Request.Buffer),
-		normalizeCommand(candidate.Expected),
-		normalizeCommand(candidate.Negative),
-		candidate.Category,
-	}, "|")
 }
 
 func stratifiedReplaySample(cases []Case, limit int) []Case {

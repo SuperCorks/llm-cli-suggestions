@@ -15,6 +15,7 @@ type ReplayBenchmarkCandidate struct {
 	RepoRoot              string
 	Branch                string
 	LastExitCode          int
+	PromptText            string
 	StructuredContextJSON string
 	QualityLabel          string
 	FeedbackEvent         string
@@ -40,6 +41,7 @@ func (s *Store) ListReplayBenchmarkCandidates(ctx context.Context, limit int) ([
 		   s.repo_root,
 		   s.branch,
 		   s.last_exit_code,
+		   COALESCE(s.prompt_text, '') AS prompt_text,
 		   COALESCE(s.structured_context_json, '') AS structured_context_json,
 		   COALESCE(r.review_label, '') AS quality_label,
 		   COALESCE(f.event_type, '') AS feedback_event,
@@ -81,6 +83,7 @@ func (s *Store) ListReplayBenchmarkCandidates(ctx context.Context, limit int) ([
 			&row.RepoRoot,
 			&row.Branch,
 			&row.LastExitCode,
+			&row.PromptText,
 			&row.StructuredContextJSON,
 			&row.QualityLabel,
 			&row.FeedbackEvent,

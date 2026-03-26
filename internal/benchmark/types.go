@@ -50,6 +50,22 @@ const (
 	LabelKindNegative LabelKind = "negative"
 )
 
+type EvalConfidence string
+
+const (
+	EvalConfidenceStrong EvalConfidence = "strong"
+	EvalConfidenceMedium EvalConfidence = "medium"
+)
+
+type EvalOutcome string
+
+const (
+	EvalOutcomeAccepted     EvalOutcome = "accepted"
+	EvalOutcomeRejected     EvalOutcome = "rejected"
+	EvalOutcomeReviewedGood EvalOutcome = "reviewed_good"
+	EvalOutcomeReviewedBad  EvalOutcome = "reviewed_bad"
+)
+
 type Environment struct {
 	Hostname        string `json:"hostname"`
 	OS              string `json:"os"`
@@ -80,6 +96,34 @@ type Case struct {
 	Negative     string             `json:"negative,omitempty"`
 	Origin       string             `json:"origin,omitempty"`
 	ReplaySource ReplaySource       `json:"replay_source,omitempty"`
+}
+
+type EvalExample struct {
+	ID                    string             `json:"id"`
+	SuggestionID          int64              `json:"suggestion_id"`
+	CreatedAtMS           int64              `json:"created_at_ms"`
+	LabelKind             LabelKind          `json:"label_kind"`
+	Outcome               EvalOutcome        `json:"outcome"`
+	Confidence            EvalConfidence     `json:"confidence"`
+	CommandFamily         string             `json:"command_family"`
+	RepoRoot              string             `json:"repo_root,omitempty"`
+	RepoName              string             `json:"repo_name,omitempty"`
+	SuggestionSource      string             `json:"suggestion_source,omitempty"`
+	ModelName             string             `json:"model_name,omitempty"`
+	Request               api.SuggestRequest `json:"request"`
+	PromptText            string             `json:"prompt_text,omitempty"`
+	StructuredContextJSON string             `json:"structured_context_json,omitempty"`
+	SuggestedCommand      string             `json:"suggested_command,omitempty"`
+	ExpectedCommand       string             `json:"expected_command,omitempty"`
+	NegativeCommand       string             `json:"negative_command,omitempty"`
+	AcceptedCommand       string             `json:"accepted_command,omitempty"`
+	ActualCommand         string             `json:"actual_command,omitempty"`
+	ReplaySource          ReplaySource       `json:"replay_source,omitempty"`
+}
+
+type EvalDataset struct {
+	SchemaVersion int           `json:"schema_version"`
+	Examples      []EvalExample `json:"examples"`
 }
 
 type CandidatePreview struct {

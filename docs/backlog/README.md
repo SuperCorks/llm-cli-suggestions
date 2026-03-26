@@ -17,6 +17,17 @@ Current backlog topics:
 - `05-model-benchmarking.md`
 - `06-shell-ux-hardening.md`
 
+## Current Planning Direction
+
+The current recommended path is:
+
+1. build a stable offline eval dataset from local usage
+2. make that dataset part of repeatable benchmark runs and scorecards
+3. use the results to improve retrieval and ranking first
+4. reuse the same cleaned, labeled pipeline later for reranking or fine-tuning experiments
+
+This keeps model-training work grounded in the same evaluation harness used for heuristic changes, so future fine-tuning can be judged against a trusted local baseline instead of anecdotes.
+
 ## To refine
 - Review ranking system
 - Check if more than 1 engine running

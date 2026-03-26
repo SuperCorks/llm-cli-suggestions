@@ -34,6 +34,8 @@ func main() {
 		runCompareCommand(args)
 	case "mine-static":
 		runMineStaticCommand(cfg, args)
+	case "export-eval":
+		runExportEvalCommand(cfg, args)
 	default:
 		fatalf("unknown subcommand %q", command)
 	}
@@ -44,7 +46,7 @@ func parseCommand(args []string) (string, []string) {
 		return "static", nil
 	}
 	switch args[0] {
-	case "static", "replay", "raw", "compare", "mine-static":
+	case "static", "replay", "raw", "compare", "mine-static", "export-eval":
 		return args[0], args[1:]
 	default:
 		if strings.HasPrefix(args[0], "-") {
@@ -228,6 +230,71 @@ func runMineStaticCommand(runtime config.Config, args []string) {
 	fmt.Println(string(payload))
 }
 
+func runExportEvalCommand(runtime config.Config, args []string) {
+	flags := flag.NewFlagSet("export-eval", flag.ExitOnError)
+	dbPathFlag := flags.String("db-path", runtime.DBPath, "sqlite path to export from")
+	limitFlag := flags.Int("limit", 250, "maximum eval examples to export")
+	formatFlag := flags.String("format", "jsonl", "output format: json or jsonl")
+	minConfidenceFlag := flags.String("min-confidence", string(benchmark.EvalConfidenceStrong), "minimum confidence: strong or medium")
+	outputFlag := flags.String("output", "", "optional path to write the eval dataset")
+	flags.Parse(args)
+
+	minConfidence, err := parseEvalConfidence(*minConfidenceFlag)
+	if err != nil {
+		fatalf("%v", err)
+	}
+	outputFormat, err := parseEvalOutputFormat(*formatFlag)
+	if err != nil {
+		fatalf("%v", err)
+	}
+
+	store, err := db.NewStore(*dbPathFlag)
+	if err != nil {
+		fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	examples, err := benchmark.LoadEvalExamples(context.Background(), store, max(1, *limitFlag))
+	if err != nil {
+		fatalf("load eval examples: %v", err)
+	}
+	examples = benchmark.FilterEvalExamplesByConfidence(examples, minConfidence)
+	if len(examples) > max(1, *limitFlag) {
+		examples = examples[:max(1, *limitFlag)]
+	}
+
+	var payload []byte
+	switch outputFormat {
+	case "json":
+		payload, err = benchmark.EncodeEvalDataset(benchmark.EvalDataset{
+			SchemaVersion: 1,
+			Examples:      examples,
+		})
+	case "jsonl":
+		payload, err = benchmark.EncodeEvalDatasetJSONL(examples)
+	default:
+		err = fmt.Errorf("unsupported eval output format %q", outputFormat)
+	}
+	if err != nil {
+		fatalf("encode eval dataset: %v", err)
+	}
+
+	if outputPath := strings.TrimSpace(*outputFlag); outputPath != "" {
+		if err := os.WriteFile(outputPath, payload, 0o644); err != nil {
+			fatalf("write eval dataset: %v", err)
+		}
+		fmt.Printf(
+			"Wrote %d eval examples to %s (format=%s min-confidence=%s)\n",
+			len(examples),
+			outputPath,
+			outputFormat,
+			minConfidence,
+		)
+		return
+	}
+	fmt.Print(string(payload))
+}
+
 func writeArtifact(path string, artifact benchmark.Artifact) error {
 	payload, err := benchmark.EncodeArtifact(artifact)
 	if err != nil {
@@ -291,6 +358,28 @@ func parseTimingProtocol(value string) (benchmark.TimingProtocol, error) {
 		return benchmark.TimingProtocolMixed, nil
 	default:
 		return "", fmt.Errorf("unsupported timing protocol %q", value)
+	}
+}
+
+func parseEvalConfidence(value string) (benchmark.EvalConfidence, error) {
+	switch strings.TrimSpace(strings.ToLower(value)) {
+	case "", string(benchmark.EvalConfidenceStrong):
+		return benchmark.EvalConfidenceStrong, nil
+	case string(benchmark.EvalConfidenceMedium):
+		return benchmark.EvalConfidenceMedium, nil
+	default:
+		return "", fmt.Errorf("unsupported eval confidence %q", value)
+	}
+}
+
+func parseEvalOutputFormat(value string) (string, error) {
+	switch strings.TrimSpace(strings.ToLower(value)) {
+	case "", "jsonl":
+		return "jsonl", nil
+	case "json":
+		return "json", nil
+	default:
+		return "", fmt.Errorf("unsupported eval output format %q", value)
 	}
 }
 
