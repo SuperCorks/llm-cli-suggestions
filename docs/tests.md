@@ -43,16 +43,19 @@ npm run e2e
 The Playwright suite currently covers a seeded local happy path for:
 
 - overview dashboard rendering
+- overview live-model cards for the current runtime mode
 - performance dashboard rendering, filter wiring including the all-time preset, the default active-model analysis path, and the prompt-size-versus-latency panel
 - shared shell navigation collapse and expand behavior
 - suggestions explorer filtering
-- suggestions explorer sorting, pagination, persisted good/bad grading, structured context hover previews, empty-buffer placeholder rendering without hydrated text rewrites, and 2-second in-place auto-refresh for newly logged rows
+- suggestions explorer sorting, pagination, persisted good/bad grading, structured context hover previews, effective request-model attribution for progressive rows, matching model filtering for those rows, empty-buffer placeholder rendering without hydrated text rewrites, and 2-second in-place auto-refresh for newly logged rows
 - commands and feedback rendering
 - inspector interaction with a mocked ranking response
 - inspector rendering of retrieved local context alongside candidate scores
 - inspector resilience when the daemon returns `null` prompt-context fields
-- inspector validation states, payload wiring, inferred-context form contract, and API error handling
-- inspector strategy override coverage for `history-only`, `history+model`, and `model-only`
+- inspector validation states, payload wiring, default live-strategy hydration, inferred-context form contract, and API error handling
+- inspector strategy override coverage for `history-only`, `history+model`, `history-then-model`, `history-then-fast-then-model`, `fast-then-model`, and `model-only`
+- inspector dual-model form defaults for fast and slow model inputs in progressive mode
+- inspector staged progressive rendering for distinct history, fast-model, and slow-model suggestion cards
 - inspector `model-only` states for successful raw model output, rejected-output explanations when the model does not match the current buffer, empty-output fallback rendering, and surfaced model timeout diagnostics
 - model lab guardrails, default state, and reset flows
 - model lab sync against live runtime defaults for current model and saved suggestion strategy
@@ -87,12 +90,15 @@ This now verifies both package integrity and a first slice of focused engine beh
 - project-task retrieval for commands like `npm run d`
 - empty-buffer suggestions that use the last recorded command as model context for typo correction or likely follow-up commands
 - runtime-env parsing for multiline and escaped persisted system-prompt values
+- strategy normalization for progressive shell modes and the internal always-rerank stage
 - Ollama request payload wiring for configured `keep_alive` values
 - benchmark hot-phase keep-alive selection so prewarm requests reuse a valid Ollama duration
 - Ollama request payload wiring for no-thinking controls on known reasoning-capable models, with a lowest-level fallback for `gpt-oss`
 - Ollama non-200 error propagation including the response body for actionable benchmark failure messages
 - SQLite store startup pragmas for WAL mode and busy-timeout handling
 - inspect remaining read-only so benchmark inspection does not create session rows
+- progressive ranking stages still invoking the model even when history is already trusted
+- replay benchmark candidate export preferring the effective request model when progressive rows invoked a model but the final winner stayed history-backed
 - hot-phase benchmark classification tolerating small residual Ollama load durations instead of mislabeling warmed runs as cold
 - filesystem retrieval for path-oriented buffers like `git add s`
 - git branch retrieval for branch-oriented buffers like `git switch fea`
@@ -165,6 +171,8 @@ It currently checks four isolated one-prefix idle sessions:
 For each prefix, the test first confirms the daemon can produce a usable direct suggestion, then verifies the live shell reaches a `notify-applied` snapshot with a rendered suffix that matches the shell suggestion for that prefix plus the square-bracket source badge shown in ghost text.
 
 This is the best targeted regression test for the shell timing issue because it leaves the shell idle after one prefix, avoids invalidating the in-flight request with extra editing input, and exercises the actual ZLE integration instead of only synchronous helper functions.
+
+It also now validates the staged async-result file path for the current shell contract, because even `history-only` mode uses the same helper/result protocol as the progressive strategies.
 
 ### PTY Capture Regression Test
 

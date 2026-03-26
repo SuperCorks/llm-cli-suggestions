@@ -29,10 +29,10 @@ The engine uses these inputs when choosing a suggestion:
 6. Gather targeted retrieval candidates for paths, git branches, and project tasks.
    Path retrieval treats bare `.` and `..` tokens as directory prefixes, so inputs like `cd ..` resolve against the current or parent directory the same way `cd ./` or `cd ../` do.
 7. If the buffer is empty, only allow the model path when there is a recorded last command to ground the suggestion.
-8. If history is clearly dominant, return the top history result immediately.
-9. Otherwise, ask the local model for one completion.
+8. In classic `history+model`, trust history immediately when one candidate is clearly dominant.
+9. In `history-then-model`, `history-then-fast-then-model`, `fast-then-model`, and the internal rerank stage used by those modes, still ask the model even when history is trusted or intentionally skipped so later stages can replace the visible ghost text with a better-ranked result.
 10. Score all candidates using history, feedback, recency, last-command context, and selected recent output context.
-11. Persist the winning suggestion.
+11. Persist the winning suggestion for each completed stage request.
 
 ## Empty Buffer Behavior
 
@@ -47,6 +47,17 @@ For live suggestions, the prompt now collapses `last_command`, recent command li
 - `history`
 - `model`
 - `history+model`
+
+## Strategy Modes
+
+- `history-only`
+- `history+model`
+- `history-then-model`
+- `history-then-fast-then-model`
+- `fast-then-model`
+- `model-only`
+
+The progressive modes are shell-orchestrated. The helper can fire a history-only stage first, then one or two rerank requests that force model participation with either the configured fast-stage model or the primary daemon model. In `fast-then-model`, the helper skips history entirely and stages a fast `model-only` request before the primary model. Each later stage reuses the same ranking engine and only replaces the ghost text if it produces a stronger winner for the same buffer generation.
 
 ## Performance Notes
 

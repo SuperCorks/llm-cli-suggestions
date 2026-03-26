@@ -18,6 +18,7 @@ export async function POST(request: NextRequest) {
   const normalizedBlocklist = normalizePtyCaptureCommandList(payload.LAC_PTY_CAPTURE_BLOCKLIST);
   const settings = await saveRuntimeSettings({
     LAC_MODEL_NAME: payload.LAC_MODEL_NAME,
+    LAC_FAST_MODEL_NAME: payload.LAC_FAST_MODEL_NAME,
     LAC_MODEL_BASE_URL: payload.LAC_MODEL_BASE_URL,
     LAC_MODEL_KEEP_ALIVE: payload.LAC_MODEL_KEEP_ALIVE,
     LAC_SUGGEST_STRATEGY: payload.LAC_SUGGEST_STRATEGY,

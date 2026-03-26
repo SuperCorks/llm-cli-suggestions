@@ -134,6 +134,24 @@ func TestBuildEvalExampleMarksRejectedAsStrongNegative(t *testing.T) {
 	}
 }
 
+func TestBuildEvalExampleCarriesEffectiveReplayModelName(t *testing.T) {
+	example, ok := buildEvalExample(db.ReplayBenchmarkCandidate{
+		SuggestionID:    13,
+		Buffer:          "git st",
+		SuggestionText:  "git status",
+		AcceptedCommand: "git status",
+		ActualCommand:   "git status",
+		FeedbackEvent:   "executed_unchanged",
+		ModelName:       "mistral-small:latest",
+	})
+	if !ok {
+		t.Fatal("expected replay candidate to become an eval example")
+	}
+	if example.ModelName != "mistral-small:latest" {
+		t.Fatalf("expected effective replay model name, got %q", example.ModelName)
+	}
+}
+
 func TestFilterEvalExamplesByConfidence(t *testing.T) {
 	filtered := FilterEvalExamplesByConfidence([]EvalExample{
 		{ID: "medium", Confidence: EvalConfidenceMedium},

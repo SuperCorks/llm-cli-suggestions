@@ -37,6 +37,7 @@ export default async function InspectorPage({
       >
         <RankingInspector
           defaultModelName={settings.modelName}
+          defaultFastModelName={settings.fastModelName}
           defaultSuggestStrategy={settings.suggestStrategy}
           initialForm={{
             sessionId: getString(params.session),
@@ -45,9 +46,11 @@ export default async function InspectorPage({
             repoRoot: getString(params.repo),
             branch: getString(params.branch),
             lastExitCode: getString(params.lastExitCode),
+            fastModelName: getString(params.fastModel),
             modelName: getString(params.model),
-            suggestStrategy:
-              normalizeSuggestStrategy(getString(params.strategy)) || settings.suggestStrategy,
+            suggestStrategy: getString(params.strategy)
+              ? normalizeSuggestStrategy(getString(params.strategy))
+              : settings.suggestStrategy,
             recentCommands: getString(params.recentCommands),
           }}
           autoInspect={getString(params.auto) === "1"}

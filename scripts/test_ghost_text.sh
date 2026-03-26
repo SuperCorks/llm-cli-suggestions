@@ -82,6 +82,37 @@ sleep 0.2
 export ROOT_DIR TMP_DIR STATE_DIR WORK_DIR SOCKET_PATH DB_PATH SNAPSHOT_PATH
 export WAIT_MS
 
+expect_marker() {
+  local strategy="$1"
+  local source="$2"
+  local stage_role="$3"
+  local expected="$4"
+  local actual
+
+  actual="$(
+    HOME="$TMP_DIR" \
+    LAC_STATE_DIR="$STATE_DIR" \
+    LAC_ASYNC_DIR="$STATE_DIR/async" \
+    LAC_SOCKET_PATH="$SOCKET_PATH" \
+    LAC_DB_PATH="$DB_PATH" \
+    LAC_CLIENT_BIN="$ROOT_DIR/bin/autocomplete-client" \
+    LAC_DAEMON_BIN="$ROOT_DIR/bin/autocomplete-daemon" \
+    LAC_SUGGEST_STRATEGY="$strategy" \
+    zsh -dfc "source '$ROOT_DIR/zsh/llm-cli-suggestions.zsh'; _lac_format_suggestion_source_marker '$source' '$stage_role'"
+  )"
+
+  if [[ "$actual" != "$expected" ]]; then
+    echo "expected marker $expected for strategy=$strategy source=$source stage_role=$stage_role, got $actual" >&2
+    exit 1
+  fi
+}
+
+expect_marker "model-only" "model" "" " [ai]"
+expect_marker "history-then-fast-then-model" "model" "fast" " [ai/fast]"
+expect_marker "history-then-fast-then-model" "model" "slow" " [ai/slow]"
+expect_marker "fast-then-model" "history+model" "slow" " [history+ai/slow]"
+expect_marker "history-only" "history" "" " [history]"
+
 run_idle_prefix() {
   local prefix="$1"
   local snapshot_path="$2"

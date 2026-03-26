@@ -21,6 +21,7 @@ const DEFAULTS = {
   LAC_SOCKET_PATH: "daemon.sock",
   LAC_DB_PATH: "autocomplete.sqlite",
   LAC_MODEL_NAME: "qwen2.5-coder:7b",
+  LAC_FAST_MODEL_NAME: "",
   LAC_MODEL_BASE_URL: "http://127.0.0.1:11434",
   LAC_MODEL_KEEP_ALIVE: "5m",
   LAC_SUGGEST_STRATEGY: "history+model",
@@ -142,6 +143,7 @@ export function getResolvedRuntimeSettings(options?: RuntimeSettingsResolveOptio
     socketPath: runtimeValue("LAC_SOCKET_PATH") || path.join(stateDir, DEFAULTS.LAC_SOCKET_PATH),
     dbPath: runtimeValue("LAC_DB_PATH") || path.join(stateDir, DEFAULTS.LAC_DB_PATH),
     modelName: runtimeValue("LAC_MODEL_NAME") || DEFAULTS.LAC_MODEL_NAME,
+    fastModelName: runtimeValue("LAC_FAST_MODEL_NAME") || DEFAULTS.LAC_FAST_MODEL_NAME,
     modelBaseUrl: runtimeValue("LAC_MODEL_BASE_URL") || DEFAULTS.LAC_MODEL_BASE_URL,
     modelKeepAlive:
       runtimeValue("LAC_MODEL_KEEP_ALIVE") || DEFAULTS.LAC_MODEL_KEEP_ALIVE,
@@ -173,6 +175,7 @@ export function getResolvedRuntimeSettings(options?: RuntimeSettingsResolveOptio
 
 const SAVED_KEYS = [
   "LAC_MODEL_NAME",
+  "LAC_FAST_MODEL_NAME",
   "LAC_MODEL_BASE_URL",
   "LAC_MODEL_KEEP_ALIVE",
   "LAC_SUGGEST_STRATEGY",

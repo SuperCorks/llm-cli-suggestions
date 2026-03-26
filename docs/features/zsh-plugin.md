@@ -22,6 +22,7 @@ The `zsh` plugin in `zsh/llm-cli-suggestions.zsh` is the live terminal integrati
 - suggestions only render when the cursor is at the end of the buffer
 - suggestions can still render on an empty prompt when the cursor is at the end of the buffer and the daemon returns a full-command suggestion
 - stale async requests are discarded
+- progressive suggestion modes can apply more than one result for the same buffer generation, with stage ordering so a slower lower-priority stage cannot overwrite a newer higher-priority stage
 - completed async work wakes ZLE through a per-session notify pipe and `zle -F` widget handler
 - accepted suggestions are first logged as `accepted_buffer`
 - accepted suggestions are then resolved at `preexec` as either `executed_unchanged` or `executed_edited`
@@ -34,7 +35,7 @@ The `zsh` plugin in `zsh/llm-cli-suggestions.zsh` is the live terminal integrati
 - long captured excerpts keep the first 400 bytes and the last 800 bytes of the output with a small middle truncation marker
 - bounded stdout and stderr can be captured automatically for simple commands when `LAC_AUTO_CAPTURE_ENABLED=1`, and are still skipped for interactive, backgrounded, piped, or stdout-redirected commands; stderr-only redirection falls back to this path so stderr stays hidden and out of captured suggestion context
 - automatic capture stays disabled by default because shell-level redirection changes TTY detection and can suppress command color in the live terminal
-- ghost text is styled through `region_highlight` and can append a square-bracket source badge such as `[history]` or `[ai]` without changing what the configured accept key accepts
+- ghost text is styled through `region_highlight` and can append a square-bracket source badge such as `[history]`, `[ai]`, `[ai/fast]`, or `[ai/slow]` without changing what the configured accept key accepts; the dual-model strategies use the fast/slow suffixes for model-backed ghost text
 - optional redraw snapshots can be written to `LAC_SNAPSHOT_PATH` for integration testing
 
 ## Important Settings
@@ -45,6 +46,7 @@ The `zsh` plugin in `zsh/llm-cli-suggestions.zsh` is the live terminal integrati
 - `LAC_SOCKET_PATH`
 - `LAC_DB_PATH`
 - `LAC_MODEL_NAME`
+- `LAC_FAST_MODEL_NAME`
 - `LAC_DEBOUNCE_SECONDS`
 - `LAC_HIGHLIGHT_STYLE`
 - `LAC_ACCEPT_KEY`

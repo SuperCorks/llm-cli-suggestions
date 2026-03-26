@@ -9,6 +9,8 @@ type SuggestRequest struct {
 	LastExitCode   int      `json:"last_exit_code"`
 	RecentCommands []string `json:"recent_commands,omitempty"`
 	Strategy       string   `json:"strategy,omitempty"`
+	ModelName      string   `json:"model_name,omitempty"`
+	ModelBaseURL   string   `json:"model_base_url,omitempty"`
 }
 
 type SuggestResponse struct {

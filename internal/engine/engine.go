@@ -96,6 +96,8 @@ func (e *Engine) Suggest(ctx context.Context, request api.SuggestRequest) (api.S
 		LastExitCode:   intPtr(request.LastExitCode),
 		RecentCommands: recentCommands,
 		Strategy:       request.Strategy,
+		ModelName:      request.ModelName,
+		ModelBaseURL:   request.ModelBaseURL,
 		Limit:          8,
 	}, e.suggestTimeout)
 	if err != nil {
@@ -142,11 +144,17 @@ func (e *Engine) inspectDetailed(ctx context.Context, request api.InspectRequest
 		strategy = config.NormalizeSuggestStrategy(strategy)
 	}
 	allowEmptyBufferModel := strings.TrimSpace(request.Buffer) == "" && strings.TrimSpace(lastContext.Command) != ""
-	useHistory := strategy != config.SuggestStrategyModelOnly && strings.TrimSpace(request.Buffer) != ""
+	useHistory := strategy != config.SuggestStrategyModelOnly &&
+		strategy != config.SuggestStrategyFastThenModel &&
+		strings.TrimSpace(request.Buffer) != ""
 	useModel := strategy != config.SuggestStrategyHistoryOnly
 	if strings.TrimSpace(request.Buffer) == "" && !allowEmptyBufferModel {
 		useModel = false
 	}
+	alwaysInvokeModel := strategy == config.SuggestStrategyHistoryModelAlways ||
+		strategy == config.SuggestStrategyHistoryThenModel ||
+		strategy == config.SuggestStrategyHistoryThenFastThenModel ||
+		strategy == config.SuggestStrategyFastThenModel
 
 	resolvedSuggestRequest.Strategy = strategy
 	resolvedSuggestRequest.RecentCommands = recentCommands
@@ -238,7 +246,7 @@ func (e *Engine) inspectDetailed(ctx context.Context, request api.InspectRequest
 	requestModelName := ""
 	modelMetrics := model.SuggestMetrics{}
 
-	if useModel && (strategy == config.SuggestStrategyModelOnly || !historyTrusted) {
+	if useModel && (strategy == config.SuggestStrategyModelOnly || strategy == config.SuggestStrategyFastThenModel || alwaysInvokeModel || !historyTrusted) {
 		modelClient := e.modelClient
 		if request.ModelName != "" && request.ModelName != e.modelName {
 			baseURL := request.ModelBaseURL

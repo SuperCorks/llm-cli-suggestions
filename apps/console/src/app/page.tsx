@@ -1,3 +1,5 @@
+import { Cpu, Turtle, Zap } from "lucide-react";
+
 import { LiveActivityStream } from "@/components/live-activity-stream";
 import { PathHoverActions } from "@/components/path-hover-actions";
 import { Panel } from "@/components/panel";
@@ -16,11 +18,41 @@ export default async function Home() {
   const overview = getOverviewData();
   const runtime = await getRuntimeStatusWithHealth();
   const recentSignals = getRecentActivitySignals(6);
+  const dualModelMode =
+    (runtime.settings.suggestStrategy === "history-then-fast-then-model" ||
+      runtime.settings.suggestStrategy === "fast-then-model") &&
+    runtime.settings.fastModelName.trim();
+  const liveModelCards =
+    dualModelMode
+      ? [
+          {
+            label: "Slow Live Model",
+            value: runtime.settings.modelName,
+            className: "stat-card-live stat-card-live-slow",
+            icon: <Turtle aria-hidden="true" />,
+          },
+          {
+            label: "Fast Live Model",
+            value: runtime.settings.fastModelName.trim(),
+            className: "stat-card-live stat-card-live-fast",
+            icon: <Zap aria-hidden="true" />,
+          },
+        ]
+      : [
+          {
+            label: "Active Model",
+            value: runtime.health.modelName,
+            className: "stat-card-live stat-card-live-single",
+            icon: <Cpu aria-hidden="true" />,
+          },
+        ];
+  const liveModelSummary = dualModelMode
+    ? `${runtime.settings.modelName} and ${runtime.settings.fastModelName.trim()} are driving the current console.`
+    : `${runtime.health.modelName} is driving the current console.`;
   const cards = [
     { label: "Avg. latency", value: formatDurationMs(overview.averageModelLatency) },
     { label: "Acceptance rate", value: formatPercent(overview.acceptanceRate) },
     { label: "Total suggestions", value: formatCompactNumber(overview.totals.suggestions) },
-    { label: "Active model", value: runtime.health.modelName },
   ];
 
   return (
@@ -33,6 +65,20 @@ export default async function Home() {
             learning dataset at a glance.
           </p>
         </div>
+      </div>
+
+      <div className="stats-grid live-models">
+        {liveModelCards.map((card) => (
+          <div key={card.label} className={`stat-card ${card.className}`}>
+            <div className="stat-card-header">
+              <span>{card.label}</span>
+              <div className="stat-card-icon" aria-hidden="true">
+                {card.icon}
+              </div>
+            </div>
+            <strong>{card.value}</strong>
+          </div>
+        ))}
       </div>
 
       <div className="stats-grid">
@@ -130,7 +176,9 @@ export default async function Home() {
         <div className="stack-lg">
           <Panel title="Model Insights" subtitle="A quick read on current latency and rejection pressure.">
             <div className="insight-card">
-              <h3>{runtime.health.modelName} is driving the current console.</h3>
+              <h3>
+                {liveModelSummary}
+              </h3>
               <p>
                 Average latency is {formatDurationMs(overview.averageModelLatency)} with an overall
                 acceptance rate of {formatPercent(overview.acceptanceRate)}. Recent suggestion

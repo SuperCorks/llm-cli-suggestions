@@ -16,6 +16,7 @@ type Config struct {
 	DBPath             string
 	ModelBaseURL       string
 	ModelName          string
+	FastModelName      string
 	ModelKeepAlive     string
 	SuggestStrategy    string
 	SystemPromptStatic string
@@ -23,10 +24,14 @@ type Config struct {
 }
 
 const (
-	SuggestStrategyHistoryOnly  = "history-only"
-	SuggestStrategyHistoryModel = "history+model"
-	SuggestStrategyModelOnly    = "model-only"
-	DefaultSystemPromptStatic   = `You are a shell autosuggestion engine.
+	SuggestStrategyHistoryOnly              = "history-only"
+	SuggestStrategyHistoryModel             = "history+model"
+	SuggestStrategyHistoryModelAlways       = "history+model-always"
+	SuggestStrategyHistoryThenModel         = "history-then-model"
+	SuggestStrategyHistoryThenFastThenModel = "history-then-fast-then-model"
+	SuggestStrategyFastThenModel            = "fast-then-model"
+	SuggestStrategyModelOnly                = "model-only"
+	DefaultSystemPromptStatic               = `You are a shell autosuggestion engine.
 Complete the current shell command with the single most likely next command.
 Return exactly one shell command on one line.
 Do not include markdown, backticks, bullets, labels, colons, explanations, comments, cwd annotations, or placeholders.
@@ -59,6 +64,7 @@ func Load() (Config, error) {
 	dbPath := firstNonEmpty(os.Getenv("LAC_DB_PATH"), runtimeValues["LAC_DB_PATH"], filepath.Join(stateDir, "autocomplete.sqlite"))
 	modelBaseURL := firstNonEmpty(os.Getenv("LAC_MODEL_BASE_URL"), runtimeValues["LAC_MODEL_BASE_URL"], "http://127.0.0.1:11434")
 	modelName := firstNonEmpty(os.Getenv("LAC_MODEL_NAME"), runtimeValues["LAC_MODEL_NAME"], "qwen2.5-coder:7b")
+	fastModelName := firstNonEmpty(os.Getenv("LAC_FAST_MODEL_NAME"), runtimeValues["LAC_FAST_MODEL_NAME"])
 	modelKeepAlive := firstNonEmpty(os.Getenv("LAC_MODEL_KEEP_ALIVE"), runtimeValues["LAC_MODEL_KEEP_ALIVE"], "5m")
 	suggestStrategy := NormalizeSuggestStrategy(firstNonEmpty(
 		os.Getenv("LAC_SUGGEST_STRATEGY"),
@@ -79,6 +85,7 @@ func Load() (Config, error) {
 		DBPath:             dbPath,
 		ModelBaseURL:       modelBaseURL,
 		ModelName:          modelName,
+		FastModelName:      fastModelName,
 		ModelKeepAlive:     modelKeepAlive,
 		SuggestStrategy:    suggestStrategy,
 		SystemPromptStatic: systemPromptStatic,
@@ -90,8 +97,18 @@ func NormalizeSuggestStrategy(value string) string {
 	switch strings.TrimSpace(value) {
 	case SuggestStrategyHistoryOnly:
 		return SuggestStrategyHistoryOnly
+	case SuggestStrategyHistoryModelAlways:
+		return SuggestStrategyHistoryModelAlways
+	case SuggestStrategyHistoryThenModel:
+		return SuggestStrategyHistoryThenModel
+	case SuggestStrategyHistoryThenFastThenModel:
+		return SuggestStrategyHistoryThenFastThenModel
+	case SuggestStrategyFastThenModel:
+		return SuggestStrategyFastThenModel
 	case SuggestStrategyModelOnly:
 		return SuggestStrategyModelOnly
+	case SuggestStrategyHistoryModel:
+		return SuggestStrategyHistoryModel
 	default:
 		return SuggestStrategyHistoryModel
 	}

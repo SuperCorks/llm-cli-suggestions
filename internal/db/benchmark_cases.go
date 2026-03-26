@@ -46,7 +46,10 @@ func (s *Store) ListReplayBenchmarkCandidates(ctx context.Context, limit int) ([
 		   COALESCE(r.review_label, '') AS quality_label,
 		   COALESCE(f.event_type, '') AS feedback_event,
 		   s.source,
-		   s.model_name,
+		   CASE
+		     WHEN TRIM(s.request_model_name) <> '' THEN s.request_model_name
+		     ELSE s.model_name
+		   END AS model_name,
 		   s.created_at_ms
 		 FROM suggestions s
 		 LEFT JOIN suggestion_reviews r ON r.suggestion_id = s.id

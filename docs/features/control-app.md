@@ -24,7 +24,7 @@ Shows:
 - daemon health
 - active model
 - socket and database paths
-- totals for sessions, commands, suggestions, accepted executions, edited executions, buffered accepts, and rejected feedback
+- totals for sessions, commands, suggestions, accepted, and rejected feedback
 - a live activity tape that auto-refreshes recent suggestion signals without a manual page reload
 - recent suggestions
 - latency by model
@@ -56,14 +56,13 @@ Shows paginated suggestion history with filters for:
 - session
 - cwd
 - feedback outcome
-- execution-aware outcome states for accepted, edited, buffered, rejected, or unreviewed suggestions
 - quality label
 - server-side sort modes for recency, latency, buffer ordering, model ordering, and labeled-first review
 - page-size controls with top and bottom pagination affordances
 - session ids directly in the history table for quicker cross-referencing with commands and feedback
 - inline good/bad labeling that persists to SQLite for future evaluation and fine-tuning work
 - empty recorded buffers rendered as a muted visual placeholder in the table and detail drawer without inserting fallback text into the hydrated DOM
-- structured context previews on hover with persisted prompt snapshots, retrieved context, accepted-versus-actual command details, feedback outcome details, and replay links into the inspector
+- structured context previews on hover with persisted prompt snapshots, retrieved context, feedback outcome details, and replay links into the inspector
 - copy-ready prompt and structured-context payloads from the hover card for debugging or dataset export prep
 - a wider full-canvas layout on the suggestions explorer so the table can use the full screen width instead of the default content cap
 - a collapsible Filters & Sort panel that starts closed so the history table stays primary while still surfacing active filter summaries
@@ -79,7 +78,7 @@ Shows:
 - session ids alongside each command and feedback event so session-scoped filters are discoverable
 - recent feedback events
 - top rejected suggestions
-- acceptance rate by working directory path, with edited executions broken out separately
+- acceptance rate by working directory path
 
 ### Inspector
 
@@ -91,7 +90,6 @@ Calls the daemon `/inspect` route to show:
 - ranked alternatives
 - per-candidate score breakdowns
 - retrieval-aware score breakdowns that distinguish history, local retrieval, and model contribution
-- an explicit rejected-output explanation when the raw model output does not continue the current buffer exactly, including the rejected output beside the current buffer for quick debugging
 - retrieved local context such as matching history commands, path candidates, git branches, matching project tasks, and the broader project task list loaded from local manifests
 - prompt text
 - raw and cleaned model output
@@ -126,9 +124,8 @@ Supports:
 - benchmark run progress indicators with auto-refresh while queued or running
 - fail-fast saved benchmark execution so hard model request errors stop the run early, preserve partial result rows, and surface the failure message in the saved run detail view
 - comparison-first ad-hoc results and saved benchmark summaries that make model-to-model tradeoffs easier to scan
-- richer benchmark drill-down with cold/hot latency cards, repo/category/source tables, and filtered per-attempt rows
+- richer benchmark drill-down with cold/hot latency cards, stage breakdowns, category/source tables, and filtered per-attempt rows
 - replay actions on saved benchmark runs so a prior model set, repeat count, and timeout can be queued again directly from the run list
-- saved `eval` runs in the history list, even though replaying those still requires the CLI because the worker needs a dataset path
 
 ### Models
 

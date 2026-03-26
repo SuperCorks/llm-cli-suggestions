@@ -30,6 +30,7 @@ typeset -g LAC_MODEL_BASE_URL="${LAC_MODEL_BASE_URL:-}"
 typeset -g LAC_SUGGEST_STRATEGY="${LAC_SUGGEST_STRATEGY:-}"
 typeset -g LAC_SUGGEST_TIMEOUT_MS="${LAC_SUGGEST_TIMEOUT_MS:-}"
 typeset -g LAC_ACCEPT_KEY="${LAC_ACCEPT_KEY:-}"
+typeset -g LAC_FAST_MODEL_NAME="${LAC_FAST_MODEL_NAME:-}"
 
 _lac_runtime_value() {
   local key="$1"
@@ -43,6 +44,7 @@ _lac_runtime_value() {
 typeset -gx LAC_SOCKET_PATH="${LAC_SOCKET_PATH:-$(_lac_runtime_value LAC_SOCKET_PATH)}"
 typeset -gx LAC_DB_PATH="${LAC_DB_PATH:-$(_lac_runtime_value LAC_DB_PATH)}"
 typeset -gx LAC_MODEL_NAME="${LAC_MODEL_NAME:-$(_lac_runtime_value LAC_MODEL_NAME)}"
+typeset -gx LAC_FAST_MODEL_NAME="${LAC_FAST_MODEL_NAME:-$(_lac_runtime_value LAC_FAST_MODEL_NAME)}"
 typeset -gx LAC_MODEL_BASE_URL="${LAC_MODEL_BASE_URL:-$(_lac_runtime_value LAC_MODEL_BASE_URL)}"
 typeset -gx LAC_SUGGEST_STRATEGY="${LAC_SUGGEST_STRATEGY:-$(_lac_runtime_value LAC_SUGGEST_STRATEGY)}"
 typeset -gx LAC_SUGGEST_TIMEOUT_MS="${LAC_SUGGEST_TIMEOUT_MS:-$(_lac_runtime_value LAC_SUGGEST_TIMEOUT_MS)}"
@@ -56,6 +58,7 @@ typeset -gx LAC_STATE_DIR
 typeset -gx LAC_SOCKET_PATH="${LAC_SOCKET_PATH:-$LAC_STATE_DIR/daemon.sock}"
 typeset -gx LAC_DB_PATH="${LAC_DB_PATH:-$LAC_STATE_DIR/autocomplete.sqlite}"
 typeset -gx LAC_MODEL_NAME="${LAC_MODEL_NAME:-qwen2.5-coder:7b}"
+typeset -gx LAC_FAST_MODEL_NAME="${LAC_FAST_MODEL_NAME:-}"
 typeset -gx LAC_MODEL_BASE_URL="${LAC_MODEL_BASE_URL:-http://127.0.0.1:11434}"
 typeset -gx LAC_SUGGEST_STRATEGY="${LAC_SUGGEST_STRATEGY:-history+model}"
 typeset -gx LAC_SUGGEST_TIMEOUT_MS="${LAC_SUGGEST_TIMEOUT_MS:-1200}"
@@ -72,10 +75,12 @@ typeset -g LAC_ASYNC_SESSION_DIR="${LAC_ASYNC_SESSION_DIR:-$LAC_ASYNC_DIR/$LAC_S
 typeset -g LAC_NOTIFY_PIPE_PATH="${LAC_NOTIFY_PIPE_PATH:-$LAC_ASYNC_SESSION_DIR/notify.pipe}"
 typeset -g LAC_SUGGESTION=""
 typeset -g LAC_SUGGESTION_SOURCE=""
+typeset -g LAC_SUGGESTION_STAGE_ROLE=""
 typeset -gi LAC_SUGGESTION_ID=0
 typeset -g LAC_PENDING_ACCEPT_COMMAND=""
 typeset -gi LAC_PENDING_ACCEPT_SUGGESTION_ID=0
 typeset -gi LAC_REQUEST_SEQ=0
+typeset -gi LAC_APPLIED_STAGE_ORDER=0
 typeset -gi LAC_ASYNC_READY=0
 typeset -gi LAC_NOTIFY_FD=-1
 typeset -gi LAC_LAST_EXIT_CODE=0
@@ -699,6 +704,7 @@ _lac_is_reserved_pty_command() {
 _lac_clear_suggestion() {
   typeset -g LAC_SUGGESTION=""
   typeset -g LAC_SUGGESTION_SOURCE=""
+  typeset -g LAC_SUGGESTION_STAGE_ROLE=""
   typeset -gi LAC_SUGGESTION_ID=0
   POSTDISPLAY=""
   _lac_clear_highlight
@@ -722,6 +728,7 @@ _lac_clear_highlight() {
 
 _lac_format_suggestion_source_marker() {
   local source="$1"
+  local stage_role="$2"
   local tag label joined=""
   local normalized="${source//+/ }"
   local -a tags=(${=normalized})
@@ -733,7 +740,14 @@ _lac_format_suggestion_source_marker() {
         label="history"
         ;;
       model)
-        label="ai"
+        case "$LAC_SUGGEST_STRATEGY:$stage_role" in
+          history-then-fast-then-model:fast|history-then-fast-then-model:slow|fast-then-model:fast|fast-then-model:slow)
+            label="ai/$stage_role"
+            ;;
+          *)
+            label="ai"
+            ;;
+        esac
         ;;
       "")
         continue
@@ -804,7 +818,7 @@ _lac_render_suggestion() {
     return 0
   fi
 
-  POSTDISPLAY="${LAC_SUGGESTION#$BUFFER}$(_lac_format_suggestion_source_marker "$LAC_SUGGESTION_SOURCE")"
+  POSTDISPLAY="${LAC_SUGGESTION#$BUFFER}$(_lac_format_suggestion_source_marker "$LAC_SUGGESTION_SOURCE" "$LAC_SUGGESTION_STAGE_ROLE")"
   _lac_clear_highlight
 
   if [[ -n "$POSTDISPLAY" ]]; then
@@ -820,21 +834,58 @@ _lac_write_latest_seq() {
 
 _lac_invalidate_pending() {
   (( LAC_REQUEST_SEQ += 1 ))
+  typeset -gi LAC_APPLIED_STAGE_ORDER=0
   _lac_write_latest_seq
+}
+
+_lac_single_request_strategy() {
+  case "$LAC_SUGGEST_STRATEGY" in
+    history-then-model|history-then-fast-then-model)
+      print -r -- "history+model-always"
+      ;;
+    fast-then-model)
+      print -r -- "model-only"
+      ;;
+    *)
+      print -r -- "$LAC_SUGGEST_STRATEGY"
+      ;;
+  esac
+}
+
+_lac_single_request_model() {
+  case "$LAC_SUGGEST_STRATEGY" in
+    history-then-model|history-then-fast-then-model|fast-then-model)
+      print -r -- "$LAC_MODEL_NAME"
+      ;;
+    *)
+      print -r -- ""
+      ;;
+  esac
+}
+
+_lac_single_request_stage_role() {
+  case "$LAC_SUGGEST_STRATEGY" in
+    history-then-fast-then-model|fast-then-model)
+      print -r -- "slow"
+      ;;
+    *)
+      print -r -- ""
+      ;;
+  esac
 }
 
 _lac_parse_suggestion_line() {
   local line="$1"
   typeset -ga LAC_PARSED_SUGGESTION_FIELDS
-  LAC_PARSED_SUGGESTION_FIELDS=(0 "" "")
+  LAC_PARSED_SUGGESTION_FIELDS=(0 "" "" "")
 
   if [[ -z "$line" ]]; then
     return 0
   fi
 
-  local suggestion_id suggestion source
-  IFS=$'\t' read -r suggestion_id suggestion source <<< "$line"
-  LAC_PARSED_SUGGESTION_FIELDS=("$suggestion_id" "$suggestion" "$source")
+  local suggestion_id suggestion source stage_role
+  IFS=$'\t' read -r suggestion_id suggestion source stage_role <<< "$line"
+  LAC_PARSED_SUGGESTION_FIELDS=("$suggestion_id" "$suggestion" "$source" "$stage_role")
 }
 
 _lac_request_suggestion() {
@@ -842,19 +893,28 @@ _lac_request_suggestion() {
   local cwd="$2"
   local repo_root="$3"
   local branch="$4"
+  local strategy="${5:-}"
+  local model_name="${6:-}"
 
-  "$LAC_CLIENT_BIN" suggest \
-    --socket "$LAC_SOCKET_PATH" \
-    --session "$LAC_SESSION_ID" \
-    --buffer "$buffer" \
-    --cwd "$cwd" \
-    --repo-root "$repo_root" \
-    --branch "$branch" \
-    --last-exit "$LAC_LAST_EXIT_CODE" 2>/dev/null
+  local -a command=(
+    "$LAC_CLIENT_BIN" suggest
+    --socket "$LAC_SOCKET_PATH"
+    --session "$LAC_SESSION_ID"
+    --buffer "$buffer"
+    --cwd "$cwd"
+    --repo-root "$repo_root"
+    --branch "$branch"
+    --last-exit "$LAC_LAST_EXIT_CODE"
+  )
+
+  [[ -n "$strategy" ]] && command+=(--strategy "$strategy")
+  [[ -n "$model_name" ]] && command+=(--model "$model_name")
+
+  "${command[@]}" 2>/dev/null
 }
 
 _lac_refresh_suggestion_sync() {
-  local repo_root branch line suggestion_id suggestion source
+  local repo_root branch line suggestion_id suggestion source stage_role strategy model_name
 
   if (( CURSOR != ${#BUFFER} )); then
     _lac_clear_suggestion
@@ -863,11 +923,15 @@ _lac_refresh_suggestion_sync() {
 
   repo_root="$(_lac_repo_root)"
   branch="$(_lac_git_branch)"
-  line="$(_lac_request_suggestion "$BUFFER" "$PWD" "$repo_root" "$branch")"
+  strategy="$(_lac_single_request_strategy)"
+  model_name="$(_lac_single_request_model)"
+  line="$(_lac_request_suggestion "$BUFFER" "$PWD" "$repo_root" "$branch" "$strategy" "$model_name")"
   _lac_parse_suggestion_line "$line"
   suggestion_id="$LAC_PARSED_SUGGESTION_FIELDS[1]"
   suggestion="$LAC_PARSED_SUGGESTION_FIELDS[2]"
   source="$LAC_PARSED_SUGGESTION_FIELDS[3]"
+  stage_role="$LAC_PARSED_SUGGESTION_FIELDS[4]"
+  [[ -n "$stage_role" ]] || stage_role="$(_lac_single_request_stage_role)"
 
   if [[ -z "$suggestion" || "$suggestion" != "$BUFFER"* || ( -n "$BUFFER" && "$suggestion" == "$BUFFER" ) ]]; then
     _lac_clear_suggestion
@@ -877,16 +941,20 @@ _lac_refresh_suggestion_sync() {
   typeset -gi LAC_SUGGESTION_ID="$suggestion_id"
   typeset -g LAC_SUGGESTION="$suggestion"
   typeset -g LAC_SUGGESTION_SOURCE="$source"
+  typeset -g LAC_SUGGESTION_STAGE_ROLE="$stage_role"
+  typeset -gi LAC_APPLIED_STAGE_ORDER=1
   _lac_render_suggestion
   _lac_write_snapshot "async-applied"
 }
 
 _lac_apply_async_result() {
-  local file seq line suggestion_id suggestion source
+  local file seq line suggestion_id suggestion source stage_role file_name base_name stage_order stage_total
   local files=("$LAC_ASYNC_SESSION_DIR"/*.tsv(N))
 
   for file in $files; do
-    seq="${${file:t}%.tsv}"
+    file_name="${file:t}"
+    base_name="${file_name%.tsv}"
+    seq="${base_name%%.*}"
     if [[ "$seq" != <-> ]]; then
       rm -f -- "$file"
       continue
@@ -896,28 +964,53 @@ _lac_apply_async_result() {
     fi
   done
 
-  file="$LAC_ASYNC_SESSION_DIR/$LAC_REQUEST_SEQ.tsv"
-  [[ -f "$file" ]] || return 0
+  files=("$LAC_ASYNC_SESSION_DIR/$LAC_REQUEST_SEQ".*.tsv(N) "$LAC_ASYNC_SESSION_DIR/$LAC_REQUEST_SEQ.tsv"(N))
+  (( ${#files[@]} > 0 )) || return 0
 
-  IFS= read -r line < "$file"
-  rm -f -- "$file"
-  _lac_parse_suggestion_line "$line"
-  suggestion_id="$LAC_PARSED_SUGGESTION_FIELDS[1]"
-  suggestion="$LAC_PARSED_SUGGESTION_FIELDS[2]"
-  source="$LAC_PARSED_SUGGESTION_FIELDS[3]"
+  for file in $files; do
+    file_name="${file:t}"
+    base_name="${file_name%.tsv}"
+    stage_order=1
+    stage_total=1
+    if [[ "$base_name" == *.*.* ]]; then
+      local -a parts=("${(@s:.:)base_name}")
+      if (( ${#parts[@]} == 3 )) && [[ "${parts[1]}" == "$LAC_REQUEST_SEQ" ]] && [[ "${parts[2]}" == <-> ]] && [[ "${parts[3]}" == <-> ]]; then
+        stage_order="${parts[2]}"
+        stage_total="${parts[3]}"
+      fi
+    fi
 
-  if [[ -z "$suggestion" || ( -n "$BUFFER" && "$suggestion" == "$BUFFER" ) || "$suggestion" != "$BUFFER"* ]]; then
-    _lac_clear_suggestion
-    return 0
-  fi
+    IFS= read -r line < "$file"
+    rm -f -- "$file"
 
-  if (( CURSOR != ${#BUFFER} )); then
-    return 0
-  fi
+    if (( stage_order <= LAC_APPLIED_STAGE_ORDER )); then
+      continue
+    fi
 
-  typeset -gi LAC_SUGGESTION_ID="$suggestion_id"
-  typeset -g LAC_SUGGESTION="$suggestion"
-  typeset -g LAC_SUGGESTION_SOURCE="$source"
+    _lac_parse_suggestion_line "$line"
+    suggestion_id="$LAC_PARSED_SUGGESTION_FIELDS[1]"
+    suggestion="$LAC_PARSED_SUGGESTION_FIELDS[2]"
+    source="$LAC_PARSED_SUGGESTION_FIELDS[3]"
+    stage_role="$LAC_PARSED_SUGGESTION_FIELDS[4]"
+
+    if [[ -z "$suggestion" || ( -n "$BUFFER" && "$suggestion" == "$BUFFER" ) || "$suggestion" != "$BUFFER"* ]]; then
+      if (( stage_order == stage_total && LAC_APPLIED_STAGE_ORDER == 0 )); then
+        _lac_clear_suggestion
+      fi
+      continue
+    fi
+
+    if (( CURSOR != ${#BUFFER} )); then
+      continue
+    fi
+
+    typeset -gi LAC_SUGGESTION_ID="$suggestion_id"
+    typeset -g LAC_SUGGESTION="$suggestion"
+    typeset -g LAC_SUGGESTION_SOURCE="$source"
+    typeset -g LAC_SUGGESTION_STAGE_ROLE="$stage_role"
+    typeset -gi LAC_APPLIED_STAGE_ORDER="$stage_order"
+  done
+
   _lac_render_suggestion
 }
 
@@ -978,6 +1071,7 @@ _lac_schedule_suggestion() {
   branch="$(_lac_git_branch)"
   (( LAC_REQUEST_SEQ += 1 ))
   seq=$LAC_REQUEST_SEQ
+  typeset -gi LAC_APPLIED_STAGE_ORDER=0
   latest_file="$LAC_ASYNC_SESSION_DIR/latest.seq"
   result_file="$LAC_ASYNC_SESSION_DIR/$seq.tsv"
   shell_pid=$$

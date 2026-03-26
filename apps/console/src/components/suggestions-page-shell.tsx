@@ -512,7 +512,12 @@ export function SuggestionsPageShell({
                 </div>
                 <div>
                   <dt>Model</dt>
-                  <dd>{selectedEntry.snapshot.structuredContext.modelName || selectedEntry.row.modelName || "n/a"}</dd>
+                  <dd>
+                    {selectedEntry.snapshot.structuredContext.modelName ||
+                      selectedEntry.row.requestModelName ||
+                      selectedEntry.row.modelName ||
+                      "n/a"}
+                  </dd>
                 </div>
                 <div>
                   <dt>Strategy</dt>

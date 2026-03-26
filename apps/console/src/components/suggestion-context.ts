@@ -146,7 +146,7 @@ export function buildSuggestionContextSnapshot(row: SuggestionRow): SuggestionCo
       lastExitCode: row.lastExitCode,
       strategy: "",
     },
-    modelName: row.modelName || "",
+    modelName: row.requestModelName || row.modelName || "",
     historyTrusted: false,
     recentCommands: [],
     lastContext: {

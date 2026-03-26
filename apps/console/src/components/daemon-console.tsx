@@ -85,6 +85,7 @@ export function DaemonConsole({
   const [availableModels, setAvailableModels] = useState(initialAvailableModels);
   const [settings, setSettings] = useState({
     LAC_MODEL_NAME: initialStatus.settings.modelName,
+    LAC_FAST_MODEL_NAME: initialStatus.settings.fastModelName,
     LAC_MODEL_KEEP_ALIVE: initialModelKeepAlive,
     LAC_SUGGEST_STRATEGY: initialStatus.settings.suggestStrategy,
     LAC_SYSTEM_PROMPT_STATIC: initialStatus.settings.systemPromptStatic,
@@ -236,6 +237,7 @@ export function DaemonConsole({
     if (syncSettings) {
       setSettings({
         LAC_MODEL_NAME: data.settings.modelName,
+        LAC_FAST_MODEL_NAME: data.settings.fastModelName,
         LAC_MODEL_KEEP_ALIVE: data.settings.modelKeepAlive || DEFAULT_MODEL_KEEP_ALIVE,
         LAC_SUGGEST_STRATEGY: data.settings.suggestStrategy,
         LAC_SYSTEM_PROMPT_STATIC: data.settings.systemPromptStatic,
@@ -603,6 +605,26 @@ export function DaemonConsole({
                   Only installed models appear here. Download additional models from the{" "}
                   <Link href="/models">Models</Link> page.
                 </>
+              }
+              emptyMessage={
+                <>
+                  No matching installed models. Download additional models from the{" "}
+                  <Link href="/models">Models</Link> page.
+                </>
+              }
+            />
+            <ModelPicker
+              mode="single"
+              label="Fast Stage Model"
+              value={settings.LAC_FAST_MODEL_NAME}
+              options={availableModels}
+              installedOnly
+              onValueChange={(value) =>
+                setSettings((current) => ({ ...current, LAC_FAST_MODEL_NAME: value }))
+              }
+              placeholder="Optional fast model for staged refinement"
+              helperText={
+                'Used by the "History then fast then large model" and "Fast then large models" strategies. Leave blank to skip the fast-model stage.'
               }
               emptyMessage={
                 <>

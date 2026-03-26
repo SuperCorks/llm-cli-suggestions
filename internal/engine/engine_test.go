@@ -773,6 +773,99 @@ func TestInspectUsesEngineDefaultStrategyWhenRequestStrategyEmpty(t *testing.T) 
 	}
 }
 
+func TestInspectProgressiveStrategiesInvokeModelEvenWhenHistoryTrusted(t *testing.T) {
+	t.Parallel()
+
+	store, err := db.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	recordTestCommand(t, store, db.CommandRecord{
+		SessionID:    "test-session",
+		Command:      "git status",
+		CWD:          "/tmp/project",
+		RepoRoot:     "/tmp/project",
+		Branch:       "main",
+		ExitCode:     0,
+		DurationMS:   40,
+		StartedAtMS:  1000,
+		FinishedAtMS: 1040,
+	})
+
+	cases := []struct {
+		name         string
+		strategy     string
+		wantCalls    int
+		wantModelRun bool
+		wantHistoryTrusted bool
+	}{
+		{name: "hybrid short circuits trusted history", strategy: config.SuggestStrategyHistoryModel, wantCalls: 0, wantModelRun: false, wantHistoryTrusted: true},
+		{name: "progressive large model still runs", strategy: config.SuggestStrategyHistoryThenModel, wantCalls: 1, wantModelRun: true, wantHistoryTrusted: true},
+		{name: "always-rerank internal strategy still runs", strategy: config.SuggestStrategyHistoryModelAlways, wantCalls: 1, wantModelRun: true, wantHistoryTrusted: true},
+		{name: "fast then large models skips history and still runs model", strategy: config.SuggestStrategyFastThenModel, wantCalls: 1, wantModelRun: true, wantHistoryTrusted: false},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			callCount := 0
+			engine := NewWithSystemPrompt(
+				store,
+				stubModelClient{suggest: func(ctx context.Context, prompt string) (model.SuggestResult, error) {
+					callCount++
+					return model.SuggestResult{Response: "git stash"}, nil
+				}},
+				"qwen3-coder:latest",
+				"http://127.0.0.1:11434",
+				"5m",
+				tc.strategy,
+				"",
+				2*time.Second,
+			)
+
+			response, err := engine.Inspect(context.Background(), api.InspectRequest{
+				SessionID: "test-session",
+				Buffer:    "git st",
+				CWD:       "/tmp/project",
+				RepoRoot:  "/tmp/project",
+				Branch:    "main",
+				Strategy:  tc.strategy,
+			})
+			if err != nil {
+				t.Fatalf("inspect: %v", err)
+			}
+
+			if response.HistoryTrusted != tc.wantHistoryTrusted {
+				t.Fatalf("expected history trusted=%t, got %#v", tc.wantHistoryTrusted, response)
+			}
+			if callCount != tc.wantCalls {
+				t.Fatalf("expected model calls %d, got %d", tc.wantCalls, callCount)
+			}
+			if tc.wantModelRun {
+				if response.RequestModelName != "qwen3-coder:latest" {
+					t.Fatalf("expected request model name to be populated, got %q", response.RequestModelName)
+				}
+				if response.RawModelOutput != "git stash" {
+					t.Fatalf("expected raw model output, got %q", response.RawModelOutput)
+				}
+			} else {
+				if response.RequestModelName != "" {
+					t.Fatalf("expected no request model name, got %q", response.RequestModelName)
+				}
+				if response.RawModelOutput != "" {
+					t.Fatalf("expected no raw model output, got %q", response.RawModelOutput)
+				}
+			}
+		})
+	}
+}
+
 func TestInspectSurfacesModelTimeoutError(t *testing.T) {
 	t.Parallel()
 

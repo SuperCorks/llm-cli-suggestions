@@ -15,11 +15,11 @@ The current implementation is built from six main pieces:
 
 1. The user types in `zsh`.
 2. The plugin watches buffer changes and schedules a debounced helper process.
-3. The helper process calls `autocomplete-client suggest`.
+3. The helper process calls `autocomplete-client suggest` once for classic modes, or multiple staged suggest requests in parallel for progressive modes.
 4. The client sends an HTTP request over a local Unix socket to the daemon.
 5. The daemon builds a suggestion using local history, feedback, context, and optional model output.
 6. The daemon stores the suggestion in SQLite.
-7. The plugin receives the result asynchronously, renders the suffix as ghost text, and allows the configured accept key to accept it.
+7. The plugin receives one or more stage results asynchronously, renders the current suffix as ghost text, and allows the configured accept key to accept it.
 8. When the command is executed, the plugin logs the command and execution-aware feedback events back through the client and daemon into SQLite.
 9. The control app reads the same SQLite database directly for analytics and uses local server routes for daemon control and experiments.
 
@@ -30,6 +30,7 @@ The shell layer is intentionally shallow. It is responsible for:
 - tracking the current edit buffer
 - scheduling async suggestions with a short debounce
 - discarding stale requests
+- ordering progressive-stage replacements so later lower-priority results cannot overwrite a newer higher-priority ghost text
 - rendering the suggestion as `POSTDISPLAY`
 - styling the ghost text with `region_highlight`
 - accepting the suggestion with the configured accept key
@@ -134,10 +135,10 @@ The current ranking shape is:
 2. gather prefix-matching history candidates
 3. gather targeted local retrieval candidates for paths, branches, and project tasks while also loading broader local project task context for the prompt when available
 4. run the independent history and local retrieval work in parallel when possible
-5. trust history immediately when one candidate is clearly dominant
-6. otherwise ask the local model for one candidate
+5. trust history immediately when one candidate is clearly dominant in classic hybrid mode
+6. otherwise ask the local model for one candidate, or always ask the model when the request is part of a progressive rerank stage
 7. blend history, retrieval, model, recent usage, feedback, and last-command context
-8. store and return the top-ranked result
+8. store and return the top-ranked result for that stage request
 
 This keeps the system fast when local context is strong and still allows the model to help in more ambiguous cases.
 
@@ -206,6 +207,7 @@ The control app writes this file, and the `zsh` plugin reads it before launching
 Persisted values are written as shell-sourceable single-line escaped assignments so multiline settings like the system prompt round-trip cleanly through the control app, `zsh`, and the Go daemon.
 
 - model name
+- optional fast-stage model name for progressive shell refinement
 - model base URL
 - suggestion strategy
 - a configurable system prompt, seeded with the built-in autosuggestion instructions by default
@@ -221,6 +223,9 @@ The current strategy modes are:
 
 - `history-only`
 - `history+model`
+- `history-then-model`
+- `history-then-fast-then-model`
+- `fast-then-model`
 - `model-only`
 
 The daemon uses the persisted runtime strategy for live shell suggestions, while the inspector can override it per inspect request for debugging and comparison. Inspector requests also enforce a higher minimum model timeout than live shell suggestions because they are manual debug flows rather than latency-sensitive ghost-text updates.

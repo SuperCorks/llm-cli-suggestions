@@ -81,7 +81,7 @@ export function SuggestionsHistoryTable({ rows, selectedId, onSelect }: Suggesti
                 <code>{row.suggestionText}</code>
               </td>
               <td>{row.source}</td>
-              <td>{row.modelName || "n/a"}</td>
+              <td>{row.requestModelName || row.modelName || "n/a"}</td>
               <td>{formatDurationMs(row.latencyMs)}</td>
               <td>
                 <span className={outcomeClassName(row)}>

@@ -169,6 +169,7 @@ export async function saveRuntimeSettings(input: Partial<Record<PersistedKey, st
   const current = getResolvedRuntimeSettings();
   writePersistedRuntimeSettings({
     LAC_MODEL_NAME: input.LAC_MODEL_NAME || current.modelName,
+    LAC_FAST_MODEL_NAME: input.LAC_FAST_MODEL_NAME ?? current.fastModelName,
     LAC_MODEL_BASE_URL: input.LAC_MODEL_BASE_URL || current.modelBaseUrl,
     LAC_MODEL_KEEP_ALIVE: input.LAC_MODEL_KEEP_ALIVE || current.modelKeepAlive,
     LAC_SUGGEST_STRATEGY: input.LAC_SUGGEST_STRATEGY || current.suggestStrategy,
@@ -274,6 +275,7 @@ export async function startDaemon() {
         LAC_SOCKET_PATH: settings.socketPath,
         LAC_DB_PATH: settings.dbPath,
         LAC_MODEL_NAME: settings.modelName,
+        LAC_FAST_MODEL_NAME: settings.fastModelName,
         LAC_MODEL_BASE_URL: settings.modelBaseUrl,
         LAC_MODEL_KEEP_ALIVE: settings.modelKeepAlive,
         LAC_SUGGEST_STRATEGY: settings.suggestStrategy,

@@ -28,6 +28,8 @@ Accepts a suggestion request containing:
 - repo root
 - branch
 - last exit code
+- optional strategy override
+- optional model override
 
 Returns:
 

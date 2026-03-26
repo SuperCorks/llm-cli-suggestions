@@ -338,8 +338,8 @@ export function listSuggestions(input: {
     params.push(input.source);
   }
   if (input.model) {
-    clauses.push("s.model_name = ?");
-    params.push(input.model);
+    clauses.push("(s.request_model_name = ? OR (TRIM(s.request_model_name) = '' AND s.model_name = ?))");
+    params.push(input.model, input.model);
   }
   if (input.session) {
     clauses.push("s.session_id = ?");
@@ -434,6 +434,7 @@ export function listSuggestions(input: {
          s.branch,
          s.last_exit_code AS lastExitCode,
          s.model_name AS modelName,
+         COALESCE(s.request_model_name, '') AS requestModelName,
          CASE
            WHEN s.request_latency_ms > 0 THEN s.request_latency_ms
            ELSE s.latency_ms
@@ -523,7 +524,7 @@ function getSuggestionOrderBy(sort?: SuggestionSort) {
     case "buffer-asc":
       return "s.buffer ASC, s.created_at_ms DESC";
     case "model-asc":
-      return "CASE WHEN s.model_name = '' THEN 1 ELSE 0 END, s.model_name ASC, s.created_at_ms DESC";
+      return "CASE WHEN TRIM(CASE WHEN TRIM(s.request_model_name) <> '' THEN s.request_model_name ELSE s.model_name END) = '' THEN 1 ELSE 0 END, CASE WHEN TRIM(s.request_model_name) <> '' THEN s.request_model_name ELSE s.model_name END ASC, s.created_at_ms DESC";
     case "quality-desc":
       return "CASE COALESCE(r.review_label, '') WHEN 'good' THEN 0 WHEN 'bad' THEN 1 ELSE 2 END, s.created_at_ms DESC";
     case "newest":

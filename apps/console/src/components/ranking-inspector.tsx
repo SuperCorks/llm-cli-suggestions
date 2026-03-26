@@ -80,6 +80,7 @@ type InspectFormState = {
   repoRoot: string;
   branch: string;
   lastExitCode: string;
+  fastModelName: string;
   modelName: string;
   suggestStrategy: SuggestStrategy;
   recentCommands: string;
@@ -88,6 +89,23 @@ type InspectFormState = {
 type RejectedModelOutput = {
   message: string;
   rawOutput: string;
+};
+
+type InspectStageResult = {
+  key: string;
+  label: string;
+  modelName: string;
+  response: InspectResponse | null;
+  skippedReason?: string;
+  errorReason?: string;
+};
+
+type InspectStageDefinition = {
+  key: string;
+  label: string;
+  strategy: string;
+  modelName: string;
+  skippedReason?: string;
 };
 
 function normalizeCandidate(
@@ -244,6 +262,7 @@ function describeRejectedModelOutput(
 
 interface RankingInspectorProps {
   defaultModelName: string;
+  defaultFastModelName: string;
   defaultSuggestStrategy: SuggestStrategy;
   initialForm?: Partial<InspectFormState>;
   autoInspect?: boolean;
@@ -251,6 +270,7 @@ interface RankingInspectorProps {
 
 export function RankingInspector({
   defaultModelName,
+  defaultFastModelName,
   defaultSuggestStrategy,
   initialForm,
   autoInspect = false,
@@ -262,11 +282,13 @@ export function RankingInspector({
     repoRoot: initialForm?.repoRoot || "",
     branch: initialForm?.branch || "",
     lastExitCode: initialForm?.lastExitCode || "",
+    fastModelName: initialForm?.fastModelName || defaultFastModelName,
     modelName: initialForm?.modelName || defaultModelName,
     suggestStrategy: initialForm?.suggestStrategy || defaultSuggestStrategy,
     recentCommands: initialForm?.recentCommands || "",
   }));
   const [response, setResponse] = useState<InspectResponse | null>(null);
+  const [stageResponses, setStageResponses] = useState<InspectStageResult[]>([]);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const didAutoInspect = useRef(false);
@@ -285,37 +307,164 @@ export function RankingInspector({
     [form.recentCommands],
   );
 
+  const progressiveStages = useMemo(() => {
+    if (form.suggestStrategy === "history-then-fast-then-model") {
+      return [
+        { key: "history", label: "History Suggestion", strategy: "history-only", modelName: "" },
+        {
+          key: "fast",
+          label: "Fast Suggestion",
+          strategy: "history+model-always",
+          modelName: form.fastModelName.trim() || defaultFastModelName.trim(),
+          skippedReason: (form.fastModelName.trim() || defaultFastModelName.trim())
+            ? undefined
+            : "No fast-stage model is configured in the inspector or daemon settings.",
+        },
+        {
+          key: "slow",
+          label: "Slow Suggestion",
+          strategy: "history+model-always",
+          modelName: form.modelName.trim() || defaultModelName,
+        },
+      ] satisfies InspectStageDefinition[];
+    }
+
+    if (form.suggestStrategy === "fast-then-model") {
+      return [
+        {
+          key: "fast",
+          label: "Fast Suggestion",
+          strategy: "model-only",
+          modelName: form.fastModelName.trim() || defaultFastModelName.trim(),
+          skippedReason: (form.fastModelName.trim() || defaultFastModelName.trim())
+            ? undefined
+            : "No fast-stage model is configured in the inspector or daemon settings.",
+        },
+        {
+          key: "slow",
+          label: "Slow Suggestion",
+          strategy: "model-only",
+          modelName: form.modelName.trim() || defaultModelName,
+        },
+      ] satisfies InspectStageDefinition[];
+    }
+
+    if (form.suggestStrategy === "history-then-model") {
+      return [
+        { key: "history", label: "History Suggestion", strategy: "history-only", modelName: "" },
+        {
+          key: "slow",
+          label: "Slow Suggestion",
+          strategy: "history+model-always",
+          modelName: form.modelName.trim() || defaultModelName,
+        },
+      ] satisfies InspectStageDefinition[];
+    }
+
+    return [] as InspectStageDefinition[];
+  }, [
+    defaultFastModelName,
+    defaultModelName,
+    form.fastModelName,
+    form.modelName,
+    form.suggestStrategy,
+  ]);
+
   const runInspect = useCallback(async () => {
     setLoading(true);
     setError("");
     setResponse(null);
+    setStageResponses([]);
     try {
       const parsedLastExitCode = form.lastExitCode.trim()
         ? Number.parseInt(form.lastExitCode, 10)
         : null;
-      const res = await fetch("/api/ranking", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          session_id: form.sessionId.trim(),
-          buffer: form.buffer,
-          cwd: form.cwd.trim(),
-          ...(form.repoRoot.trim() ? { repo_root: form.repoRoot.trim() } : {}),
-          ...(form.branch.trim() ? { branch: form.branch.trim() } : {}),
-          ...(Number.isFinite(parsedLastExitCode)
-            ? { last_exit_code: parsedLastExitCode }
-            : {}),
+
+      const basePayload = {
+        session_id: form.sessionId.trim(),
+        buffer: form.buffer,
+        cwd: form.cwd.trim(),
+        ...(form.repoRoot.trim() ? { repo_root: form.repoRoot.trim() } : {}),
+        ...(form.branch.trim() ? { branch: form.branch.trim() } : {}),
+        ...(Number.isFinite(parsedLastExitCode)
+          ? { last_exit_code: parsedLastExitCode }
+          : {}),
+        recent_commands: parsedRecentCommands,
+        limit: 8,
+      };
+
+      const fetchInspect = async (payload: Record<string, unknown>) => {
+        const res = await fetch("/api/ranking", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = (await res.json()) as InspectResponsePayload;
+        if (!res.ok) {
+          throw new Error(data.error || "inspect request failed");
+        }
+        return normalizeInspectResponse(data);
+      };
+
+      if (progressiveStages.length > 0) {
+        const results = await Promise.all(
+          progressiveStages.map(async (stage) => {
+            if (stage.skippedReason) {
+              return {
+                key: stage.key,
+                label: stage.label,
+                modelName: stage.modelName,
+                response: null,
+                skippedReason: stage.skippedReason,
+              } satisfies InspectStageResult;
+            }
+
+            try {
+              const stageResponse = await fetchInspect({
+                ...basePayload,
+                model_name: stage.modelName,
+                strategy: stage.strategy,
+              });
+
+              return {
+                key: stage.key,
+                label: stage.label,
+                modelName: stage.modelName,
+                response: stageResponse,
+              } satisfies InspectStageResult;
+            } catch (stageError) {
+              return {
+                key: stage.key,
+                label: stage.label,
+                modelName: stage.modelName,
+                response: null,
+                errorReason:
+                  stageError instanceof Error
+                    ? stageError.message
+                    : "inspect request failed",
+              } satisfies InspectStageResult;
+            }
+          }),
+        );
+
+        setStageResponses(results);
+        const finalStage = [...results]
+          .reverse()
+          .find((stage) => stage.response)?.response;
+        if (finalStage) {
+          setResponse(finalStage);
+        } else {
+          const firstError = results.find((stage) => stage.errorReason)?.errorReason;
+          setError(firstError || "inspect request failed");
+        }
+      } else {
+        const data = await fetchInspect({
+          ...basePayload,
           model_name: form.modelName,
           strategy: form.suggestStrategy,
-          recent_commands: parsedRecentCommands,
-          limit: 8,
-        }),
-      });
-      const data = (await res.json()) as InspectResponsePayload;
-      if (!res.ok) {
-        throw new Error(data.error || "inspect request failed");
+        });
+        setResponse(data);
       }
-      setResponse(normalizeInspectResponse(data));
     } catch (requestError) {
       setError(
         requestError instanceof Error
@@ -325,7 +474,11 @@ export function RankingInspector({
     } finally {
       setLoading(false);
     }
-  }, [form, parsedRecentCommands]);
+  }, [
+    form,
+    parsedRecentCommands,
+    progressiveStages,
+  ]);
 
   async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -417,25 +570,66 @@ export function RankingInspector({
               placeholder="0"
             />
           </label>
-          <label>
-            Model
-            <input
-              value={form.modelName}
-              onChange={(event) =>
-                setForm((current) => ({
-                  ...current,
-                  modelName: event.target.value,
-                }))
-              }
-              placeholder={defaultModelName}
-            />
-          </label>
-          <SuggestStrategyField
-            value={normalizeSuggestStrategy(form.suggestStrategy)}
-            onChange={(value) =>
-              setForm((current) => ({ ...current, suggestStrategy: value }))
+          <div
+            className={
+              form.suggestStrategy === "history-then-fast-then-model" ||
+              form.suggestStrategy === "fast-then-model"
+                ? "form-grid-span-2"
+                : undefined
             }
-          />
+          >
+            <SuggestStrategyField
+              value={normalizeSuggestStrategy(form.suggestStrategy)}
+              onChange={(value) =>
+                setForm((current) => ({ ...current, suggestStrategy: value }))
+              }
+            />
+          </div>
+          {form.suggestStrategy === "history-then-fast-then-model" ||
+          form.suggestStrategy === "fast-then-model" ? (
+            <>
+              <label>
+                Fast Model
+                <input
+                  value={form.fastModelName}
+                  onChange={(event) =>
+                    setForm((current) => ({
+                      ...current,
+                      fastModelName: event.target.value,
+                    }))
+                  }
+                  placeholder={defaultFastModelName}
+                />
+              </label>
+              <label>
+                Slow Model
+                <input
+                  value={form.modelName}
+                  onChange={(event) =>
+                    setForm((current) => ({
+                      ...current,
+                      modelName: event.target.value,
+                    }))
+                  }
+                  placeholder={defaultModelName}
+                />
+              </label>
+            </>
+          ) : (
+            <label>
+              Model
+              <input
+                value={form.modelName}
+                onChange={(event) =>
+                  setForm((current) => ({
+                    ...current,
+                    modelName: event.target.value,
+                  }))
+                }
+                placeholder={defaultModelName}
+              />
+            </label>
+          )}
         </div>
         <p className="helper-text">
           Leave <code>Session ID</code> empty to inspect from the current form
@@ -467,6 +661,31 @@ export function RankingInspector({
           {error ? <p className="error-text">{error}</p> : null}
         </div>
       </form>
+
+      {stageResponses.length > 0 ? (
+        <div className="grid three-up">
+          {stageResponses.map((stage) => (
+            <div key={stage.key} className="detail-block">
+              <h3>{stage.label}</h3>
+              <p className="helper-text">
+                {stage.modelName ? (
+                  <>
+                    Model: <code>{stage.modelName}</code>
+                  </>
+                ) : (
+                  "History-only stage"
+                )}
+              </p>
+              <pre className="code-block">
+                {stage.response?.winner?.command ||
+                  stage.errorReason ||
+                  stage.skippedReason ||
+                  "No suggestion."}
+              </pre>
+            </div>
+          ))}
+        </div>
+      ) : null}
 
       {response ? (
         <div className="stack-lg">

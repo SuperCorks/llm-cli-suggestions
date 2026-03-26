@@ -16,11 +16,13 @@ function insertSuggestionFixture({
   suggestionText,
   source = "model",
   modelName = "qwen2.5-coder:7b",
+  requestModelName = modelName,
 }: {
   buffer: string;
   suggestionText: string;
   source?: string;
   modelName?: string;
+  requestModelName?: string;
 }) {
   const escapeSql = (value: string) => value.replaceAll("'", "''");
 
@@ -43,7 +45,7 @@ function insertSuggestionFixture({
       91,
       104,
       '${escapeSql(modelName)}',
-      '${escapeSql(modelName)}',
+      '${escapeSql(requestModelName)}',
       96,
       0,
       28,
@@ -124,6 +126,7 @@ test("dashboard renders seeded overview data", async ({ page }) => {
   await page.getByRole("button", { name: "Expand navigation" }).click();
   await expect(page.locator(".app-shell.sidebar-collapsed")).toHaveCount(0);
   await expect(page.getByText("Avg. latency")).toBeVisible();
+  await expect(page.getByText("Active Model")).toBeVisible();
   await expect(page.locator("strong").filter({ hasText: "213 ms" }).first()).toBeVisible();
   await expect(page.locator("strong").filter({ hasText: "46.7%" }).first()).toBeVisible();
   await expect(page.locator("strong").filter({ hasText: "38" }).first()).toBeVisible();
@@ -292,6 +295,29 @@ test("suggestions page auto-refreshes the history table every 2 seconds", async 
     timeout: 8_000,
   });
   await expect(page.getByText("No suggestions matched the selected filters.")).toHaveCount(0);
+});
+
+test("suggestions page shows request model names for progressive rows", async ({ page }) => {
+  insertSuggestionFixture({
+    buffer: "git status",
+    suggestionText: "git status",
+    source: "history",
+    modelName: "",
+    requestModelName: "mistral-small:latest",
+  });
+
+  await page.goto("/suggestions?query=git%20status");
+
+  const row = page.locator("tbody tr").filter({
+    has: page.getByText("mistral-small:latest"),
+  });
+  await expect(row.getByText("history")).toBeVisible();
+  await expect(row.getByText("mistral-small:latest")).toBeVisible();
+
+  await page.getByRole("button", { name: "Show Filters" }).click();
+  await page.getByRole("textbox", { name: "Model", exact: true }).fill("mistral-small:latest");
+  await page.getByRole("button", { name: "Apply Filters" }).click();
+  await expect(row.getByText("mistral-small:latest")).toBeVisible();
 });
 
 test("ranking inspector shows a mocked winner", async ({ page }) => {
@@ -489,6 +515,7 @@ test("ranking inspector validates form state and forwards edited context", async
   });
 
   await page.goto("/inspector");
+  await expect(page.getByLabel("Suggestion Strategy")).toHaveValue("history+model");
 
   const submit = page.getByRole("button", { name: "Inspect", exact: true });
   await page.getByLabel("Buffer").fill("");
@@ -531,6 +558,293 @@ test("ranking inspector validates form state and forwards edited context", async
   await expect(page.getByText("pnpm test --filter web").first()).toBeVisible();
   await expect(page.getByText("ranking payload prompt")).toBeVisible();
   await expect(page.getByText("History trusted:")).toBeVisible();
+});
+
+test("ranking inspector shows history, fast, and slow stage suggestions", async ({ page }) => {
+  const capturedPayloads: Array<{ strategy?: string; model_name?: string }> = [];
+
+  await page.route("**/api/ranking", async (route) => {
+    const payload = route.request().postDataJSON() as {
+      strategy?: string;
+      model_name?: string;
+    };
+    capturedPayloads.push(payload);
+
+    if (payload.strategy === "history-only") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          model_name: "",
+          history_trusted: true,
+          prompt: "history stage prompt",
+          raw_model_output: "",
+          cleaned_model_output: "",
+          recent_commands: [],
+          last_command: "",
+          last_stdout_excerpt: "",
+          last_stderr_excerpt: "",
+          winner: {
+            command: "git status",
+            source: "history",
+            score: 81,
+            latency_ms: 0,
+            history_score: 44,
+            accepted_count: 5,
+            rejected_count: 0,
+            breakdown: {
+              history: 44,
+              retrieval: 0,
+              model: 0,
+              feedback: 15,
+              recent_usage: 12,
+              last_context: 10,
+              output_context: 0,
+              total: 81,
+            },
+          },
+          candidates: [],
+        }),
+      });
+      return;
+    }
+
+    if (payload.model_name === "mistral-small:latest") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          model_name: "mistral-small:latest",
+          history_trusted: false,
+          prompt: "fast stage prompt",
+          raw_model_output: "git status --short",
+          cleaned_model_output: "git status --short",
+          recent_commands: [],
+          last_command: "",
+          last_stdout_excerpt: "",
+          last_stderr_excerpt: "",
+          winner: {
+            command: "git status --short",
+            source: "model",
+            score: 87,
+            latency_ms: 82,
+            history_score: 44,
+            accepted_count: 5,
+            rejected_count: 0,
+            breakdown: {
+              history: 44,
+              retrieval: 4,
+              model: 28,
+              feedback: 5,
+              recent_usage: 4,
+              last_context: 2,
+              output_context: 0,
+              total: 87,
+            },
+          },
+          candidates: [],
+        }),
+      });
+      return;
+    }
+
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        model_name: payload.model_name || "qwen3-coder:latest",
+        history_trusted: false,
+        prompt: "slow stage prompt",
+        raw_model_output: "git status --short --branch",
+        cleaned_model_output: "git status --short --branch",
+        recent_commands: [],
+        last_command: "",
+        last_stdout_excerpt: "",
+        last_stderr_excerpt: "",
+        winner: {
+          command: "git status --short --branch",
+          source: "model",
+          score: 93,
+          latency_ms: 221,
+          history_score: 44,
+          accepted_count: 5,
+          rejected_count: 0,
+          breakdown: {
+            history: 44,
+            retrieval: 4,
+            model: 35,
+            feedback: 5,
+            recent_usage: 3,
+            last_context: 2,
+            output_context: 0,
+            total: 93,
+          },
+        },
+        candidates: [],
+      }),
+    });
+  });
+
+  await page.goto("/inspector");
+  await page
+    .getByLabel("Suggestion Strategy")
+    .selectOption("history-then-fast-then-model");
+  await expect(page.getByLabel("Fast Model")).toHaveValue("mistral-small:latest");
+  await expect(page.getByLabel("Slow Model")).toHaveValue("qwen2.5-coder:7b");
+  await page.getByLabel("Fast Model").fill("mistral-small:latest");
+  await page.getByLabel("Slow Model").fill("qwen3-coder:latest");
+
+  await Promise.all([
+    page.waitForResponse((response) =>
+      response.url().includes("/api/ranking") && response.request().method() === "POST",
+    ),
+    page.getByRole("button", { name: "Inspect", exact: true }).click(),
+  ]);
+
+  await expect(page.getByRole("heading", { name: "History Suggestion" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Fast Suggestion" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Slow Suggestion" })).toBeVisible();
+  await expect(page.getByText("git status").first()).toBeVisible();
+  await expect(page.getByText("git status --short").first()).toBeVisible();
+  await expect(page.getByText("git status --short --branch").first()).toBeVisible();
+  await expect(page.locator(".hero-card h3")).toHaveText("git status --short --branch");
+
+  expect(capturedPayloads).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        strategy: "history-only",
+      }),
+      expect.objectContaining({
+        strategy: "history+model-always",
+        model_name: "mistral-small:latest",
+      }),
+      expect.objectContaining({
+        strategy: "history+model-always",
+        model_name: "qwen3-coder:latest",
+      }),
+    ]),
+  );
+});
+
+test("ranking inspector shows fast and slow stage suggestions without history", async ({ page }) => {
+  const capturedPayloads: Array<{ strategy?: string; model_name?: string }> = [];
+
+  await page.route("**/api/ranking", async (route) => {
+    const payload = route.request().postDataJSON() as {
+      strategy?: string;
+      model_name?: string;
+    };
+    capturedPayloads.push(payload);
+
+    if (payload.model_name === "mistral-small:latest") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          model_name: "mistral-small:latest",
+          history_trusted: false,
+          prompt: "fast only stage prompt",
+          raw_model_output: "git status --short",
+          cleaned_model_output: "git status --short",
+          recent_commands: [],
+          last_command: "",
+          last_stdout_excerpt: "",
+          last_stderr_excerpt: "",
+          winner: {
+            command: "git status --short",
+            source: "model",
+            score: 51,
+            latency_ms: 68,
+            history_score: 0,
+            accepted_count: 0,
+            rejected_count: 0,
+            breakdown: {
+              history: 0,
+              retrieval: 0,
+              model: 44,
+              feedback: 3,
+              recent_usage: 2,
+              last_context: 2,
+              output_context: 0,
+              total: 51,
+            },
+          },
+          candidates: [],
+        }),
+      });
+      return;
+    }
+
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        model_name: payload.model_name || "qwen3-coder:latest",
+        history_trusted: false,
+        prompt: "slow only stage prompt",
+        raw_model_output: "git status --short --branch",
+        cleaned_model_output: "git status --short --branch",
+        recent_commands: [],
+        last_command: "",
+        last_stdout_excerpt: "",
+        last_stderr_excerpt: "",
+        winner: {
+          command: "git status --short --branch",
+          source: "model",
+          score: 73,
+          latency_ms: 188,
+          history_score: 0,
+          accepted_count: 0,
+          rejected_count: 0,
+          breakdown: {
+            history: 0,
+            retrieval: 0,
+            model: 66,
+            feedback: 3,
+            recent_usage: 2,
+            last_context: 2,
+            output_context: 0,
+            total: 73,
+          },
+        },
+        candidates: [],
+      }),
+    });
+  });
+
+  await page.goto("/inspector");
+  await page
+    .getByLabel("Suggestion Strategy")
+    .selectOption("fast-then-model");
+  await expect(page.getByLabel("Fast Model")).toHaveValue("mistral-small:latest");
+  await expect(page.getByLabel("Slow Model")).toHaveValue("qwen2.5-coder:7b");
+  await page.getByLabel("Slow Model").fill("qwen3-coder:latest");
+
+  await Promise.all([
+    page.waitForResponse((response) =>
+      response.url().includes("/api/ranking") && response.request().method() === "POST",
+    ),
+    page.getByRole("button", { name: "Inspect", exact: true }).click(),
+  ]);
+
+  await expect(page.getByRole("heading", { name: "Fast Suggestion" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Slow Suggestion" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "History Suggestion" })).toHaveCount(0);
+  await expect(page.getByText("git status --short").first()).toBeVisible();
+  await expect(page.getByText("git status --short --branch").first()).toBeVisible();
+
+  expect(capturedPayloads).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        strategy: "model-only",
+        model_name: "mistral-small:latest",
+      }),
+      expect.objectContaining({
+        strategy: "model-only",
+        model_name: "qwen3-coder:latest",
+      }),
+    ]),
+  );
 });
 
 test("ranking inspector renders model-only results with raw model output", async ({ page }) => {
@@ -2534,6 +2848,7 @@ test("models page manages installed and downloadable Ollama models", async ({ pa
   let phiInstalled = false;
   let llamaInstalled = true;
   let configuredModel = "qwen2.5-coder:7b";
+  let fastModel = "llama3.2:latest";
   const extraLibraryModels = Array.from({ length: 28 }, (_, index) => ({
     name: `catalog-model-${String(index + 1).padStart(2, "0")}`,
     installed: false,
@@ -2635,8 +2950,10 @@ test("models page manages installed and downloadable Ollama models", async ({ pa
   await page.route("**/api/runtime/settings", async (route) => {
     const payload = route.request().postDataJSON() as {
       LAC_MODEL_NAME?: string;
+      LAC_FAST_MODEL_NAME?: string;
     };
     configuredModel = payload.LAC_MODEL_NAME || configuredModel;
+    fastModel = payload.LAC_FAST_MODEL_NAME ?? fastModel;
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -2646,8 +2963,9 @@ test("models page manages installed and downloadable Ollama models", async ({ pa
         socketPath: "/tmp/daemon.sock",
         dbPath: "/tmp/lac/autocomplete.sqlite",
         modelName: configuredModel,
+        fastModelName: fastModel,
         modelBaseUrl: "http://127.0.0.1:11434",
-        suggestStrategy: "history+model",
+        suggestStrategy: "history-then-fast-then-model",
         suggestTimeoutMs: 1200,
       }),
     });
@@ -2669,8 +2987,9 @@ test("models page manages installed and downloadable Ollama models", async ({ pa
           socketPath: "/tmp/daemon.sock",
           dbPath: "/tmp/lac/autocomplete.sqlite",
           modelName: configuredModel,
+          fastModelName: fastModel,
           modelBaseUrl: "http://127.0.0.1:11434",
-          suggestStrategy: "history+model",
+          suggestStrategy: "history-then-fast-then-model",
           suggestTimeoutMs: 1200,
         },
         logPath: "/tmp/lac/daemon.log",
@@ -2697,8 +3016,9 @@ test("models page manages installed and downloadable Ollama models", async ({ pa
           socketPath: "/tmp/daemon.sock",
           dbPath: "/tmp/lac/autocomplete.sqlite",
           modelName: configuredModel,
+          fastModelName: fastModel,
           modelBaseUrl: "http://127.0.0.1:11434",
-          suggestStrategy: "history+model",
+          suggestStrategy: "history-then-fast-then-model",
           suggestTimeoutMs: 1200,
         },
         logPath: "/tmp/lac/daemon.log",
@@ -2878,10 +3198,17 @@ test("models page manages installed and downloadable Ollama models", async ({ pa
     has: page.getByText("llama3.2:latest"),
   });
   await llamaRow.hover();
-  await llamaRow.getByRole("button", { name: "Use as active model" }).click();
+  await llamaRow.getByRole("button", { name: "Slow" }).click();
   await expect(page.getByText("llama3.2:latest is now the active model.")).toBeVisible();
-  await expect(llamaRow.getByText("configured")).toBeVisible();
-  await expect(qwenRow.getByText("configured")).toHaveCount(0);
+  await expect(llamaRow.getByText("slow")).toBeVisible();
+  await expect(llamaRow.getByText("fast")).toBeVisible();
+  await expect(qwenRow.getByText("slow")).toHaveCount(0);
+
+  await qwenRow.hover();
+  await qwenRow.getByRole("button", { name: "Fast" }).click();
+  await expect(page.getByText("qwen2.5-coder:7b is now the fast-stage model.")).toBeVisible();
+  await expect(qwenRow.getByText("fast")).toBeVisible();
+  await expect(llamaRow.getByText("fast")).toHaveCount(0);
 
   await expect(page.getByText("Page 1 of 2")).toBeVisible();
   await expect(page.getByText("catalog-model-01")).toBeVisible();
@@ -2981,7 +3308,7 @@ test("models page manages installed and downloadable Ollama models", async ({ pa
 
   await page.getByRole("textbox", { name: "Search" }).fill("");
   await qwenRow.hover();
-  await qwenRow.getByRole("button", { name: "Use as active model" }).click();
+  await qwenRow.getByRole("button", { name: "Slow" }).click();
   await expect(page.getByText("qwen2.5-coder:7b is now the active model.")).toBeVisible();
   await llamaRow.getByRole("button", { name: "Remove" }).click();
   await expect(installedBlock.getByText("Removal llama3.2:latest")).toBeVisible();

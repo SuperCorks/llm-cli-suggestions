@@ -170,6 +170,52 @@ func TestListReplayBenchmarkCandidatesUsesTerminalExecutionOutcome(t *testing.T)
 	}
 }
 
+func TestListReplayBenchmarkCandidatesPrefersRequestModelName(t *testing.T) {
+	t.Parallel()
+
+	store := newOutcomeTestStore(t)
+	ctx := context.Background()
+	if err := store.EnsureSession(ctx, "session-1"); err != nil {
+		t.Fatalf("EnsureSession: %v", err)
+	}
+
+	suggestionID, err := store.CreateSuggestion(ctx, SuggestionRecord{
+		SessionID:        "session-1",
+		Buffer:           "git st",
+		Suggestion:       "git status",
+		Source:           "history",
+		CWD:              "/tmp/repo",
+		RepoRoot:         "/tmp/repo",
+		Branch:           "main",
+		ModelName:        "",
+		RequestModelName: "mistral-small:latest",
+		CreatedAtMS:      100,
+	})
+	if err != nil {
+		t.Fatalf("CreateSuggestion: %v", err)
+	}
+
+	recordFeedback(t, store, FeedbackRecord{
+		SuggestionID:    suggestionID,
+		SessionID:       "session-1",
+		EventType:       "executed_unchanged",
+		Suggestion:      "git status",
+		AcceptedCommand: "git status",
+		ActualCommand:   "git status",
+	})
+
+	rows, err := store.ListReplayBenchmarkCandidates(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListReplayBenchmarkCandidates: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(rows))
+	}
+	if rows[0].ModelName != "mistral-small:latest" {
+		t.Fatalf("expected request model name to win, got %q", rows[0].ModelName)
+	}
+}
+
 func newOutcomeTestStore(t *testing.T) *Store {
 	t.Helper()
 	store, err := NewStore(filepath.Join(t.TempDir(), "test.db"))

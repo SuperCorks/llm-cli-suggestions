@@ -755,6 +755,7 @@ fs.writeFileSync(
   path.join(stateDir, "runtime.env"),
   [
     'LAC_MODEL_NAME="qwen2.5-coder:7b"',
+    'LAC_FAST_MODEL_NAME="mistral-small:latest"',
     'LAC_MODEL_BASE_URL="http://127.0.0.1:11434"',
     `LAC_SOCKET_PATH="${path.join(stateDir, "daemon.sock")}"`,
     `LAC_DB_PATH="${dbPath}"`,

@@ -48,3 +48,24 @@ func TestLoadRuntimeEnvParsesShellEscapedSingleLineValue(t *testing.T) {
 		t.Fatalf("system prompt mismatch\nwant: %q\n got: %q", want, got)
 	}
 }
+
+func TestNormalizeSuggestStrategyRecognizesProgressiveModes(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]string{
+		SuggestStrategyHistoryOnly:              SuggestStrategyHistoryOnly,
+		SuggestStrategyHistoryModel:             SuggestStrategyHistoryModel,
+		SuggestStrategyHistoryModelAlways:       SuggestStrategyHistoryModelAlways,
+		SuggestStrategyHistoryThenModel:         SuggestStrategyHistoryThenModel,
+		SuggestStrategyHistoryThenFastThenModel: SuggestStrategyHistoryThenFastThenModel,
+		SuggestStrategyFastThenModel:            SuggestStrategyFastThenModel,
+		SuggestStrategyModelOnly:                SuggestStrategyModelOnly,
+		"unknown":                               SuggestStrategyHistoryModel,
+	}
+
+	for input, want := range cases {
+		if got := NormalizeSuggestStrategy(input); got != want {
+			t.Fatalf("NormalizeSuggestStrategy(%q) = %q, want %q", input, got, want)
+		}
+	}
+}

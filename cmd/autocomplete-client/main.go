@@ -81,6 +81,9 @@ func runSuggest(defaultSocket string, suggestTimeout time.Duration, args []strin
 	repoRoot := flags.String("repo-root", "", "repo root")
 	branch := flags.String("branch", "", "git branch")
 	lastExitCode := flags.Int("last-exit", 0, "last exit code")
+	strategy := flags.String("strategy", "", "suggestion strategy override")
+	modelName := flags.String("model", "", "model name override")
+	modelBaseURL := flags.String("model-url", "", "model base URL override")
 	_ = flags.Parse(args)
 
 	client := newSocketClient(*socket, clientTimeoutForSuggest(suggestTimeout))
@@ -91,6 +94,9 @@ func runSuggest(defaultSocket string, suggestTimeout time.Duration, args []strin
 		RepoRoot:     *repoRoot,
 		Branch:       *branch,
 		LastExitCode: *lastExitCode,
+		Strategy:     *strategy,
+		ModelName:    *modelName,
+		ModelBaseURL: *modelBaseURL,
 	}
 
 	var response api.SuggestResponse
