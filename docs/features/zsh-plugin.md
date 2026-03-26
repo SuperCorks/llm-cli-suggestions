@@ -23,7 +23,8 @@ The `zsh` plugin in `zsh/llm-cli-suggestions.zsh` is the live terminal integrati
 - suggestions can still render on an empty prompt when the cursor is at the end of the buffer and the daemon returns a full-command suggestion
 - stale async requests are discarded
 - completed async work wakes ZLE through a per-session notify pipe and `zle -F` widget handler
-- accepted suggestions are logged as feedback
+- accepted suggestions are first logged as `accepted_buffer`
+- accepted suggestions are then resolved at `preexec` as either `executed_unchanged` or `executed_edited`
 - accepting a suggestion immediately re-runs the async suggestion flow against the accepted buffer so chained completions can appear without extra typing
 - rejected suggestions are logged when the executed command differs from the active suggestion
 - when `LAC_PTY_CAPTURE_MODE=allowlist`, the plugin can match one exact command name or one `/regex/` per line from `LAC_PTY_CAPTURE_ALLOWLIST`; plain lines match the executable name while regex lines match the full command text before deciding whether to run through the lightweight `script(1)` PTY session

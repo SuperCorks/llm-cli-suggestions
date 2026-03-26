@@ -1,4 +1,4 @@
-export type SuggestionOutcome = "all" | "accepted" | "rejected" | "unreviewed";
+export type SuggestionOutcome = "all" | "accepted" | "edited" | "buffered" | "rejected" | "unreviewed";
 export type SuggestionQuality = "good" | "bad";
 export type SuggestionQualityFilter = "all" | SuggestionQuality | "unlabeled";
 export type SuggestionSort =
@@ -81,8 +81,8 @@ export interface RuntimeStatus {
 export interface ActivitySignal {
   id: number;
   timestamp: string;
-  tone: "accepted" | "rejected" | "observed";
-  label: "ACCEPT" | "REJECT" | "TRACE";
+  tone: "accepted" | "edited" | "rejected" | "observed";
+  label: "ACCEPT" | "EDIT" | "REJECT" | "BUFFER" | "TRACE";
   message: string;
 }
 
@@ -93,6 +93,8 @@ export interface OverviewData {
     commands: number;
     suggestions: number;
     accepted: number;
+    edited: number;
+    buffered: number;
     rejected: number;
   };
   acceptanceRate: number;
@@ -101,7 +103,7 @@ export interface OverviewData {
   topRejectedSuggestions: Array<{ suggestion: string; count: number }>;
   recentSuggestions: SuggestionRow[];
   latencyByModel: Array<{ model: string; avgLatencyMs: number; count: number }>;
-  acceptanceByPath: Array<{ path: string; accepted: number; rejected: number; acceptanceRate: number }>;
+  acceptanceByPath: Array<{ path: string; accepted: number; edited: number; rejected: number; acceptanceRate: number }>;
 }
 
 export interface SuggestionRow {
@@ -117,8 +119,12 @@ export interface SuggestionRow {
   modelName: string;
   latencyMs: number;
   createdAtMs: number;
+  outcome: Exclude<SuggestionOutcome, "all">;
   accepted: boolean;
+  edited: boolean;
+  buffered: boolean;
   rejected: boolean;
+  outcomeEventType: string;
   acceptedCommand: string;
   actualCommand: string;
   promptText: string;
@@ -161,7 +167,7 @@ export interface PagedResult<T> {
   rows: T[];
 }
 
-export type BenchmarkTrack = "static" | "replay" | "raw";
+export type BenchmarkTrack = "static" | "replay" | "eval" | "raw";
 export type BenchmarkSurface = "end_to_end" | "raw_model";
 export type BenchmarkTimingProtocol = "cold_only" | "hot_only" | "mixed" | "full";
 export type BenchmarkTimingPhase = "cold" | "hot" | "mixed";
@@ -250,6 +256,7 @@ export interface BenchmarkAggregateSummary {
   coldPenaltyMs: number;
   stages: BenchmarkStageSummary[];
   budgetPassRates: BenchmarkBudgetPassRate[];
+  repoBreakdown: BenchmarkBucketSummary[];
   categoryBreakdown: BenchmarkBucketSummary[];
   sourceBreakdown: BenchmarkBucketSummary[];
 }

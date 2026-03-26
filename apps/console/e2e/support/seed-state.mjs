@@ -272,6 +272,48 @@ const rejectedSuggestion = insertSuggestion.run(
   25,
   now - 90_000,
 );
+const editedSuggestion = insertSuggestion.run(
+  sessionId,
+  "git sh",
+  "git show --stat",
+  "model",
+  cwd,
+  repoRoot,
+  "main",
+  0,
+  201,
+  244,
+  "qwen2.5-coder:7b",
+  "qwen2.5-coder:7b",
+  219,
+  92,
+  54,
+  101,
+  38,
+  17,
+  now - 82_000,
+);
+const bufferedSuggestion = insertSuggestion.run(
+  sessionId,
+  "npm run lint",
+  "npm run lint -- --fix",
+  "history",
+  cwd,
+  repoRoot,
+  "main",
+  0,
+  77,
+  95,
+  "qwen2.5-coder:7b",
+  "",
+  -1,
+  -1,
+  -1,
+  -1,
+  -1,
+  -1,
+  now - 76_000,
+);
 insertSuggestion.run(
   sessionId,
   "git commit -m",
@@ -325,11 +367,21 @@ const insertFeedback = db.prepare(`
 insertFeedback.run(
   Number(acceptedSuggestion.lastInsertRowid),
   sessionId,
-  "accepted",
+  "accepted_buffer",
   "git st",
   "git status",
   "git status",
   "",
+  now - 109_000,
+);
+insertFeedback.run(
+  Number(acceptedSuggestion.lastInsertRowid),
+  sessionId,
+  "executed_unchanged",
+  "git st",
+  "git status",
+  "git status",
+  "git status",
   now - 108_000,
 );
 insertFeedback.run(
@@ -341,6 +393,36 @@ insertFeedback.run(
   "",
   "npm run test",
   now - 88_000,
+);
+insertFeedback.run(
+  Number(editedSuggestion.lastInsertRowid),
+  sessionId,
+  "accepted_buffer",
+  "git sh",
+  "git show --stat",
+  "git show --stat",
+  "",
+  now - 81_000,
+);
+insertFeedback.run(
+  Number(editedSuggestion.lastInsertRowid),
+  sessionId,
+  "executed_edited",
+  "git sh",
+  "git show --stat",
+  "git show --stat",
+  "git show --stat HEAD~1",
+  now - 80_000,
+);
+insertFeedback.run(
+  Number(bufferedSuggestion.lastInsertRowid),
+  sessionId,
+  "accepted_buffer",
+  "npm run lint",
+  "npm run lint -- --fix",
+  "npm run lint -- --fix",
+  "",
+  now - 75_000,
 );
 
 db.prepare(
@@ -377,11 +459,42 @@ for (let index = 0; index < 32; index += 1) {
     insertFeedback.run(
       Number(id.lastInsertRowid),
       sessionId,
-      "accepted",
+      "accepted_buffer",
       index % 2 === 0 ? `git log --oneline -${index}` : `npm run t${index}`,
       index % 2 === 0 ? `git log --oneline -${index + 1}` : `npm run test:${index}`,
       index % 2 === 0 ? `git log --oneline -${index + 1}` : `npm run test:${index}`,
       "",
+      now - 59_500 + index * 900,
+    );
+    insertFeedback.run(
+      Number(id.lastInsertRowid),
+      sessionId,
+      "executed_unchanged",
+      index % 2 === 0 ? `git log --oneline -${index}` : `npm run t${index}`,
+      index % 2 === 0 ? `git log --oneline -${index + 1}` : `npm run test:${index}`,
+      index % 2 === 0 ? `git log --oneline -${index + 1}` : `npm run test:${index}`,
+      index % 2 === 0 ? `git log --oneline -${index + 1}` : `npm run test:${index}`,
+      now - 59_000 + index * 900,
+    );
+  } else if (index % 9 === 0) {
+    insertFeedback.run(
+      Number(id.lastInsertRowid),
+      sessionId,
+      "accepted_buffer",
+      index % 2 === 0 ? `git log --oneline -${index}` : `npm run t${index}`,
+      index % 2 === 0 ? `git log --oneline -${index + 1}` : `npm run test:${index}`,
+      index % 2 === 0 ? `git log --oneline -${index + 1}` : `npm run test:${index}`,
+      "",
+      now - 59_500 + index * 900,
+    );
+    insertFeedback.run(
+      Number(id.lastInsertRowid),
+      sessionId,
+      "executed_edited",
+      index % 2 === 0 ? `git log --oneline -${index}` : `npm run t${index}`,
+      index % 2 === 0 ? `git log --oneline -${index + 1}` : `npm run test:${index}`,
+      index % 2 === 0 ? `git log --oneline -${index + 1}` : `npm run test:${index}`,
+      index % 2 === 0 ? "git log --stat" : "npm run test -- --watch",
       now - 59_000 + index * 900,
     );
   } else if (index % 7 === 0) {
@@ -446,6 +559,7 @@ const summaryJson = JSON.stringify({
     coldPenaltyMs: 0,
     stages: [],
     budgetPassRates: [],
+    repoBreakdown: [{ key: "gleamery", label: "gleamery", count: 2, share: 1, quality: { positiveCaseCount: 2, negativeCaseCount: 0, positiveExactHitRate: 0.5, negativeAvoidRate: 0, validWinnerRate: 1, candidateRecallAt3: 1, charsSavedRatio: 0.43 }, latency: { count: 2, mean: 186, median: 186, p90: 201, p95: 201, max: 201 } }],
     categoryBreakdown: [],
     sourceBreakdown: [],
   },
@@ -475,11 +589,12 @@ const summaryJson = JSON.stringify({
         coldPenaltyMs: 0,
         stages: [],
         budgetPassRates: [],
+        repoBreakdown: [{ key: "gleamery", label: "gleamery", count: 2, share: 1, quality: { positiveCaseCount: 2, negativeCaseCount: 0, positiveExactHitRate: 0.5, negativeAvoidRate: 0, validWinnerRate: 1, candidateRecallAt3: 1, charsSavedRatio: 0.43 }, latency: { count: 2, mean: 186, median: 186, p90: 201, p95: 201, max: 201 } }],
         categoryBreakdown: [],
         sourceBreakdown: [],
       },
-      cold: { count: 0, quality: { positiveCaseCount: 0, negativeCaseCount: 0, positiveExactHitRate: 0, negativeAvoidRate: 0, validWinnerRate: 0, candidateRecallAt3: 0, charsSavedRatio: 0 }, latency: { count: 0, mean: 0, median: 0, p90: 0, p95: 0, max: 0 }, startStates: [], coldPenaltyMs: 0, stages: [], budgetPassRates: [], categoryBreakdown: [], sourceBreakdown: [] },
-      hot: { count: 0, quality: { positiveCaseCount: 0, negativeCaseCount: 0, positiveExactHitRate: 0, negativeAvoidRate: 0, validWinnerRate: 0, candidateRecallAt3: 0, charsSavedRatio: 0 }, latency: { count: 0, mean: 0, median: 0, p90: 0, p95: 0, max: 0 }, startStates: [], coldPenaltyMs: 0, stages: [], budgetPassRates: [], categoryBreakdown: [], sourceBreakdown: [] },
+      cold: { count: 0, quality: { positiveCaseCount: 0, negativeCaseCount: 0, positiveExactHitRate: 0, negativeAvoidRate: 0, validWinnerRate: 0, candidateRecallAt3: 0, charsSavedRatio: 0 }, latency: { count: 0, mean: 0, median: 0, p90: 0, p95: 0, max: 0 }, startStates: [], coldPenaltyMs: 0, stages: [], budgetPassRates: [], repoBreakdown: [], categoryBreakdown: [], sourceBreakdown: [] },
+      hot: { count: 0, quality: { positiveCaseCount: 0, negativeCaseCount: 0, positiveExactHitRate: 0, negativeAvoidRate: 0, validWinnerRate: 0, candidateRecallAt3: 0, charsSavedRatio: 0 }, latency: { count: 0, mean: 0, median: 0, p90: 0, p95: 0, max: 0 }, startStates: [], coldPenaltyMs: 0, stages: [], budgetPassRates: [], repoBreakdown: [], categoryBreakdown: [], sourceBreakdown: [] },
     },
   ],
 });

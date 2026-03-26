@@ -202,6 +202,8 @@ func runInspectSummary(defaultDBPath string, args []string) {
 	fmt.Printf("commands\t%d\n", summary.CommandCount)
 	fmt.Printf("suggestions\t%d\n", summary.SuggestionCount)
 	fmt.Printf("accepted\t%d\n", summary.AcceptedCount)
+	fmt.Printf("edited\t%d\n", summary.EditedCount)
+	fmt.Printf("buffered\t%d\n", summary.BufferedCount)
 	fmt.Printf("rejected\t%d\n", summary.RejectedCount)
 	fmt.Printf("avg_model_latency_ms\t%.1f\n", summary.AverageModelLatency)
 }

@@ -2399,6 +2399,10 @@ th {
   color: var(--danger);
 }
 
+.terminal-tag-edited {
+  color: var(--secondary);
+}
+
 .terminal-tag-observed {
   color: var(--secondary);
 }
@@ -2443,6 +2447,16 @@ th {
 .feed-badge.accepted {
   background: rgba(227, 194, 133, 0.16);
   color: var(--secondary);
+}
+
+.feed-badge.edited {
+  background: rgba(109, 173, 246, 0.16);
+  color: #9fd0ff;
+}
+
+.feed-badge.buffered {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-muted);
 }
 
 .feed-badge.rejected {

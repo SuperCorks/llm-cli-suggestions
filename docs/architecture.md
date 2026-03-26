@@ -20,7 +20,7 @@ The current implementation is built from six main pieces:
 5. The daemon builds a suggestion using local history, feedback, context, and optional model output.
 6. The daemon stores the suggestion in SQLite.
 7. The plugin receives the result asynchronously, renders the suffix as ghost text, and allows the configured accept key to accept it.
-8. When the command is executed, the plugin logs the command and feedback events back through the client and daemon into SQLite.
+8. When the command is executed, the plugin logs the command and execution-aware feedback events back through the client and daemon into SQLite.
 9. The control app reads the same SQLite database directly for analytics and uses local server routes for daemon control and experiments.
 
 ## Shell Layer
@@ -156,6 +156,15 @@ SQLite is used as the single local state store. The main tables are:
 - `suggestion_reviews`
 
 This database supports both runtime behavior and future learning work. It already stores enough information to build offline eval sets and personalized reranking later.
+
+The feedback lifecycle is now execution-aware rather than only buffer-aware:
+
+- `accepted_buffer` records that the user accepted the ghost text into the prompt buffer
+- `executed_unchanged` records that the accepted suggestion was later executed exactly as-is
+- `executed_edited` records that the accepted suggestion was used as a starting point but edited before execution
+- `rejected` records that a visible suggestion was bypassed and a different command ran instead
+
+That split gives the ranking and eval pipeline a clearer distinction between strong positives, medium-confidence edited positives, and true negatives.
 
 Suggestion rows now also persist the exact prompt text and a structured context snapshot used at decision time, so the control app can inspect and replay historical suggestions more faithfully.
 

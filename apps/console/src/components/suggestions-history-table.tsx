@@ -19,6 +19,36 @@ export function SuggestionsHistoryTable({ rows, selectedId, onSelect }: Suggesti
     () => rows.map((row) => ({ row, snapshot: buildSuggestionContextSnapshot(row) })),
     [rows],
   );
+  const outcomeClassName = (row: SuggestionRow) => {
+    if (row.outcome === "accepted") {
+      return "feed-badge accepted";
+    }
+    if (row.outcome === "edited") {
+      return "feed-badge edited";
+    }
+    if (row.outcome === "buffered") {
+      return "feed-badge buffered";
+    }
+    if (row.outcome === "rejected") {
+      return "feed-badge rejected";
+    }
+    return "feed-badge";
+  };
+  const outcomeLabel = (row: SuggestionRow) => {
+    if (row.outcome === "accepted") {
+      return "Accepted";
+    }
+    if (row.outcome === "edited") {
+      return "Edited";
+    }
+    if (row.outcome === "buffered") {
+      return "Buffered";
+    }
+    if (row.outcome === "rejected") {
+      return "Rejected";
+    }
+    return "Unreviewed";
+  };
 
   return (
     <div className="table-wrap">
@@ -54,8 +84,8 @@ export function SuggestionsHistoryTable({ rows, selectedId, onSelect }: Suggesti
               <td>{row.modelName || "n/a"}</td>
               <td>{formatDurationMs(row.latencyMs)}</td>
               <td>
-                <span className={row.accepted ? "feed-badge accepted" : row.rejected ? "feed-badge rejected" : "feed-badge"}>
-                  {row.accepted ? "Accepted" : row.rejected ? "Rejected" : "Unreviewed"}
+                <span className={outcomeClassName(row)}>
+                  {outcomeLabel(row)}
                 </span>
               </td>
               <td>

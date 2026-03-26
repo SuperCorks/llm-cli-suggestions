@@ -124,9 +124,9 @@ test("dashboard renders seeded overview data", async ({ page }) => {
   await page.getByRole("button", { name: "Expand navigation" }).click();
   await expect(page.locator(".app-shell.sidebar-collapsed")).toHaveCount(0);
   await expect(page.getByText("Avg. latency")).toBeVisible();
-  await expect(page.locator("strong").filter({ hasText: "178 ms" }).first()).toBeVisible();
-  await expect(page.locator("strong").filter({ hasText: "58.3%" }).first()).toBeVisible();
-  await expect(page.locator("strong").filter({ hasText: "35" }).first()).toBeVisible();
+  await expect(page.locator("strong").filter({ hasText: "213 ms" }).first()).toBeVisible();
+  await expect(page.locator("strong").filter({ hasText: "46.7%" }).first()).toBeVisible();
+  await expect(page.locator("strong").filter({ hasText: "38" }).first()).toBeVisible();
   await expect(page.getByText("git status").first()).toBeVisible();
   await expect(page.getByText("model suggestion for npm run t31")).toBeVisible();
   await expect(page.getByText("qwen2.5-coder:7b").first()).toBeVisible();
@@ -202,6 +202,13 @@ test("suggestions and commands pages render seeded history", async ({ page }) =>
   await expect(page.getByText("session-alpha").first()).toBeVisible();
   await expect(page.getByText("No suggestions matched the selected filters.")).toHaveCount(0);
 
+  await page.getByRole("button", { name: "Show Filters" }).click();
+  await page.getByLabel("Outcome").selectOption("edited");
+  await page.getByLabel("Query").fill("git sh");
+  await page.getByRole("button", { name: "Apply Filters" }).click();
+  await expect(page.getByText("git show --stat").first()).toBeVisible();
+  await expect(page.getByText("Edited").first()).toBeVisible();
+
   await page.goto("/commands");
   await expect(page.getByRole("heading", { name: "Commands & Feedback", exact: true })).toBeVisible();
   await expect(page.getByText("session-alpha").first()).toBeVisible();
@@ -210,7 +217,7 @@ test("suggestions and commands pages render seeded history", async ({ page }) =>
   await page.getByLabel("Query").fill("git");
   await page.getByRole("button", { name: "Apply Filters" }).click();
   await expect(page.getByRole("listitem").filter({ hasText: "git log --oneline -29" })).toBeVisible();
-  await expect(page.getByText("77.8%", { exact: true })).toBeVisible();
+  await expect(page.getByText("70.0%", { exact: true })).toBeVisible();
   await expect(page.getByText("session-alpha").first()).toBeVisible();
   await expect(page.getByText("git status").nth(0)).toBeVisible();
   await expect(page.getByText("npm run build").first()).toHaveCount(0);
@@ -1879,7 +1886,7 @@ test("model lab benchmark runs fail early and preserve partial results", async (
 
   await expect(page.getByText("Benchmark queued as run #88.")).toBeVisible();
   await expect.poll(() => benchmarkListRequests).toBeGreaterThan(1);
-  await expect(page.getByRole("cell", { name: "#88" })).toBeVisible();
+  await expect(page.getByRole("cell", { name: "#88", exact: true })).toBeVisible();
   await expect(page.getByText("failed").first()).toBeVisible();
   await expect(page.getByRole("heading", { name: "Benchmark Run #88" })).toBeVisible();
   await expect(page.getByText("1/72 benchmark checks complete")).toBeVisible();
@@ -2433,7 +2440,7 @@ test("daemon runtime settings and downloads work with local fixtures", async ({ 
   await expect(runtimeDetailsPanel.getByText("Database Path")).toBeVisible();
   await expect(runtimeSettingsPanel.getByLabel("Suggestion Strategy")).toHaveValue("history+model");
   await expect(runtimeSettingsPanel.getByLabel("Accept Suggestion Key")).toHaveValue("tab");
-  await expect(runtimeSettingsPanel.locator("textarea").nth(1)).toHaveAttribute(
+  await expect(runtimeSettingsPanel.getByLabel("PTY Capture Allow List")).toHaveAttribute(
     "placeholder",
     "git\n/^npm (run|test)$/",
   );
@@ -2468,7 +2475,7 @@ test("daemon runtime settings and downloads work with local fixtures", async ({ 
     "aria-pressed",
     "false",
   );
-  await expect(runtimeSettingsPanel.locator("textarea").nth(1)).toHaveAttribute(
+  await expect(runtimeSettingsPanel.getByLabel("PTY Capture Block List")).toHaveAttribute(
     "placeholder",
     "vim\n/^codex$/",
   );
@@ -2478,7 +2485,7 @@ test("daemon runtime settings and downloads work with local fixtures", async ({ 
       { exact: false },
     ),
   ).toBeVisible();
-  await runtimeSettingsPanel.locator("textarea").nth(1).fill("vim\n/^codex$/");
+  await runtimeSettingsPanel.getByLabel("PTY Capture Block List").fill("vim\n/^codex$/");
   await expect(
     runtimeSettingsPanel.getByText(
       "Uses past command history only. Fastest and closest to classic terminal autosuggestions.",
@@ -2512,7 +2519,7 @@ test("daemon runtime settings and downloads work with local fixtures", async ({ 
     "aria-pressed",
     "true",
   );
-  await expect(runtimeSettingsPanel.locator("textarea").nth(1)).toHaveValue(
+  await expect(runtimeSettingsPanel.getByLabel("PTY Capture Block List")).toHaveValue(
     "vim\n/^codex$/",
   );
 

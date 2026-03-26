@@ -56,6 +56,8 @@ export type SuggestionContextSnapshot = {
     prompt: string;
     structuredContext: PersistedSuggestionContext;
     feedback: {
+      outcome: string;
+      outcomeEventType: string;
       acceptedCommand: string;
       actualCommand: string;
     };
@@ -236,6 +238,8 @@ export function buildSuggestionContextSnapshot(row: SuggestionRow): SuggestionCo
     prompt: row.promptText || "",
     structuredContext,
     feedback: {
+      outcome: row.outcome,
+      outcomeEventType: row.outcomeEventType || "",
       acceptedCommand: row.acceptedCommand || "",
       actualCommand: row.actualCommand || "",
     },

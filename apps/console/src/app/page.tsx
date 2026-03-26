@@ -91,8 +91,28 @@ export default async function Home() {
                     {row.buffer || "empty buffer"} · {row.source} · {formatTimestamp(row.createdAtMs)}
                   </p>
                 </div>
-                <span className={row.accepted ? "feed-badge accepted" : row.rejected ? "feed-badge rejected" : "feed-badge"}>
-                  {row.accepted ? "Accepted" : row.rejected ? "Ignored" : "Queued"}
+                <span
+                  className={
+                    row.outcome === "accepted"
+                      ? "feed-badge accepted"
+                      : row.outcome === "edited"
+                        ? "feed-badge edited"
+                        : row.outcome === "buffered"
+                          ? "feed-badge buffered"
+                          : row.outcome === "rejected"
+                            ? "feed-badge rejected"
+                            : "feed-badge"
+                  }
+                >
+                  {row.outcome === "accepted"
+                    ? "Accepted"
+                    : row.outcome === "edited"
+                      ? "Edited"
+                      : row.outcome === "buffered"
+                        ? "Buffered"
+                        : row.outcome === "rejected"
+                          ? "Rejected"
+                          : "Queued"}
                 </span>
               </li>
             ))}
@@ -113,7 +133,8 @@ export default async function Home() {
               <h3>{runtime.health.modelName} is driving the current console.</h3>
               <p>
                 Average latency is {formatDurationMs(overview.averageModelLatency)} with an overall
-                acceptance rate of {formatPercent(overview.acceptanceRate)}.
+                acceptance rate of {formatPercent(overview.acceptanceRate)}. Recent suggestion
+                outcomes include {overview.totals.edited} edited executions and {overview.totals.buffered} buffered accepts.
               </p>
               <ul className="metric-list">
                 {overview.topRejectedSuggestions.slice(0, 3).map((row) => (
@@ -150,6 +171,7 @@ export default async function Home() {
               <tr>
                 <th>Path</th>
                 <th>Accepted</th>
+                <th>Edited</th>
                 <th>Rejected</th>
                 <th>Acceptance Rate</th>
               </tr>
@@ -167,13 +189,14 @@ export default async function Home() {
                     )}
                   </td>
                   <td>{row.accepted}</td>
+                  <td>{row.edited}</td>
                   <td>{row.rejected}</td>
                   <td>{formatPercent(row.acceptanceRate)}</td>
                 </tr>
               ))}
               {overview.acceptanceByPath.length === 0 ? (
                 <tr>
-                  <td colSpan={4}>No path acceptance data yet.</td>
+                  <td colSpan={5}>No path acceptance data yet.</td>
                 </tr>
               ) : null}
             </tbody>

@@ -90,6 +90,9 @@ function parseBenchmarkRunSummary(value: unknown): BenchmarkRunRow["summary"] {
     const categoryBreakdown = Array.isArray(source?.categoryBreakdown || source?.category_breakdown)
       ? ((source?.categoryBreakdown || source?.category_breakdown) as Array<Record<string, unknown>>)
       : [];
+    const repoBreakdown = Array.isArray(source?.repoBreakdown || source?.repo_breakdown)
+      ? ((source?.repoBreakdown || source?.repo_breakdown) as Array<Record<string, unknown>>)
+      : [];
     const sourceBreakdown = Array.isArray(source?.sourceBreakdown || source?.source_breakdown)
       ? ((source?.sourceBreakdown || source?.source_breakdown) as Array<Record<string, unknown>>)
       : [];
@@ -127,6 +130,7 @@ function parseBenchmarkRunSummary(value: unknown): BenchmarkRunRow["summary"] {
         budgetMs: Number(entry.budgetMs || entry.budget_ms || 0),
         rate: Number(entry.rate || 0),
       })),
+      repoBreakdown: repoBreakdown.map(normalizeBucket),
       categoryBreakdown: categoryBreakdown.map(normalizeBucket),
       sourceBreakdown: sourceBreakdown.map(normalizeBucket),
     };
@@ -282,11 +286,29 @@ function normalizeLike(value?: string) {
 }
 
 function mapSuggestionToActivitySignal(row: SuggestionRow): ActivitySignal {
+  const tone =
+    row.outcome === "accepted"
+      ? "accepted"
+      : row.outcome === "edited"
+        ? "edited"
+        : row.outcome === "rejected"
+          ? "rejected"
+          : "observed";
+  const label =
+    row.outcome === "accepted"
+      ? "ACCEPT"
+      : row.outcome === "edited"
+        ? "EDIT"
+        : row.outcome === "rejected"
+          ? "REJECT"
+          : row.outcome === "buffered"
+            ? "BUFFER"
+            : "TRACE";
   return {
     id: row.id,
     timestamp: formatTimestamp(row.createdAtMs),
-    tone: row.accepted ? "accepted" : row.rejected ? "rejected" : "observed",
-    label: row.accepted ? "ACCEPT" : row.rejected ? "REJECT" : "TRACE",
+    tone,
+    label,
     message: `${row.source} suggestion for ${row.buffer || "empty buffer"}`,
   };
 }
@@ -332,15 +354,30 @@ export function listSuggestions(input: {
     params.push(normalizeLike(input.repo));
   }
   if (input.query) {
-    clauses.push("(s.buffer LIKE ? OR s.suggestion_text LIKE ?)");
-    params.push(normalizeLike(input.query), normalizeLike(input.query));
+    clauses.push(
+      "(s.buffer LIKE ? OR s.suggestion_text LIKE ? OR COALESCE(f.accepted_command, '') LIKE ? OR COALESCE(f.actual_command, '') LIKE ?)",
+    );
+    params.push(
+      normalizeLike(input.query),
+      normalizeLike(input.query),
+      normalizeLike(input.query),
+      normalizeLike(input.query),
+    );
   }
   if (input.outcome === "accepted") {
-    clauses.push("COALESCE(f.accepted, 0) = 1");
+    clauses.push("COALESCE(f.executed_unchanged, 0) = 1");
+  } else if (input.outcome === "edited") {
+    clauses.push("COALESCE(f.executed_edited, 0) = 1");
+  } else if (input.outcome === "buffered") {
+    clauses.push(
+      "COALESCE(f.accepted_buffer, 0) = 1 AND COALESCE(f.executed_unchanged, 0) = 0 AND COALESCE(f.executed_edited, 0) = 0 AND COALESCE(f.rejected, 0) = 0",
+    );
   } else if (input.outcome === "rejected") {
     clauses.push("COALESCE(f.rejected, 0) = 1");
   } else if (input.outcome === "unreviewed") {
-    clauses.push("COALESCE(f.accepted, 0) = 0 AND COALESCE(f.rejected, 0) = 0");
+    clauses.push(
+      "COALESCE(f.accepted_buffer, 0) = 0 AND COALESCE(f.executed_unchanged, 0) = 0 AND COALESCE(f.executed_edited, 0) = 0 AND COALESCE(f.rejected, 0) = 0",
+    );
   }
   if (input.quality === "good" || input.quality === "bad") {
     clauses.push("COALESCE(r.review_label, '') = ?");
@@ -356,10 +393,24 @@ export function listSuggestions(input: {
     LEFT JOIN (
       SELECT
         suggestion_id,
-        MAX(CASE WHEN event_type = 'accepted' THEN 1 ELSE 0 END) AS accepted,
+        MAX(CASE WHEN event_type = 'accepted_buffer' THEN 1 ELSE 0 END) AS accepted_buffer,
+        MAX(CASE WHEN event_type IN ('executed_unchanged', 'accepted') THEN 1 ELSE 0 END) AS executed_unchanged,
+        MAX(CASE WHEN event_type = 'executed_edited' THEN 1 ELSE 0 END) AS executed_edited,
         MAX(CASE WHEN event_type = 'rejected' THEN 1 ELSE 0 END) AS rejected,
-        MAX(accepted_command) AS accepted_command,
-        MAX(actual_command) AS actual_command
+        MAX(
+          CASE
+            WHEN event_type IN ('accepted_buffer', 'executed_unchanged', 'executed_edited', 'accepted')
+            THEN accepted_command
+            ELSE ''
+          END
+        ) AS accepted_command,
+        MAX(
+          CASE
+            WHEN event_type IN ('executed_unchanged', 'executed_edited', 'rejected')
+            THEN actual_command
+            ELSE ''
+          END
+        ) AS actual_command
       FROM feedback_events
       GROUP BY suggestion_id
     ) f ON f.suggestion_id = s.id
@@ -388,8 +439,24 @@ export function listSuggestions(input: {
            ELSE s.latency_ms
          END AS latencyMs,
          s.created_at_ms AS createdAtMs,
-         COALESCE(f.accepted, 0) AS accepted,
+         CASE
+           WHEN COALESCE(f.executed_edited, 0) = 1 THEN 'edited'
+           WHEN COALESCE(f.executed_unchanged, 0) = 1 THEN 'accepted'
+           WHEN COALESCE(f.rejected, 0) = 1 THEN 'rejected'
+           WHEN COALESCE(f.accepted_buffer, 0) = 1 THEN 'buffered'
+           ELSE 'unreviewed'
+         END AS outcome,
+         COALESCE(f.executed_unchanged, 0) AS accepted,
+         COALESCE(f.executed_edited, 0) AS edited,
+         COALESCE(f.accepted_buffer, 0) AS buffered,
          COALESCE(f.rejected, 0) AS rejected,
+         CASE
+           WHEN COALESCE(f.executed_edited, 0) = 1 THEN 'executed_edited'
+           WHEN COALESCE(f.executed_unchanged, 0) = 1 THEN 'executed_unchanged'
+           WHEN COALESCE(f.rejected, 0) = 1 THEN 'rejected'
+           WHEN COALESCE(f.accepted_buffer, 0) = 1 THEN 'accepted_buffer'
+           ELSE ''
+         END AS outcomeEventType,
          COALESCE(f.accepted_command, '') AS acceptedCommand,
          COALESCE(f.actual_command, '') AS actualCommand,
          COALESCE(s.prompt_text, '') AS promptText,
@@ -640,24 +707,27 @@ export function getFeedbackSummaryFiltered(input: {
     .prepare(
       `SELECT
           CASE WHEN s.cwd = '' THEN '(no path)' ELSE s.cwd END AS path,
-          SUM(CASE WHEN fe.event_type = 'accepted' THEN 1 ELSE 0 END) AS accepted,
+          SUM(CASE WHEN fe.event_type IN ('accepted', 'executed_unchanged') THEN 1 ELSE 0 END) AS accepted,
+          SUM(CASE WHEN fe.event_type = 'executed_edited' THEN 1 ELSE 0 END) AS edited,
           SUM(CASE WHEN fe.event_type = 'rejected' THEN 1 ELSE 0 END) AS rejected
        ${fromClause}
        GROUP BY path
-       HAVING accepted + rejected > 0
-       ORDER BY accepted DESC, rejected DESC, path ASC
+       HAVING accepted + edited + rejected > 0
+       ORDER BY accepted DESC, edited DESC, rejected DESC, path ASC
        LIMIT 12`,
     )
     .all(...params)
     .map((row) => {
       const parsed = row as Record<string, unknown>;
       const accepted = Number(parsed.accepted || 0);
+      const edited = Number(parsed.edited || 0);
       const rejected = Number(parsed.rejected || 0);
       return {
         path: String(parsed.path || ""),
         accepted,
+        edited,
         rejected,
-        acceptanceRate: accepted / Math.max(1, accepted + rejected),
+        acceptanceRate: accepted / Math.max(1, accepted + edited + rejected),
       };
     });
 
@@ -1005,7 +1075,19 @@ export function getOverviewData(): OverviewData {
     suggestions: Number(db.prepare("SELECT COUNT(*) FROM suggestions").pluck().get() || 0),
     accepted: Number(
       db
-        .prepare("SELECT COUNT(*) FROM feedback_events WHERE event_type = 'accepted'")
+        .prepare("SELECT COUNT(*) FROM feedback_events WHERE event_type IN ('accepted', 'executed_unchanged')")
+        .pluck()
+        .get() || 0,
+    ),
+    edited: Number(
+      db
+        .prepare("SELECT COUNT(*) FROM feedback_events WHERE event_type = 'executed_edited'")
+        .pluck()
+        .get() || 0,
+    ),
+    buffered: Number(
+      db
+        .prepare("SELECT COUNT(*) FROM feedback_events WHERE event_type = 'accepted_buffer'")
         .pluck()
         .get() || 0,
     ),
@@ -1068,7 +1150,7 @@ export function getOverviewData(): OverviewData {
     )
     .all() as Array<{ model: string; count: number; avgLatencyMs: number }>;
 
-  const totalFeedback = totals.accepted + totals.rejected;
+  const totalFeedback = totals.accepted + totals.edited + totals.rejected;
   return {
     runtime: getRuntimeStatus(),
     totals,

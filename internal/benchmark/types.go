@@ -7,6 +7,7 @@ type Track string
 const (
 	TrackStatic Track = "static"
 	TrackReplay Track = "replay"
+	TrackEval   Track = "eval"
 	TrackRaw    Track = "raw"
 )
 
@@ -60,10 +61,12 @@ const (
 type EvalOutcome string
 
 const (
-	EvalOutcomeAccepted     EvalOutcome = "accepted"
-	EvalOutcomeRejected     EvalOutcome = "rejected"
-	EvalOutcomeReviewedGood EvalOutcome = "reviewed_good"
-	EvalOutcomeReviewedBad  EvalOutcome = "reviewed_bad"
+	EvalOutcomeAccepted          EvalOutcome = "accepted"
+	EvalOutcomeExecutedUnchanged EvalOutcome = "executed_unchanged"
+	EvalOutcomeExecutedEdited    EvalOutcome = "executed_edited"
+	EvalOutcomeRejected          EvalOutcome = "rejected"
+	EvalOutcomeReviewedGood      EvalOutcome = "reviewed_good"
+	EvalOutcomeReviewedBad       EvalOutcome = "reviewed_bad"
 )
 
 type Environment struct {
@@ -251,6 +254,7 @@ type AggregateSummary struct {
 	ColdPenaltyMS     float64             `json:"cold_penalty_ms"`
 	Stages            []StageSummary      `json:"stages"`
 	BudgetPassRates   []BudgetPassRate    `json:"budget_pass_rates"`
+	RepoBreakdown     []BucketSummary     `json:"repo_breakdown"`
 	CategoryBreakdown []BucketSummary     `json:"category_breakdown"`
 	SourceBreakdown   []BucketSummary     `json:"source_breakdown"`
 }

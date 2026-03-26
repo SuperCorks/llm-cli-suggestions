@@ -15,7 +15,7 @@ Type a few characters and a ghost-text smart suggestion appears inline. Suggesti
 
 - [Ghost-text suggestions in zsh](#ghost-text-suggestions-in-zsh) - Async inline completions that stay out of your way until you want them.
 - [Context-aware ranking](#context-aware-ranking) - Uses shell, repo, and project signals to shape the next suggestion.
-- [Feedback loop from real usage](#feedback-loop-from-real-usage) - Accepted and rejected suggestions feed back into local ranking.
+- [Feedback loop from real usage](#feedback-loop-from-real-usage) - Buffered, executed, edited, and rejected outcomes feed back into local ranking.
 - [Dashboard and live activity](#dashboard-and-live-activity) - Watch suggestion traffic, latency, and acceptance trends in one place.
 - [Suggestion history and context snapshots](#suggestion-history-and-context-snapshots) - Browse every suggestion with timing, outcome, and full prompt context.
 - [Commands and feedback inspection](#commands-and-feedback-inspection) - Review command history and feedback signals without losing detail.
@@ -46,7 +46,7 @@ The same prefix can resolve differently depending on where you are and what just
 
 ### Feedback loop from real usage
 
-Every command, suggestion, acceptance, and rejection is logged locally and fed back into ranking.
+Every command, suggestion, buffer acceptance, execution outcome, and rejection is logged locally and fed back into ranking.
 
 **What this enables:**
 
@@ -80,7 +80,7 @@ Browse every suggestion the engine has made, with timing, model, outcome, and fu
 **Includes:**
 
 - filters for narrowing down recent behavior
-- labels and outcomes for accepted, rejected, and ignored suggestions
+- labels and outcomes for accepted, edited, buffered, rejected, and ignored suggestions
 - stored prompt context so you can inspect what the engine actually saw
 
 <p align="center">
@@ -218,7 +218,7 @@ The suggestion engine blends signals from:
 1. **Command history** — prefix matching with repo, branch, and cwd affinity scoring
 2. **Local model** — Ollama inference with bounded timeout, only called when history isn't confident enough
 3. **Retrieved context** — filesystem paths, git branches, project tasks (npm/make/just), and recent command output
-4. **Feedback loop** — accepted suggestions get boosted, rejected ones get penalized
+4. **Feedback loop** — unchanged executions get the strongest boost, edited executions stay as medium-confidence positives, and rejected suggestions get penalized
 
 That means the same prefix can lead to different suggestions depending on where you are. `git ch` inside one repo can favor a branch that exists there, `npm run` can surface scripts from the current project, and a failed command can bias the next suggestion toward a likely fix.
 

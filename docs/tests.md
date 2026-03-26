@@ -198,6 +198,7 @@ Command:
 make bench-static
 make bench-replay
 ./bin/model-bench export-eval --limit 250 --min-confidence strong --format jsonl --output /tmp/eval.jsonl
+./bin/model-bench eval --dataset /tmp/eval.jsonl --models qwen3-coder:latest --protocol mixed
 ```
 
 or:
@@ -212,13 +213,16 @@ This is primarily a measurement tool for:
 
 - end-to-end quality across curated static cases
 - end-to-end quality across replayed real usage from SQLite
+- end-to-end quality across frozen exported eval datasets
 - raw prompt/model diagnostics against the same static fixtures
 - confidence-labeled offline eval export for later ranking or model-training work
 - rich latency summaries, including cold vs hot runs and model stage timing
 
 Saved artifacts now include sampled cases, aggregate summaries, and per-attempt rows so replay runs remain auditable even when they were created from the live database.
 
-The eval export path now reuses that same replay-mining logic and writes either JSONL examples for downstream offline eval or one wrapped JSON payload when a single-file schema is more convenient. The current export labels accepted suggestions as medium confidence and reviewed or rejected suggestions as strong confidence, matching the current limits of the feedback model.
+The eval export path now reuses that same replay-mining logic and writes either JSONL examples for downstream offline eval or one wrapped JSON payload when a single-file schema is more convenient. It now labels `executed_unchanged` suggestions as strong positives, `executed_edited` suggestions as medium positives, and reviewed or rejected suggestions as strong evidence, while keeping legacy `accepted` rows at medium confidence.
+
+The eval benchmark track reads those exported datasets back in and runs the normal benchmark scoring loop against a frozen case set. Its CLI summary now prints repo and command-family breakdowns alongside the overall exact-match, valid-prefix, and negative-avoidance rates.
 
 The CLI now fails fast by default when a model request errors. That stops wasting time on the rest of the matrix, writes whatever partial results have already been collected, and exits non-zero so the saved benchmark job can be marked failed instead of completed.
 
@@ -261,7 +265,7 @@ These checks matter because terminal UX issues often do not show up in pure unit
 - dedicated database migration tests
 - failure-mode integration tests for missing daemon or missing Ollama
 - race-heavy shell behavior under rapid typing beyond the seeded prefix matrix
-- regression tests built from real accepted and rejected user suggestions
+- regression tests built from real executed, edited, and rejected user suggestions
 - focused tests for console query filters and export routes
 - daemon control route tests from the control app surface
 - benchmark job lifecycle tests for queue, run, and persistence behavior

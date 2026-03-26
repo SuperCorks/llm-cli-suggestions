@@ -65,6 +65,16 @@ func TestParseCommandRecognizesExportEval(t *testing.T) {
 	}
 }
 
+func TestParseCommandRecognizesEval(t *testing.T) {
+	command, args := parseCommand([]string{"eval", "--dataset", "eval.jsonl"})
+	if command != "eval" {
+		t.Fatalf("expected eval command, got %q", command)
+	}
+	if len(args) != 2 {
+		t.Fatalf("expected eval args to be preserved, got %v", args)
+	}
+}
+
 func TestParseEvalConfidence(t *testing.T) {
 	tests := []struct {
 		input    string

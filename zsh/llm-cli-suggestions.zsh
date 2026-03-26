@@ -73,6 +73,8 @@ typeset -g LAC_NOTIFY_PIPE_PATH="${LAC_NOTIFY_PIPE_PATH:-$LAC_ASYNC_SESSION_DIR/
 typeset -g LAC_SUGGESTION=""
 typeset -g LAC_SUGGESTION_SOURCE=""
 typeset -gi LAC_SUGGESTION_ID=0
+typeset -g LAC_PENDING_ACCEPT_COMMAND=""
+typeset -gi LAC_PENDING_ACCEPT_SUGGESTION_ID=0
 typeset -gi LAC_REQUEST_SEQ=0
 typeset -gi LAC_ASYNC_READY=0
 typeset -gi LAC_NOTIFY_FD=-1
@@ -702,6 +704,11 @@ _lac_clear_suggestion() {
   _lac_clear_highlight
 }
 
+_lac_clear_pending_acceptance() {
+  typeset -g LAC_PENDING_ACCEPT_COMMAND=""
+  typeset -gi LAC_PENDING_ACCEPT_SUGGESTION_ID=0
+}
+
 _lac_clear_highlight() {
   local entry
   local -a filtered=()
@@ -1035,23 +1042,40 @@ _lac_after_buffer_change() {
   _lac_schedule_suggestion
 }
 
-_lac_feedback() {
+_lac_feedback_for() {
   local event_type="$1"
-  local accepted_command="${2:-}"
-  local actual_command="${3:-}"
+  local suggestion_id="$2"
+  local suggestion_text="$3"
+  local accepted_command="${4:-}"
+  local actual_command="${5:-}"
+  local buffer_value="${6:-$BUFFER}"
 
-  (( LAC_SUGGESTION_ID > 0 )) || return 0
+  (( suggestion_id > 0 )) || return 0
   [[ -x "$LAC_CLIENT_BIN" ]] || return 0
 
   "$LAC_CLIENT_BIN" feedback \
     --socket "$LAC_SOCKET_PATH" \
     --session "$LAC_SESSION_ID" \
-    --suggestion-id "$LAC_SUGGESTION_ID" \
+    --suggestion-id "$suggestion_id" \
     --event "$event_type" \
-    --buffer "$BUFFER" \
-    --suggestion "$LAC_SUGGESTION" \
+    --buffer "$buffer_value" \
+    --suggestion "$suggestion_text" \
     --accepted-command "$accepted_command" \
     --actual-command "$actual_command" >/dev/null 2>&1 &!
+}
+
+_lac_feedback() {
+  local event_type="$1"
+  local accepted_command="${2:-}"
+  local actual_command="${3:-}"
+
+  _lac_feedback_for \
+    "$event_type" \
+    "$LAC_SUGGESTION_ID" \
+    "$LAC_SUGGESTION" \
+    "$accepted_command" \
+    "$actual_command" \
+    "$BUFFER"
 }
 
 _lac_record_command() {
@@ -1087,7 +1111,26 @@ _lac_preexec() {
   local raw_command="$1"
   local command="$raw_command"
 
-  if (( LAC_SUGGESTION_ID > 0 )) && [[ -n "$LAC_SUGGESTION" ]] && [[ "$command" != "$LAC_SUGGESTION" ]]; then
+  if (( LAC_PENDING_ACCEPT_SUGGESTION_ID > 0 )) && [[ -n "$LAC_PENDING_ACCEPT_COMMAND" ]]; then
+    if [[ "$command" == "$LAC_PENDING_ACCEPT_COMMAND" ]]; then
+      _lac_feedback_for \
+        "executed_unchanged" \
+        "$LAC_PENDING_ACCEPT_SUGGESTION_ID" \
+        "$LAC_PENDING_ACCEPT_COMMAND" \
+        "$LAC_PENDING_ACCEPT_COMMAND" \
+        "$command" \
+        "$LAC_PENDING_ACCEPT_COMMAND"
+    else
+      _lac_feedback_for \
+        "executed_edited" \
+        "$LAC_PENDING_ACCEPT_SUGGESTION_ID" \
+        "$LAC_PENDING_ACCEPT_COMMAND" \
+        "$LAC_PENDING_ACCEPT_COMMAND" \
+        "$command" \
+        "$LAC_PENDING_ACCEPT_COMMAND"
+    fi
+    _lac_clear_pending_acceptance
+  elif (( LAC_SUGGESTION_ID > 0 )) && [[ -n "$LAC_SUGGESTION" ]] && [[ "$command" != "$LAC_SUGGESTION" ]]; then
     _lac_feedback "rejected" "" "$command"
   fi
 
@@ -1257,9 +1300,11 @@ lac-accept-or-forward-char() {
 _lac_accept_suggestion_if_ready() {
   if [[ -n "$LAC_SUGGESTION" && "$LAC_SUGGESTION" == "$BUFFER"* && $CURSOR -eq ${#BUFFER} ]]; then
     local accepted_command="$LAC_SUGGESTION"
+    typeset -gi LAC_PENDING_ACCEPT_SUGGESTION_ID="$LAC_SUGGESTION_ID"
+    typeset -g LAC_PENDING_ACCEPT_COMMAND="$accepted_command"
     BUFFER="$accepted_command"
     CURSOR=${#BUFFER}
-    _lac_feedback "accepted" "$accepted_command" ""
+    _lac_feedback "accepted_buffer" "$accepted_command" ""
     _lac_after_buffer_change
     zle redisplay
     return 0

@@ -26,7 +26,7 @@ function normalizeSort(value?: string): SuggestionSort {
 }
 
 function normalizeOutcome(value?: string): SuggestionOutcome {
-  if (value === "accepted" || value === "rejected" || value === "unreviewed") {
+  if (value === "accepted" || value === "edited" || value === "buffered" || value === "rejected" || value === "unreviewed") {
     return value;
   }
   return "all";

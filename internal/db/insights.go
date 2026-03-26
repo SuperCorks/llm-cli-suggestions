@@ -49,6 +49,8 @@ type Summary struct {
 	CommandCount        int
 	SuggestionCount     int
 	AcceptedCount       int
+	EditedCount         int
+	BufferedCount       int
 	RejectedCount       int
 	AverageModelLatency float64
 }
@@ -76,7 +78,7 @@ func (s *Store) GetCommandFeedbackStats(ctx context.Context, commands []string) 
 	acceptedQuery := fmt.Sprintf(
 		`SELECT accepted_command, COUNT(*)
 		 FROM feedback_events
-		 WHERE event_type = 'accepted' AND accepted_command IN (%s)
+		 WHERE event_type IN ('accepted', 'executed_unchanged') AND accepted_command IN (%s)
 		 GROUP BY accepted_command`,
 		placeholders(len(filtered)),
 	)
@@ -354,8 +356,14 @@ func (s *Store) InspectSummary(ctx context.Context) (Summary, error) {
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM suggestions`).Scan(&summary.SuggestionCount); err != nil {
 		return Summary{}, fmt.Errorf("count suggestions: %w", err)
 	}
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM feedback_events WHERE event_type = 'accepted'`).Scan(&summary.AcceptedCount); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM feedback_events WHERE event_type IN ('accepted', 'executed_unchanged')`).Scan(&summary.AcceptedCount); err != nil {
 		return Summary{}, fmt.Errorf("count accepted events: %w", err)
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM feedback_events WHERE event_type = 'executed_edited'`).Scan(&summary.EditedCount); err != nil {
+		return Summary{}, fmt.Errorf("count edited events: %w", err)
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM feedback_events WHERE event_type = 'accepted_buffer'`).Scan(&summary.BufferedCount); err != nil {
+		return Summary{}, fmt.Errorf("count buffered events: %w", err)
 	}
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM feedback_events WHERE event_type = 'rejected'`).Scan(&summary.RejectedCount); err != nil {
 		return Summary{}, fmt.Errorf("count rejected events: %w", err)

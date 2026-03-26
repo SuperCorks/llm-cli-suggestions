@@ -53,14 +53,32 @@ func (s *Store) ListReplayBenchmarkCandidates(ctx context.Context, limit int) ([
 		 LEFT JOIN (
 		   SELECT
 		     suggestion_id,
-		     MAX(CASE WHEN event_type = 'accepted' THEN 'accepted' WHEN event_type = 'rejected' THEN 'rejected' ELSE '' END) AS event_type,
-		     MAX(accepted_command) AS accepted_command,
-		     MAX(actual_command) AS actual_command
+		     COALESCE(
+		       MAX(CASE WHEN event_type = 'executed_edited' THEN 'executed_edited' END),
+		       MAX(CASE WHEN event_type IN ('executed_unchanged', 'accepted') THEN 'executed_unchanged' END),
+		       MAX(CASE WHEN event_type = 'rejected' THEN 'rejected' END),
+		       MAX(CASE WHEN event_type = 'accepted_buffer' THEN 'accepted_buffer' END),
+		       ''
+		     ) AS event_type,
+		     MAX(
+		       CASE
+		         WHEN event_type IN ('accepted_buffer', 'executed_unchanged', 'executed_edited', 'accepted')
+		         THEN accepted_command
+		         ELSE ''
+		       END
+		     ) AS accepted_command,
+		     MAX(
+		       CASE
+		         WHEN event_type IN ('executed_unchanged', 'executed_edited', 'rejected')
+		         THEN actual_command
+		         ELSE ''
+		       END
+		     ) AS actual_command
 		   FROM feedback_events
 		   GROUP BY suggestion_id
 		 ) f ON f.suggestion_id = s.id
 		 WHERE COALESCE(r.review_label, '') IN ('good', 'bad')
-		    OR COALESCE(f.event_type, '') IN ('accepted', 'rejected')
+		    OR COALESCE(f.event_type, '') IN ('executed_unchanged', 'executed_edited', 'rejected')
 		 ORDER BY s.created_at_ms DESC
 		 LIMIT ?`,
 		limit,

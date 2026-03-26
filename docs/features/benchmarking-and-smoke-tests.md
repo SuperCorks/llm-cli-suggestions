@@ -4,10 +4,11 @@ The repo includes several checks and measurement tools that protect the shell UX
 
 ## Model Benchmarking
 
-`cmd/model-bench` now supports three benchmark tracks:
+`cmd/model-bench` now supports four benchmark tracks:
 
 - `static` for curated repo-controlled regression cases
-- `replay` for live-DB cases mined from accepted, rejected, and manually reviewed suggestions
+- `replay` for live-DB cases mined from executed, rejected, and manually reviewed suggestions
+- `eval` for frozen exported eval datasets captured from earlier local usage
 - `raw` for prompt/model-only diagnostics against the static suite
 
 It also now supports a dedicated offline-eval export path:
@@ -40,6 +41,7 @@ Useful commands:
 make bench-static
 make bench-replay
 make bench-all
+./bin/model-bench eval --dataset eval.jsonl --models qwen3-coder:latest --protocol mixed
 ./bin/model-bench raw --models qwen3-coder:latest --suite core
 ./bin/model-bench compare path/to/run-a.json path/to/run-b.json
 ./bin/model-bench mine-static --limit 25
@@ -57,9 +59,22 @@ The current confidence rules are intentionally conservative:
 
 - manually reviewed `good` and `bad` suggestions are `strong`
 - rejected suggestions are `strong`
-- accepted suggestions are `medium`, because acceptance confirms the suggestion entered the buffer but does not yet prove the final executed command remained unchanged after later manual edits
+- `executed_unchanged` suggestions are `strong`
+- `executed_edited` suggestions are `medium`
+- legacy `accepted` suggestions are `medium`, because they confirm the suggestion entered the buffer but do not prove the final executed command remained unchanged after later manual edits
+
+The `eval` track lets that exported dataset become a stable benchmark input. That means you can freeze a recent local usage slice, rerun it later after ranking changes, and compare the same cases instead of depending on whatever the live SQLite history looks like that day.
+
+Benchmark summaries for replay and eval runs now also include score breakdowns by:
+
+- repo name
+- command family
+
+Those breakdowns are printed directly in the CLI summary so it is easier to see whether a change helps one workflow while hurting another.
 
 The same benchmark workflow is also exposed through the control app Model Lab, which refreshes saved runs on page load, can queue or delete saved runs, persists results to SQLite, and drills into per-model or per-case detail views.
+
+Saved `eval` runs can be inspected in the Model Lab, but replaying them still requires the CLI because the worker needs an explicit dataset path.
 
 The saved-run detail view now also shows:
 
@@ -87,7 +102,8 @@ It verifies:
 - client health
 - plugin loading
 - `Tab` binding
-- history-based suggestion acceptance
+- history-based suggestion acceptance into the buffer
+- unchanged execution and edited execution outcome logging
 - rejection logging
 - allowlisted PTY output capture
 - blocklist PTY output capture with excluded-command bypass

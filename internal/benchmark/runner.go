@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -26,6 +27,7 @@ type RunConfig struct {
 	Track           Track
 	Surface         Surface
 	SuiteName       string
+	DatasetPath     string
 	Strategy        string
 	TimingProtocol  TimingProtocol
 	Models          []string
@@ -157,6 +159,12 @@ func resolveCases(ctx context.Context, cfg RunConfig) ([]Case, error) {
 		}
 		defer store.Close()
 		return LoadReplayCases(ctx, store, cfg.ReplayLimit)
+	case TrackEval:
+		dataset, err := LoadEvalDataset(cfg.DatasetPath)
+		if err != nil {
+			return nil, fmt.Errorf("load eval dataset: %w", err)
+		}
+		return EvalExamplesToCases(dataset.Examples), nil
 	case TrackRaw, TrackStatic:
 		if cfg.SuiteName == "all" {
 			coreCases, err := LoadStaticSuite("core")
@@ -588,6 +596,7 @@ func aggregateAttempts(attempts []AttemptResult) AggregateSummary {
 		ColdPenaltyMS:     coldLatency.Mean - hotLatency.Mean,
 		Stages:            summarizeStages(attempts),
 		BudgetPassRates:   summarizeBudgetPassRates(attempts),
+		RepoBreakdown:     summarizeBuckets(attempts, func(value AttemptResult) string { return repoKey(value) }),
 		CategoryBreakdown: summarizeBuckets(attempts, func(value AttemptResult) string { return value.Category }),
 		SourceBreakdown:   summarizeBuckets(attempts, func(value AttemptResult) string { return sourceKey(value) }),
 	}
@@ -745,6 +754,18 @@ func sourceKey(attempt AttemptResult) string {
 		return attempt.WinnerSource
 	}
 	return "model"
+}
+
+func repoKey(attempt AttemptResult) string {
+	repoRoot := strings.TrimSpace(attempt.Request.RepoRoot)
+	if repoRoot == "" {
+		return "(none)"
+	}
+	name := strings.TrimSpace(filepath.Base(repoRoot))
+	if name == "" || name == "." || name == string(filepath.Separator) {
+		return repoRoot
+	}
+	return name
 }
 
 func averageDuration(values []AttemptResult, fn func(AttemptResult) int64) float64 {

@@ -74,20 +74,32 @@ function buildSuggestionsHref(
 }
 
 function outcomeLabel(row: SuggestionRow) {
-  if (row.accepted) {
+  if (row.outcome === "accepted") {
     return "Accepted";
   }
-  if (row.rejected) {
+  if (row.outcome === "edited") {
+    return "Edited";
+  }
+  if (row.outcome === "buffered") {
+    return "Buffered";
+  }
+  if (row.outcome === "rejected") {
     return "Rejected";
   }
   return "Unreviewed";
 }
 
 function outcomeClassName(row: SuggestionRow) {
-  if (row.accepted) {
+  if (row.outcome === "accepted") {
     return "feed-badge accepted";
   }
-  if (row.rejected) {
+  if (row.outcome === "edited") {
+    return "feed-badge edited";
+  }
+  if (row.outcome === "buffered") {
+    return "feed-badge buffered";
+  }
+  if (row.outcome === "rejected") {
     return "feed-badge rejected";
   }
   return "feed-badge";
@@ -281,6 +293,8 @@ export function SuggestionsPageShell({
                     <select name="outcome" defaultValue={filters.outcome}>
                       <option value="all">All</option>
                       <option value="accepted">Accepted</option>
+                      <option value="edited">Edited</option>
+                      <option value="buffered">Buffered</option>
                       <option value="rejected">Rejected</option>
                       <option value="unreviewed">Unreviewed</option>
                     </select>
@@ -479,6 +493,14 @@ export function SuggestionsPageShell({
                 <div>
                   <dt>Buffer</dt>
                   <dd><code>{selectedEntry.row.buffer}</code></dd>
+                </div>
+                <div>
+                  <dt>Outcome</dt>
+                  <dd>{outcomeLabel(selectedEntry.row)}</dd>
+                </div>
+                <div>
+                  <dt>Outcome Event</dt>
+                  <dd>{selectedEntry.row.outcomeEventType || "n/a"}</dd>
                 </div>
                 <div>
                   <dt>Accepted Command</dt>

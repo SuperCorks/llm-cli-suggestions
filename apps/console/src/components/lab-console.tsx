@@ -67,6 +67,7 @@ function emptyAggregateSummary(): BenchmarkAggregateSummary {
     coldPenaltyMs: 0,
     stages: [],
     budgetPassRates: [],
+    repoBreakdown: [],
     categoryBreakdown: [],
     sourceBreakdown: [],
   };
@@ -101,6 +102,10 @@ function parseReplaySampleLimit(filtersJson: string) {
 
 function formatRunInfoTimestamp(value: number) {
   return value > 0 ? formatTimestamp(value) : "n/a";
+}
+
+function canReplayBenchmarkRun(run: BenchmarkRunRow) {
+  return run.track !== "eval";
 }
 
 function buildRunInfoItems(run: BenchmarkRunRow) {
@@ -156,6 +161,7 @@ function normalizeAggregateSummary(
     coldPenaltyMs: aggregate?.coldPenaltyMs || 0,
     stages: Array.isArray(aggregate?.stages) ? aggregate.stages : [],
     budgetPassRates: Array.isArray(aggregate?.budgetPassRates) ? aggregate.budgetPassRates : [],
+    repoBreakdown: Array.isArray(aggregate?.repoBreakdown) ? aggregate.repoBreakdown : [],
     categoryBreakdown: Array.isArray(aggregate?.categoryBreakdown)
       ? aggregate.categoryBreakdown
       : [],
@@ -693,6 +699,12 @@ export function LabConsole({
   }
 
   async function replayBenchmark(run: BenchmarkRunRow) {
+    if (!canReplayBenchmarkRun(run)) {
+      setError("Eval runs need an exported dataset path, so replay them from the CLI for now.");
+      setMessage("");
+      return;
+    }
+
     setReplayingRunId(run.id);
     setMessage("");
     setError("");
@@ -882,7 +894,7 @@ export function LabConsole({
               }
             />
             <p className="helper-text">
-              Saved benchmarks can run the curated static suite, a replay sample from your live SQLite history, or raw prompt/model checks with richer timing breakdowns.
+              Saved benchmarks can run the curated static suite, a replay sample from your live SQLite history, or raw prompt/model checks with richer timing breakdowns. Frozen eval datasets still show up here when they were run from the CLI.
             </p>
             <div className="form-grid compact">
               <label>
@@ -1213,7 +1225,7 @@ export function LabConsole({
           <div>
             <h3>Saved Benchmark Runs</h3>
             <p className="helper-text">
-              Review queued and completed runs across static, replay, and raw tracks, then drill into the richer timing and quality breakdowns below.
+              Review queued and completed runs across static, replay, eval, and raw tracks, then drill into the richer timing and quality breakdowns below.
             </p>
           </div>
         </div>
@@ -1321,7 +1333,12 @@ export function LabConsole({
                         type="button"
                         className="button-secondary"
                         onClick={() => void replayBenchmark(run)}
-                        disabled={replayingRunId !== null}
+                        disabled={replayingRunId !== null || !canReplayBenchmarkRun(run)}
+                        title={
+                          canReplayBenchmarkRun(run)
+                            ? undefined
+                            : "Eval runs require a dataset path and can currently be replayed only from the CLI."
+                        }
                       >
                         {replayingRunId === run.id ? "Replaying..." : "Replay"}
                       </button>
@@ -1550,6 +1567,37 @@ export function LabConsole({
             <div className="detail-block">
               <div className="detail-block-header">
                 <div>
+                  <h3>Repo Breakdown</h3>
+                </div>
+              </div>
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Repo</th>
+                      <th>Count</th>
+                      <th>Exact</th>
+                      <th>Avoid</th>
+                      <th>Mean</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {selectedRunSummary.overall.repoBreakdown.map((row) => (
+                      <tr key={row.key}>
+                        <td>{row.label}</td>
+                        <td>{row.count}</td>
+                        <td>{Math.round(row.quality.positiveExactHitRate * 100)}%</td>
+                        <td>{Math.round(row.quality.negativeAvoidRate * 100)}%</td>
+                        <td>{formatDurationMs(row.latency.mean)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div className="detail-block">
+              <div className="detail-block-header">
+                <div>
                   <h3>Category Breakdown</h3>
                 </div>
               </div>
@@ -1578,34 +1626,34 @@ export function LabConsole({
                 </table>
               </div>
             </div>
-            <div className="detail-block">
-              <div className="detail-block-header">
-                <div>
-                  <h3>Source Breakdown</h3>
-                </div>
+          </div>
+          <div className="detail-block">
+            <div className="detail-block-header">
+              <div>
+                <h3>Source Breakdown</h3>
               </div>
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Winner Source</th>
-                      <th>Count</th>
-                      <th>Share</th>
-                      <th>Mean</th>
+            </div>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Winner Source</th>
+                    <th>Count</th>
+                    <th>Share</th>
+                    <th>Mean</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {selectedRunSummary.overall.sourceBreakdown.map((row) => (
+                    <tr key={row.key}>
+                      <td>{row.label}</td>
+                      <td>{row.count}</td>
+                      <td>{Math.round(row.share * 100)}%</td>
+                      <td>{formatDurationMs(row.latency.mean)}</td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {selectedRunSummary.overall.sourceBreakdown.map((row) => (
-                      <tr key={row.key}>
-                        <td>{row.label}</td>
-                        <td>{row.count}</td>
-                        <td>{Math.round(row.share * 100)}%</td>
-                        <td>{formatDurationMs(row.latency.mean)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                  ))}
+                </tbody>
+              </table>
             </div>
           </div>
           <div className="detail-block">

@@ -40,7 +40,7 @@ Each generated suggestion records:
 
 Each feedback record tracks:
 
-- accepted or rejected
+- event type such as `accepted_buffer`, `executed_unchanged`, `executed_edited`, or `rejected`
 - original buffer
 - suggestion text
 - accepted command
@@ -62,6 +62,8 @@ The new `model-bench export-eval` command is the first concrete path from those 
 - manually reviewed `good` suggestions as strong positive examples
 - manually reviewed `bad` suggestions as strong negative examples
 - rejected suggestions as strong negative examples
-- accepted suggestions as medium-confidence positive examples
+- `executed_unchanged` suggestions as strong positive examples
+- `executed_edited` suggestions as medium-confidence positive examples
+- legacy `accepted` suggestions as medium-confidence positive examples
 
-That last distinction matters because the current feedback event records that a suggestion was accepted into the buffer, but it does not yet prove the final executed command was left unchanged after any later edits.
+That distinction matters because buffer acceptance alone does not prove the final executed command was left unchanged after later edits, while the new terminal execution outcome does.

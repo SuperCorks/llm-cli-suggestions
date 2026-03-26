@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -84,6 +85,52 @@ func EncodeEvalDatasetJSONL(examples []EvalExample) ([]byte, error) {
 		}
 	}
 	return buffer.Bytes(), nil
+}
+
+func LoadEvalDataset(path string) (EvalDataset, error) {
+	payload, err := os.ReadFile(path)
+	if err != nil {
+		return EvalDataset{}, fmt.Errorf("read eval dataset: %w", err)
+	}
+	return DecodeEvalDataset(payload)
+}
+
+func DecodeEvalDataset(payload []byte) (EvalDataset, error) {
+	var wrapped EvalDataset
+	if err := json.Unmarshal(payload, &wrapped); err == nil && wrapped.SchemaVersion > 0 {
+		return wrapped, nil
+	}
+
+	lines := strings.Split(string(payload), "\n")
+	examples := make([]EvalExample, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var example EvalExample
+		if err := json.Unmarshal([]byte(line), &example); err != nil {
+			return EvalDataset{}, fmt.Errorf("decode eval dataset jsonl: %w", err)
+		}
+		examples = append(examples, example)
+	}
+	return EvalDataset{
+		SchemaVersion: 1,
+		Examples:      examples,
+	}, nil
+}
+
+func EvalExamplesToCases(values []EvalExample) []Case {
+	cases := make([]Case, 0, len(values))
+	for _, example := range values {
+		replayCase, ok := buildReplayCase(example)
+		if !ok {
+			continue
+		}
+		replayCase.Origin = "eval"
+		cases = append(cases, replayCase)
+	}
+	return cases
 }
 
 func buildEvalExample(row db.ReplayBenchmarkCandidate) (EvalExample, bool) {
@@ -172,6 +219,24 @@ func classifyEvalCandidate(row db.ReplayBenchmarkCandidate) (LabelKind, EvalOutc
 			return "", "", "", "", "", false
 		}
 		return LabelKindNegative, EvalOutcomeRejected, EvalConfidenceStrong, "", suggestion, true
+	case "executed_unchanged":
+		expected := actual
+		if expected == "" {
+			expected = accepted
+		}
+		if expected == "" {
+			expected = suggestion
+		}
+		if expected == "" {
+			return "", "", "", "", "", false
+		}
+		return LabelKindPositive, EvalOutcomeExecutedUnchanged, EvalConfidenceStrong, expected, "", true
+	case "executed_edited":
+		expected := actual
+		if expected == "" {
+			return "", "", "", "", "", false
+		}
+		return LabelKindPositive, EvalOutcomeExecutedEdited, EvalConfidenceMedium, expected, "", true
 	case "accepted":
 		expected := accepted
 		if expected == "" {

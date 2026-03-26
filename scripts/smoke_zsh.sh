@@ -104,6 +104,30 @@ script -q /dev/null zsh -dfi -c '
     return 1
   }
 
+  _lac_preexec "git status"
+  true
+  _lac_precmd
+  sleep 0.3
+
+  BUFFER="git st"
+  CURSOR=${#BUFFER}
+  _lac_refresh_suggestion_sync
+  [[ "$LAC_SUGGESTION" == "git status" ]] || {
+    print -u2 -- "expected git status suggestion before reject, got: $LAC_SUGGESTION"
+    return 1
+  }
+
+  lac-accept-or-complete
+  [[ "$BUFFER" == "git status" ]] || {
+    print -u2 -- "expected second accept widget to populate buffer, got: $BUFFER"
+    return 1
+  }
+
+  _lac_preexec "git status --short"
+  true
+  _lac_precmd
+  sleep 0.3
+
   BUFFER="git st"
   CURSOR=${#BUFFER}
   _lac_refresh_suggestion_sync
@@ -320,7 +344,9 @@ script -q /dev/null zsh -dfi -c '
 '
 
 commands_count="$(sqlite3 "$DB_PATH" "select count(*) from commands where command_text in ('git status','git stash','npm run','npm run dev');")"
-accepted_count="$(sqlite3 "$DB_PATH" "select count(*) from feedback_events where event_type = 'accepted' and accepted_command = 'git status';")"
+buffered_count="$(sqlite3 "$DB_PATH" "select count(*) from feedback_events where event_type = 'accepted_buffer' and accepted_command = 'git status';")"
+accepted_count="$(sqlite3 "$DB_PATH" "select count(*) from feedback_events where event_type in ('accepted','executed_unchanged') and accepted_command = 'git status' and actual_command = 'git status';")"
+edited_count="$(sqlite3 "$DB_PATH" "select count(*) from feedback_events where event_type = 'executed_edited' and accepted_command = 'git status' and actual_command = 'git status --short';")"
 rejected_count="$(sqlite3 "$DB_PATH" "select count(*) from feedback_events where event_type = 'rejected' and actual_command = 'git stash';")"
 suggestions_count="$(sqlite3 "$DB_PATH" "select count(*) from suggestions where suggestion_text = 'git status';")"
 stdout_capture_count="$(sqlite3 "$DB_PATH" "select count(*) from commands where command_text like 'printf%' and stdout_excerpt like '%hello%';")"
@@ -342,6 +368,16 @@ trimmed_capture_test="$(ROOT_DIR_ENV="$ROOT_DIR" zsh -dfi -c 'source "$ROOT_DIR_
 
 [[ "$accepted_count" -ge 1 ]] || {
   echo "expected at least 1 accepted feedback event, got $accepted_count" >&2
+  exit 1
+}
+
+[[ "$buffered_count" -ge 2 ]] || {
+  echo "expected at least 2 buffered feedback events, got $buffered_count" >&2
+  exit 1
+}
+
+[[ "$edited_count" -ge 1 ]] || {
+  echo "expected at least 1 edited execution feedback event, got $edited_count" >&2
   exit 1
 }
 
@@ -411,4 +447,4 @@ trimmed_capture_test="$(ROOT_DIR_ENV="$ROOT_DIR" zsh -dfi -c 'source "$ROOT_DIR_
 }
 
 echo "shell smoke test passed"
-echo "commands=$commands_count suggestions=$suggestions_count accepted=$accepted_count rejected=$rejected_count output_captured=$stdout_capture_count plain_uncaptured=$plain_uncaptured_count pty_output_captured=$pty_stdout_capture_count stderr_redirect_output_captured=$stderr_redirect_capture_count blocklist_output_captured=$blocklist_pty_capture_count prefixed_git_branch_output_captured=$prefixed_git_branch_pty_capture_count regex_blocklisted_git_branch_uncaptured=$regex_blocklisted_git_branch_uncaptured_count blocklisted_uncaptured=$blocklisted_uncaptured_count skipped_redirect_capture=$skipped_redirect_capture_count"
+echo "commands=$commands_count suggestions=$suggestions_count buffered=$buffered_count accepted=$accepted_count edited=$edited_count rejected=$rejected_count output_captured=$stdout_capture_count plain_uncaptured=$plain_uncaptured_count pty_output_captured=$pty_stdout_capture_count stderr_redirect_output_captured=$stderr_redirect_capture_count blocklist_output_captured=$blocklist_pty_capture_count prefixed_git_branch_output_captured=$prefixed_git_branch_pty_capture_count regex_blocklisted_git_branch_uncaptured=$regex_blocklisted_git_branch_uncaptured_count blocklisted_uncaptured=$blocklisted_uncaptured_count skipped_redirect_capture=$skipped_redirect_capture_count"

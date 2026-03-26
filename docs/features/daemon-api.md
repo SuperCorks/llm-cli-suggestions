@@ -37,7 +37,7 @@ Returns:
 
 ### `POST /feedback`
 
-Records whether a suggestion was accepted or rejected and what command actually ran.
+Records execution-aware suggestion feedback, including buffer acceptance, unchanged execution, edited execution, or rejection, plus the accepted and actual command text when available.
 
 ### `POST /command`
 

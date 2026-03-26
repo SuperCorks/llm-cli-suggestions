@@ -94,6 +94,7 @@ func TestAggregateAttemptsSummarizesQualityAndLatency(t *testing.T) {
 			StartState:       StartStateHot,
 			WinnerSource:     "model",
 			Category:         "git",
+			Request:          api.SuggestRequest{RepoRoot: "/tmp/work/app-one"},
 		},
 		{
 			LabelKind:        LabelKindNegative,
@@ -102,6 +103,7 @@ func TestAggregateAttemptsSummarizesQualityAndLatency(t *testing.T) {
 			StartState:       StartStateCold,
 			WinnerSource:     "history",
 			Category:         "negatives",
+			Request:          api.SuggestRequest{RepoRoot: "/tmp/work/app-two"},
 		},
 	})
 
@@ -116,6 +118,12 @@ func TestAggregateAttemptsSummarizesQualityAndLatency(t *testing.T) {
 	}
 	if summary.Latency.Mean <= 0 {
 		t.Fatalf("expected positive mean latency, got %v", summary.Latency.Mean)
+	}
+	if len(summary.RepoBreakdown) != 2 {
+		t.Fatalf("expected repo breakdown entries, got %d", len(summary.RepoBreakdown))
+	}
+	if summary.RepoBreakdown[0].Label != "app-one" {
+		t.Fatalf("expected first repo bucket to be app-one, got %q", summary.RepoBreakdown[0].Label)
 	}
 }
 

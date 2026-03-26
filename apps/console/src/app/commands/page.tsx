@@ -107,7 +107,7 @@ export default async function CommandsPage({
         </Panel>
       </div>
 
-      <Panel title="Recent Feedback Events" subtitle="Latest accepted and rejected suggestion events.">
+      <Panel title="Recent Feedback Events" subtitle="Latest suggestion outcome events including buffered, executed, edited, and rejected paths.">
         <div className="table-wrap">
           <table>
             <thead>

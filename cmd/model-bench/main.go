@@ -28,6 +28,8 @@ func main() {
 		runBenchCommand(benchmark.TrackStatic, benchmark.SurfaceEndToEnd, cfg, args)
 	case "replay":
 		runBenchCommand(benchmark.TrackReplay, benchmark.SurfaceEndToEnd, cfg, args)
+	case "eval":
+		runBenchCommand(benchmark.TrackEval, benchmark.SurfaceEndToEnd, cfg, args)
 	case "raw":
 		runBenchCommand(benchmark.TrackRaw, benchmark.SurfaceRawModel, cfg, args)
 	case "compare":
@@ -46,7 +48,7 @@ func parseCommand(args []string) (string, []string) {
 		return "static", nil
 	}
 	switch args[0] {
-	case "static", "replay", "raw", "compare", "mine-static", "export-eval":
+	case "static", "replay", "eval", "raw", "compare", "mine-static", "export-eval":
 		return args[0], args[1:]
 	default:
 		if strings.HasPrefix(args[0], "-") {
@@ -69,6 +71,7 @@ func runBenchCommand(track benchmark.Track, surface benchmark.Surface, runtime c
 	modelURLFlag := flags.String("model-url", runtime.ModelBaseURL, "local model base URL")
 	keepAliveFlag := flags.String("keep-alive", runtime.ModelKeepAlive, "ollama keep_alive value for mixed mode")
 	dbPathFlag := flags.String("db-path", runtime.DBPath, "sqlite path for replay benchmarks and engine context")
+	datasetFlag := flags.String("dataset", "", "path to an exported eval dataset for eval benchmarks")
 	replayLimitFlag := flags.Int("sample-limit", 200, "maximum replay cases to sample")
 	flags.Parse(args)
 
@@ -86,11 +89,22 @@ func runBenchCommand(track benchmark.Track, surface benchmark.Surface, runtime c
 	if track == benchmark.TrackReplay {
 		filtersJSON = fmt.Sprintf(`{"sample_limit":%d}`, max(1, *replayLimitFlag))
 	}
+	if track == benchmark.TrackEval {
+		datasetPath := strings.TrimSpace(*datasetFlag)
+		if datasetPath == "" {
+			fatalf("eval benchmarks require --dataset")
+		}
+		filtersJSON = fmt.Sprintf(`{"dataset_path":%q}`, datasetPath)
+		if strings.TrimSpace(*suiteFlag) == "" || strings.TrimSpace(*suiteFlag) == defaultSuiteName(track) {
+			*suiteFlag = filepath.Base(datasetPath)
+		}
+	}
 
 	runConfig := benchmark.RunConfig{
 		Track:           track,
 		Surface:         surface,
 		SuiteName:       strings.TrimSpace(*suiteFlag),
+		DatasetPath:     strings.TrimSpace(*datasetFlag),
 		Strategy:        config.NormalizeSuggestStrategy(*strategyFlag),
 		TimingProtocol:  timingProtocol,
 		Models:          models,
@@ -344,6 +358,9 @@ func printArtifactSummary(artifact benchmark.Artifact) {
 			summary.Hot.Latency.Mean,
 		)
 	}
+
+	printBucketBreakdown("Repos", artifact.Summary.Overall.RepoBreakdown)
+	printBucketBreakdown("Command Families", artifact.Summary.Overall.CategoryBreakdown)
 }
 
 func parseTimingProtocol(value string) (benchmark.TimingProtocol, error) {
@@ -383,6 +400,25 @@ func parseEvalOutputFormat(value string) (string, error) {
 	}
 }
 
+func printBucketBreakdown(title string, buckets []benchmark.BucketSummary) {
+	if len(buckets) == 0 {
+		return
+	}
+	fmt.Printf("%s\n", title)
+	for _, bucket := range buckets {
+		fmt.Printf(
+			"- %s: count=%d share=%.0f%% exact=%.0f%% avoid=%.0f%% valid=%.0f%% mean=%.0fms\n",
+			bucket.Label,
+			bucket.Count,
+			bucket.Share*100,
+			bucket.Quality.PositiveExactHitRate*100,
+			bucket.Quality.NegativeAvoidRate*100,
+			bucket.Quality.ValidWinnerRate*100,
+			bucket.Latency.Mean,
+		)
+	}
+}
+
 func timingPhasesForProtocol(protocol benchmark.TimingProtocol) []benchmark.TimingPhase {
 	switch protocol {
 	case benchmark.TimingProtocolColdOnly:
@@ -399,6 +435,9 @@ func timingPhasesForProtocol(protocol benchmark.TimingProtocol) []benchmark.Timi
 func defaultSuiteName(track benchmark.Track) string {
 	if track == benchmark.TrackReplay {
 		return "live-db"
+	}
+	if track == benchmark.TrackEval {
+		return "offline-eval"
 	}
 	return "core"
 }
