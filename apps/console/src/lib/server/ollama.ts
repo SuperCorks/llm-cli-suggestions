@@ -567,14 +567,21 @@ export function isRemoteLibraryModelName(name: string) {
 	return isRemoteOnlyModelName(name.trim().toLowerCase());
 }
 
-export async function getLoadedOllamaModelUsage(baseUrl: string, activeModelName: string) {
-  const normalizedActiveName = normalizeModelName(activeModelName);
-  if (!normalizedActiveName) {
-    return {
-      modelLoadedBytes: null,
-      modelVramBytes: null,
-      modelName: null,
-    };
+export async function getLoadedOllamaModelUsages(baseUrl: string, modelNames: string[]) {
+  const requestedModels = modelNames
+    .map((modelName) => ({
+      requestedName: modelName.trim(),
+      normalizedName: normalizeModelName(modelName),
+    }))
+    .filter((model) => model.normalizedName !== "");
+
+  if (requestedModels.length === 0) {
+    return [] as Array<{
+      requestedName: string;
+      modelName: string;
+      modelLoadedBytes: number | null;
+      modelVramBytes: number | null;
+    }>;
   }
 
   try {
@@ -587,26 +594,37 @@ export async function getLoadedOllamaModelUsage(baseUrl: string, activeModelName
     }
 
     const parsed = (await response.json()) as OllamaPsResponse;
-    const match = (parsed.models || []).find((model) => {
-      const candidateName = model.name || model.model || "";
-      return normalizeModelName(candidateName) === normalizedActiveName;
-    });
+    const loadedModels = new Map(
+      (parsed.models || []).flatMap((model) => {
+        const candidateName = model.name || model.model || "";
+        const normalizedName = normalizeModelName(candidateName);
+        if (!normalizedName) {
+          return [];
+        }
+        return [[normalizedName, model] as const];
+      }),
+    );
 
-    return {
-      modelLoadedBytes:
-        typeof match?.size === "number" && Number.isFinite(match.size) ? match.size : null,
-      modelVramBytes:
-        typeof match?.size_vram === "number" && Number.isFinite(match.size_vram)
-          ? match.size_vram
-          : null,
-      modelName: match?.name || match?.model || null,
-    };
+    return requestedModels.map((requestedModel) => {
+      const match = loadedModels.get(requestedModel.normalizedName);
+      return {
+        requestedName: requestedModel.requestedName,
+        modelName: match?.name || match?.model || requestedModel.requestedName,
+        modelLoadedBytes:
+          typeof match?.size === "number" && Number.isFinite(match.size) ? match.size : null,
+        modelVramBytes:
+          typeof match?.size_vram === "number" && Number.isFinite(match.size_vram)
+            ? match.size_vram
+            : null,
+      };
+    });
   } catch {
-    return {
+    return requestedModels.map((requestedModel) => ({
+      requestedName: requestedModel.requestedName,
+      modelName: requestedModel.requestedName,
       modelLoadedBytes: null,
       modelVramBytes: null,
-      modelName: null,
-    };
+    }));
   }
 }
 

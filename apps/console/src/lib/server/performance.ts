@@ -121,6 +121,7 @@ interface PerformanceRow {
   buffer: string;
   modelName: string;
   requestModelName: string;
+  modelStartState: string;
   latencyMs: number;
   requestLatencyMs: number;
   createdAtMs: number;
@@ -139,6 +140,8 @@ const START_STATE_LABELS: Record<PerformanceStartState, string> = {
   unknown: "Unknown start state",
   "not-applicable": "No model invocation",
 };
+
+const HOT_RESIDENT_LOAD_FLOOR_MS = 250;
 
 const LATENCY_BANDS = [
   { label: "<100 ms", max: 100 },
@@ -266,6 +269,7 @@ function queryRows(filters: PerformanceDashboardFilters) {
          buffer,
          model_name AS modelName,
          request_model_name AS requestModelName,
+         model_start_state AS modelStartState,
          latency_ms AS latencyMs,
          request_latency_ms AS requestLatencyMs,
          created_at_ms AS createdAtMs,
@@ -298,6 +302,16 @@ function getEffectiveLatency(row: PerformanceRow) {
 }
 
 function getStartState(row: PerformanceRow): PerformanceStartState {
+  const persistedState = row.modelStartState.trim();
+  if (
+    persistedState === "cold" ||
+    persistedState === "hot" ||
+    persistedState === "unknown" ||
+    persistedState === "not-applicable"
+  ) {
+    return persistedState;
+  }
+
   if (!row.requestModelName.trim()) {
     return "not-applicable";
   }
@@ -306,7 +320,7 @@ function getStartState(row: PerformanceRow): PerformanceStartState {
     return "unknown";
   }
 
-  return row.modelLoadDurationMs > 0 ? "cold" : "hot";
+  return row.modelLoadDurationMs > HOT_RESIDENT_LOAD_FLOOR_MS ? "cold" : "hot";
 }
 
 function hasModelInstrumentation(row: PerformanceRow) {

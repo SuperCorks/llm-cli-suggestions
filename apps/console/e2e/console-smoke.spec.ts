@@ -3191,24 +3191,20 @@ test("models page manages installed and downloadable Ollama models", async ({ pa
   const qwenRow = page.locator(".model-catalog-item").filter({
     has: page.getByText("qwen2.5-coder:7b"),
   });
-  await expect(qwenRow.getByRole("button", { name: "Remove" })).toBeDisabled();
+  await expect(qwenRow.getByRole("button", { name: "Remove" })).toHaveCount(0);
 
   const installedBlock = getDetailBlock(page, "Installed Locally");
   const llamaRow = installedBlock.locator(".model-catalog-item").filter({
     has: page.getByText("llama3.2:latest"),
   });
-  await llamaRow.hover();
-  await llamaRow.getByRole("button", { name: "Slow" }).click();
-  await expect(page.getByText("llama3.2:latest is now the active model.")).toBeVisible();
-  await expect(llamaRow.getByText("slow")).toBeVisible();
-  await expect(llamaRow.getByText("fast")).toBeVisible();
-  await expect(qwenRow.getByText("slow")).toHaveCount(0);
-
-  await qwenRow.hover();
-  await qwenRow.getByRole("button", { name: "Fast" }).click();
-  await expect(page.getByText("qwen2.5-coder:7b is now the fast-stage model.")).toBeVisible();
-  await expect(qwenRow.getByText("fast")).toBeVisible();
-  await expect(llamaRow.getByText("fast")).toHaveCount(0);
+  await expect(
+    llamaRow.locator(".status-pill").filter({ hasText: /^fast$/i }),
+  ).toBeVisible();
+  await expect(llamaRow.getByRole("button", { name: "Slow" })).toHaveCount(0);
+  await expect(llamaRow.getByRole("button", { name: "Remove" })).toHaveCount(0);
+  await expect(
+    qwenRow.locator(".status-pill").filter({ hasText: /^slow$/i }),
+  ).toBeVisible();
 
   await expect(page.getByText("Page 1 of 2")).toBeVisible();
   await expect(page.getByText("catalog-model-01")).toBeVisible();
@@ -3283,6 +3279,33 @@ test("models page manages installed and downloadable Ollama models", async ({ pa
   await expect(installedBlock.getByText("Download gemma3:4b")).toHaveCount(0);
   await expect(installedBlock.getByText("Download phi4")).toHaveCount(0);
 
+  const gemmaRow = installedBlock.locator(".model-catalog-item").filter({
+    has: page.getByText("gemma3:4b"),
+  });
+  const phiRow = installedBlock.locator(".model-catalog-item").filter({
+    has: page.getByText("phi4"),
+  });
+
+  await gemmaRow.getByRole("button", { name: "Slow" }).click();
+  await expect(page.getByText("gemma3:4b is now the active model.")).toBeVisible();
+  await expect(
+    gemmaRow.locator(".status-pill").filter({ hasText: /^slow$/i }),
+  ).toBeVisible();
+  await expect(
+    qwenRow.locator(".status-pill").filter({ hasText: /^slow$/i }),
+  ).toHaveCount(0);
+  await expect(qwenRow.getByRole("button", { name: "Slow" })).toBeVisible();
+
+  await phiRow.getByRole("button", { name: "Fast" }).click();
+  await expect(page.getByText("phi4 is now the fast-stage model.")).toBeVisible();
+  await expect(
+    phiRow.locator(".status-pill").filter({ hasText: /^fast$/i }),
+  ).toBeVisible();
+  await expect(
+    llamaRow.locator(".status-pill").filter({ hasText: /^fast$/i }),
+  ).toHaveCount(0);
+  await expect(llamaRow.getByRole("button", { name: "Fast" })).toBeVisible();
+
   await page.reload();
   await expect(installedBlock.getByText("Download stalled-download:latest")).toBeVisible();
   await expect.poll(async () => {
@@ -3305,11 +3328,6 @@ test("models page manages installed and downloadable Ollama models", async ({ pa
   await expect(stalledOperation.getByRole("button", { name: "Dismiss" })).toBeVisible();
   await stalledOperation.getByRole("button", { name: "Dismiss" }).click();
   await expect(stalledOperation).toHaveCount(0);
-
-  await page.getByRole("textbox", { name: "Search" }).fill("");
-  await qwenRow.hover();
-  await qwenRow.getByRole("button", { name: "Slow" }).click();
-  await expect(page.getByText("qwen2.5-coder:7b is now the active model.")).toBeVisible();
   await llamaRow.getByRole("button", { name: "Remove" }).click();
   await expect(installedBlock.getByText("Removal llama3.2:latest")).toBeVisible();
   await expect.poll(async () => await llamaRow.count()).toBe(0);

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os/exec"
 	"sort"
 	"strings"
@@ -58,6 +59,7 @@ const (
 	recentOutputSelectLimit = 3
 	recentOutputPromptLimit = 220
 	minimumInspectTimeout   = 10 * time.Second
+	hotResidentLoadFloorMS  = int64(250)
 )
 
 func New(store *db.Store, modelClient model.Client, modelName, modelBaseURL, modelKeepAlive, suggestStrategy string, suggestTimeout time.Duration) *Engine {
@@ -105,6 +107,7 @@ func (e *Engine) Suggest(ctx context.Context, request api.SuggestRequest) (api.S
 	}
 
 	if len(inspection.response.Candidates) == 0 || inspection.winner == nil {
+		e.logSuggestTrace(inspection, nil, time.Since(requestStartedAt).Milliseconds(), 0, false)
 		return api.SuggestResponse{}, nil
 	}
 	return e.recordSuggestion(ctx, inspection, *inspection.winner, time.Since(requestStartedAt).Milliseconds())
@@ -677,6 +680,7 @@ func intPtr(value int) *int {
 }
 
 func (e *Engine) recordSuggestion(ctx context.Context, inspection inspectResult, candidate rankedCandidate, requestLatencyMS int64) (api.SuggestResponse, error) {
+	modelStartState := classifyLiveStartState(inspection.requestModelName, inspection.modelMetrics)
 	suggestionID, err := e.store.CreateSuggestion(ctx, db.SuggestionRecord{
 		SessionID:             inspection.resolvedRequest.SessionID,
 		Buffer:                inspection.resolvedRequest.Buffer,
@@ -690,6 +694,8 @@ func (e *Engine) recordSuggestion(ctx context.Context, inspection inspectResult,
 		RequestLatencyMS:      requestLatencyMS,
 		ModelName:             modelNameForSource(inspection.response.ModelName, candidate.Source),
 		RequestModelName:      inspection.requestModelName,
+		ModelKeepAlive:        e.modelKeepAlive,
+		ModelStartState:       modelStartState,
 		ModelTotalDurationMS:  inspection.modelMetrics.TotalDurationMS,
 		ModelLoadDurationMS:   inspection.modelMetrics.LoadDurationMS,
 		ModelPromptEvalMS:     inspection.modelMetrics.PromptEvalDurationMS,
@@ -697,12 +703,14 @@ func (e *Engine) recordSuggestion(ctx context.Context, inspection inspectResult,
 		ModelPromptEvalCount:  inspection.modelMetrics.PromptEvalCount,
 		ModelEvalCount:        inspection.modelMetrics.EvalCount,
 		PromptText:            inspection.response.Prompt,
-		StructuredContextJSON: marshalSuggestionContext(inspection),
+		StructuredContextJSON: marshalSuggestionContext(inspection, e.modelKeepAlive),
 		CreatedAtMS:           time.Now().UnixMilli(),
 	})
 	if err != nil {
 		return api.SuggestResponse{}, err
 	}
+
+	e.logSuggestTrace(inspection, &candidate, requestLatencyMS, suggestionID, true)
 
 	return api.SuggestResponse{
 		SuggestionID: suggestionID,
@@ -711,7 +719,97 @@ func (e *Engine) recordSuggestion(ctx context.Context, inspection inspectResult,
 	}, nil
 }
 
-func marshalSuggestionContext(inspection inspectResult) string {
+func classifyLiveStartState(requestModelName string, metrics model.SuggestMetrics) string {
+	if strings.TrimSpace(requestModelName) == "" {
+		return "not-applicable"
+	}
+	if metrics.TotalDurationMS < 0 || metrics.LoadDurationMS < 0 || metrics.PromptEvalDurationMS < 0 || metrics.EvalDurationMS < 0 || metrics.PromptEvalCount < 0 || metrics.EvalCount < 0 {
+		return "unknown"
+	}
+	if metrics.TotalDurationMS == 0 &&
+		metrics.LoadDurationMS == 0 &&
+		metrics.PromptEvalDurationMS == 0 &&
+		metrics.EvalDurationMS == 0 &&
+		metrics.PromptEvalCount == 0 &&
+		metrics.EvalCount == 0 {
+		return "unknown"
+	}
+	if metrics.LoadDurationMS >= 0 && metrics.LoadDurationMS <= hotResidentLoadFloorMS {
+		return "hot"
+	}
+	return "cold"
+}
+
+func (e *Engine) logSuggestTrace(inspection inspectResult, candidate *rankedCandidate, requestLatencyMS int64, suggestionID int64, stored bool) {
+	if requestLatencyMS < 0 {
+		requestLatencyMS = 0
+	}
+	payload := struct {
+		Event                string `json:"event"`
+		SuggestionID         int64  `json:"suggestion_id,omitempty"`
+		Stored               bool   `json:"stored"`
+		SessionID            string `json:"session_id,omitempty"`
+		Strategy             string `json:"strategy,omitempty"`
+		Source               string `json:"source,omitempty"`
+		PrimaryModelName     string `json:"primary_model_name,omitempty"`
+		ResponseModelName    string `json:"response_model_name,omitempty"`
+		RequestModelName     string `json:"request_model_name,omitempty"`
+		RequestModelInvoked  bool   `json:"request_model_invoked"`
+		ModelKeepAlive       string `json:"model_keep_alive,omitempty"`
+		ModelStartState      string `json:"model_start_state,omitempty"`
+		HistoryTrusted       bool   `json:"history_trusted"`
+		RequestLatencyMS     int64  `json:"request_latency_ms"`
+		WinnerLatencyMS      int64  `json:"winner_latency_ms,omitempty"`
+		ModelTotalDurationMS int64  `json:"model_total_duration_ms,omitempty"`
+		ModelLoadDurationMS  int64  `json:"model_load_duration_ms,omitempty"`
+		ModelPromptEvalMS    int64  `json:"model_prompt_eval_duration_ms,omitempty"`
+		ModelEvalDurationMS  int64  `json:"model_eval_duration_ms,omitempty"`
+		ModelPromptEvalCount int64  `json:"model_prompt_eval_count,omitempty"`
+		ModelEvalCount       int64  `json:"model_eval_count,omitempty"`
+		PromptChars          int    `json:"prompt_chars"`
+		BufferChars          int    `json:"buffer_chars"`
+		SuggestionChars      int    `json:"suggestion_chars,omitempty"`
+		CandidateCount       int    `json:"candidate_count"`
+		ModelError           string `json:"model_error,omitempty"`
+	}{
+		Event:                "suggest_trace",
+		SuggestionID:         suggestionID,
+		Stored:               stored,
+		SessionID:            inspection.resolvedRequest.SessionID,
+		Strategy:             inspection.resolvedRequest.Strategy,
+		PrimaryModelName:     e.modelName,
+		ResponseModelName:    inspection.response.ModelName,
+		RequestModelName:     inspection.requestModelName,
+		RequestModelInvoked:  strings.TrimSpace(inspection.requestModelName) != "",
+		ModelKeepAlive:       e.modelKeepAlive,
+		ModelStartState:      classifyLiveStartState(inspection.requestModelName, inspection.modelMetrics),
+		HistoryTrusted:       inspection.response.HistoryTrusted,
+		RequestLatencyMS:     requestLatencyMS,
+		ModelTotalDurationMS: inspection.modelMetrics.TotalDurationMS,
+		ModelLoadDurationMS:  inspection.modelMetrics.LoadDurationMS,
+		ModelPromptEvalMS:    inspection.modelMetrics.PromptEvalDurationMS,
+		ModelEvalDurationMS:  inspection.modelMetrics.EvalDurationMS,
+		ModelPromptEvalCount: inspection.modelMetrics.PromptEvalCount,
+		ModelEvalCount:       inspection.modelMetrics.EvalCount,
+		PromptChars:          len(inspection.response.Prompt),
+		BufferChars:          len(inspection.resolvedRequest.Buffer),
+		CandidateCount:       len(inspection.response.Candidates),
+		ModelError:           inspection.response.ModelError,
+	}
+	if candidate != nil {
+		payload.Source = candidate.Source
+		payload.WinnerLatencyMS = candidate.LatencyMS
+		payload.SuggestionChars = len(candidate.Command)
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("suggest_trace marshal_error=%q", err)
+		return
+	}
+	log.Printf("%s", encoded)
+}
+
+func marshalSuggestionContext(inspection inspectResult, modelKeepAlive string) string {
 	payload := struct {
 		Request struct {
 			SessionID    string `json:"sessionId"`
@@ -723,6 +821,9 @@ func marshalSuggestionContext(inspection inspectResult) string {
 			Strategy     string `json:"strategy"`
 		} `json:"request"`
 		ModelName           string                           `json:"modelName"`
+		RequestModelName    string                           `json:"requestModelName"`
+		ModelKeepAlive      string                           `json:"modelKeepAlive"`
+		ModelStartState     string                           `json:"modelStartState"`
 		HistoryTrusted      bool                             `json:"historyTrusted"`
 		RecentCommands      []string                         `json:"recentCommands"`
 		LastContext         db.CommandContext                `json:"lastContext"`
@@ -739,6 +840,9 @@ func marshalSuggestionContext(inspection inspectResult) string {
 	payload.Request.LastExitCode = inspection.resolvedRequest.LastExitCode
 	payload.Request.Strategy = inspection.resolvedRequest.Strategy
 	payload.ModelName = inspection.response.ModelName
+	payload.RequestModelName = inspection.requestModelName
+	payload.ModelKeepAlive = modelKeepAlive
+	payload.ModelStartState = classifyLiveStartState(inspection.requestModelName, inspection.modelMetrics)
 	payload.HistoryTrusted = inspection.response.HistoryTrusted
 	payload.RecentCommands = inspection.response.RecentCommands
 	payload.LastContext = db.CommandContext{
@@ -789,9 +893,7 @@ func BuildPrompt(
 	appendPromptList(&builder, "project_tasks", retrievedContext.ProjectTasks)
 	appendPromptList(&builder, "project_task_matches", retrievedContext.ProjectTaskMatches)
 	if strings.TrimSpace(request.Buffer) == "" {
-		builder.WriteString("\nbuffer is empty right now. Use last_command and recent context to suggest one full command only when there is a clear, high-confidence next step.\n")
-		builder.WriteString("buffer is empty right now. Prefer the most likely correction of the last command or the most likely immediate follow-up command.\n")
-		builder.WriteString("buffer is empty right now. If there is no clear next step, return an empty response.\n")
+		builder.WriteString("\nbuffer is empty. Use last_command and recent context to suggest one full command only when there is a clear, high-confidence next step; prefer correcting the last command or the most likely immediate follow-up, otherwise return an empty response.\n")
 	} else {
 		builder.WriteString("\nThe current buffer below is literal shell text. Copy it exactly, character-for-character, at the start of your answer.\n")
 		builder.WriteString("Preserve unmatched quotes, parentheses, colons, and trailing spaces from the current buffer.\n")

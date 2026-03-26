@@ -113,6 +113,22 @@ expect_marker "history-then-fast-then-model" "model" "slow" " [ai/slow]"
 expect_marker "fast-then-model" "history+model" "slow" " [history+ai/slow]"
 expect_marker "history-only" "history" "" " [history]"
 
+parse_output="$({
+  HOME="$TMP_DIR" \
+  LAC_STATE_DIR="$STATE_DIR" \
+  LAC_ASYNC_DIR="$STATE_DIR/async" \
+  LAC_SOCKET_PATH="$SOCKET_PATH" \
+  LAC_DB_PATH="$DB_PATH" \
+  LAC_CLIENT_BIN="$ROOT_DIR/bin/autocomplete-client" \
+  LAC_DAEMON_BIN="$ROOT_DIR/bin/autocomplete-daemon" \
+  zsh -dfc "source '$ROOT_DIR/zsh/llm-cli-suggestions.zsh'; _lac_parse_suggestion_line \\\$'0\\t\\t\\tslow'; printf '%s\\t%s\\t%s\\t%s\\n' \\\"\\$LAC_PARSED_SUGGESTION_FIELDS[1]\\\" \\\"\\$LAC_PARSED_SUGGESTION_FIELDS[2]\\\" \\\"\\$LAC_PARSED_SUGGESTION_FIELDS[3]\\\" \\\"\\$LAC_PARSED_SUGGESTION_FIELDS[4]\\\""
+})"
+
+if [[ "$parse_output" != $'0\t\t\tslow' ]]; then
+  echo "expected empty-field TSV parsing to preserve slow as stage role only, got: $parse_output" >&2
+  exit 1
+fi
+
 run_idle_prefix() {
   local prefix="$1"
   local snapshot_path="$2"

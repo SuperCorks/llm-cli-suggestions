@@ -1,7 +1,6 @@
 "use client";
 
 import { ChevronDown, Download, Play, Trash2 } from "lucide-react";
-import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ModelMetadataChips } from "@/components/model-metadata-chips";
@@ -72,6 +71,10 @@ export function ModelsConsole({
   const sizeFilterRef = useRef<HTMLDivElement | null>(null);
 
   const configuredModel = runtime.settings.modelName;
+  const fastModelName = runtime.settings.fastModelName.trim();
+  const dualModelMode =
+    runtime.settings.suggestStrategy === "history-then-fast-then-model" ||
+    runtime.settings.suggestStrategy === "fast-then-model";
   const modelIsLive = runtime.health.ok && runtime.health.modelName === configuredModel;
 
   const sizeOptions = useMemo(
@@ -95,9 +98,33 @@ export function ModelsConsole({
     });
   }, [models, search, sizeFilters]);
 
-  const installedModels = models
-    .filter((model) => model.installed)
-    .sort((a, b) => (a.name === configuredModel ? -1 : b.name === configuredModel ? 1 : 0));
+  const installedModels = useMemo(() => {
+    function installedPriority(modelName: string) {
+      if (dualModelMode && modelName === configuredModel) {
+        return 0;
+      }
+      if (dualModelMode && fastModelName && modelName === fastModelName) {
+        return 1;
+      }
+      if (!dualModelMode && modelName === configuredModel) {
+        return 0;
+      }
+      return 2;
+    }
+
+    return models
+      .filter((model) => model.installed)
+      .sort((left, right) => {
+        const priorityDiff = installedPriority(left.name) - installedPriority(right.name);
+        if (priorityDiff !== 0) {
+          return priorityDiff;
+        }
+        return left.name.localeCompare(right.name, undefined, {
+          numeric: true,
+          sensitivity: "base",
+        });
+      });
+  }, [configuredModel, dualModelMode, fastModelName, models]);
   const availableModels = filteredAvailableModels;
   const availableTotalPages = Math.max(
     1,
@@ -397,7 +424,7 @@ export function ModelsConsole({
         : `${sizeFilters.length} sizes`;
 
   async function activateModel(modelName: string) {
-    setSwitchingModel(modelName);
+    setSwitchingModel(`slow:${modelName}`);
     setMessage("");
     setError("");
     try {
@@ -428,6 +455,45 @@ export function ModelsConsole({
       setMessage(`${modelName} is now the active model.`);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Unable to switch active model");
+    } finally {
+      setSwitchingModel(null);
+    }
+  }
+
+  async function activateFastModel(modelName: string) {
+    setSwitchingModel(`fast:${modelName}`);
+    setMessage("");
+    setError("");
+    try {
+      const settingsResponse = await fetch("/api/runtime/settings", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          LAC_FAST_MODEL_NAME: modelName,
+        }),
+      });
+      const settingsData = (await settingsResponse.json()) as { error?: string };
+      if (!settingsResponse.ok) {
+        throw new Error(settingsData.error || "Unable to save runtime settings");
+      }
+
+      const restartResponse = await fetch("/api/runtime/restart", {
+        method: "POST",
+      });
+      const restartData = (await restartResponse.json()) as RuntimeStatus & { error?: string };
+      if (!restartResponse.ok) {
+        throw new Error(restartData.error || "Unable to restart daemon");
+      }
+
+      setRuntime(restartData);
+      await refreshRuntime();
+      setMessage(`${modelName} is now the fast-stage model.`);
+    } catch (requestError) {
+      setError(
+        requestError instanceof Error ? requestError.message : "Unable to switch fast-stage model",
+      );
     } finally {
       setSwitchingModel(null);
     }
@@ -599,7 +665,9 @@ export function ModelsConsole({
             <div>
               <h3>Installed Locally</h3>
               <p className="helper-text">
-                Hover a row to quickly switch the daemon to another installed model or remove models you no longer need.
+                {dualModelMode
+                  ? "Assign installed models as the fast-stage or large/slow-stage model, or remove models you no longer need."
+                  : "Hover a row to quickly switch the daemon to another installed model or remove models you no longer need."}
               </p>
             </div>
           </div>
@@ -667,60 +735,106 @@ export function ModelsConsole({
             {installedModels.length > 0 ? (
               installedModels.map((model) => {
                 const isConfigured = model.name === configuredModel;
-                const isLive = modelIsLive && model.name === configuredModel;
+                const isSlowModel = dualModelMode && isConfigured;
+                const isFastModel = dualModelMode && fastModelName !== "" && model.name === fastModelName;
+                const isLive = dualModelMode ? isSlowModel || isFastModel : modelIsLive && isConfigured;
                 const activeJob = activeOperationByModel.get(model.name) || null;
-                const canActivate = !isConfigured && !activeJob;
+                const canActivate = !dualModelMode && !isConfigured && !activeJob;
+                const canAssignSlow = dualModelMode && !isSlowModel && !isFastModel && !activeJob;
+                const canAssignFast = dualModelMode && !isSlowModel && !isFastModel && !activeJob;
+                const canRemove = !activeJob && switchingModel === null && !isSlowModel && !isFastModel && !isConfigured;
                 return (
-                  <div key={model.name} className="model-catalog-item">
+                  <div
+                    key={model.name}
+                    className={isLive ? "model-catalog-item model-catalog-item-live" : "model-catalog-item"}
+                  >
                     <div className="model-catalog-row">
                       <div className="model-catalog-primary">
                         <code>{model.name}</code>
-                        {isConfigured ? (
-                          <span className="model-catalog-note">
-                            {hydrated ? (
-                              <>
-                                Change the <Link href="/daemon">daemon settings</Link> before removing.
-                              </>
-                            ) : (
-                              "Change the daemon settings before removing."
-                            )}
-                          </span>
-                        ) : activeJob ? (
+                        {activeJob ? (
                           <span className="model-catalog-note">{activeJob.message}</span>
                         ) : null}
                       </div>
-                      <div className="model-catalog-meta">
-                        <div className="model-catalog-badges">
-                          <ModelMetadataChips model={model} showInstalledStatus />
-                          {isConfigured ? (
-                            <span className="status-pill status-pill-running">configured</span>
-                          ) : null}
-                          {isLive ? <span className="status-pill status-pill-completed">live</span> : null}
+                      <div className="model-catalog-side">
+                        <div className="model-catalog-meta">
+                          <div className="model-catalog-badges">
+                            <ModelMetadataChips model={model} />
+                            {!dualModelMode && isConfigured ? (
+                              <span className="status-pill status-pill-running">configured</span>
+                            ) : null}
+                            {!dualModelMode && isLive ? (
+                              <span className="status-pill status-pill-completed">live</span>
+                            ) : null}
+                          </div>
                         </div>
-                      </div>
-                      <div className="model-catalog-actions-inline">
-                        {canActivate ? (
-                          <button
-                            type="button"
-                            className="icon-button model-catalog-icon-button"
-                            disabled={switchingModel !== null}
-                            onClick={() => void activateModel(model.name)}
-                            aria-label={switchingModel === model.name ? "Activating model" : "Use as active model"}
-                            title={switchingModel === model.name ? `Activating ${model.name}` : `Use ${model.name} as the active model`}
-                          >
-                            <Play aria-hidden="true" />
-                          </button>
-                        ) : null}
-                        <button
-                          type="button"
-                          className="icon-button model-catalog-icon-button model-catalog-icon-button-danger"
-                          disabled={Boolean(activeJob) || isConfigured || switchingModel !== null}
-                          onClick={() => void removeModel(model.name)}
-                          aria-label={activeJob?.action === "remove" ? "Removing" : "Remove"}
-                          title={activeJob?.action === "remove" ? `Removing ${model.name}` : `Remove ${model.name}`}
-                        >
-                          <Trash2 aria-hidden="true" />
-                        </button>
+                        <div className="model-catalog-actions-inline model-catalog-actions-inline-fixed">
+                          {dualModelMode ? (
+                            <>
+                              {isSlowModel ? (
+                                <span className="status-pill status-pill-completed">slow</span>
+                              ) : null}
+                              {isFastModel ? (
+                                <span className="status-pill status-pill-completed">fast</span>
+                              ) : null}
+                              {canAssignSlow ? (
+                                <button
+                                  type="button"
+                                  className="button-secondary model-catalog-role-button"
+                                  disabled={switchingModel !== null}
+                                  onClick={() => void activateModel(model.name)}
+                                >
+                                  Slow
+                                </button>
+                              ) : null}
+                              {canAssignFast ? (
+                                <button
+                                  type="button"
+                                  className="button-secondary model-catalog-role-button"
+                                  disabled={switchingModel !== null}
+                                  onClick={() => void activateFastModel(model.name)}
+                                >
+                                  Fast
+                                </button>
+                              ) : null}
+                              {canRemove ? (
+                                <button
+                                  type="button"
+                                  className="icon-button model-catalog-icon-button model-catalog-icon-button-danger"
+                                  onClick={() => void removeModel(model.name)}
+                                  aria-label="Remove"
+                                  title={`Remove ${model.name}`}
+                                >
+                                  <Trash2 aria-hidden="true" />
+                                </button>
+                              ) : null}
+                            </>
+                          ) : (
+                            <>
+                              {canActivate ? (
+                                <button
+                                  type="button"
+                                  className="icon-button model-catalog-icon-button"
+                                  disabled={switchingModel !== null}
+                                  onClick={() => void activateModel(model.name)}
+                                  aria-label={switchingModel === `slow:${model.name}` ? "Activating model" : "Use as active model"}
+                                  title={switchingModel === `slow:${model.name}` ? `Activating ${model.name}` : `Use ${model.name} as the active model`}
+                                >
+                                  <Play aria-hidden="true" />
+                                </button>
+                              ) : null}
+                              <button
+                                type="button"
+                                className="icon-button model-catalog-icon-button model-catalog-icon-button-danger"
+                                disabled={Boolean(activeJob) || isConfigured || switchingModel !== null}
+                                onClick={() => void removeModel(model.name)}
+                                aria-label={activeJob?.action === "remove" ? "Removing" : "Remove"}
+                                title={activeJob?.action === "remove" ? `Removing ${model.name}` : `Remove ${model.name}`}
+                              >
+                                <Trash2 aria-hidden="true" />
+                              </button>
+                            </>
+                          )}
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -796,41 +910,43 @@ export function ModelsConsole({
                           <span className="model-catalog-note">{activeJob.message}</span>
                         ) : null}
                       </div>
-                      <div className="model-catalog-meta">
-                        <div className="model-catalog-badges">
-                          <ModelMetadataChips model={model} showRemoteStatus />
-                          {isConfigured ? (
-                            <span className="status-pill status-pill-running">configured</span>
-                          ) : null}
+                      <div className="model-catalog-side">
+                        <div className="model-catalog-meta">
+                          <div className="model-catalog-badges">
+                            <ModelMetadataChips model={model} showRemoteStatus />
+                            {isConfigured ? (
+                              <span className="status-pill status-pill-running">configured</span>
+                            ) : null}
+                          </div>
                         </div>
-                      </div>
-                      <div className="model-catalog-actions-inline">
-                        <button
-                          type="button"
-                          className="icon-button model-catalog-icon-button"
-                          disabled={Boolean(activeJob) || isRemoteOnly}
-                          onClick={() => {
-                            if (!isRemoteOnly && !activeJob) {
-                              void startDownload(model.name);
+                        <div className="model-catalog-actions-inline">
+                          <button
+                            type="button"
+                            className="icon-button model-catalog-icon-button"
+                            disabled={Boolean(activeJob) || isRemoteOnly}
+                            onClick={() => {
+                              if (!isRemoteOnly && !activeJob) {
+                                void startDownload(model.name);
+                              }
+                            }}
+                            aria-label={
+                              isRemoteOnly
+                                ? "Remote only"
+                                : activeJob?.action === "install"
+                                  ? "Downloading"
+                                  : "Download"
                             }
-                          }}
-                          aria-label={
-                            isRemoteOnly
-                              ? "Remote only"
-                              : activeJob?.action === "install"
-                                ? "Downloading"
-                                : "Download"
-                          }
-                          title={
-                            isRemoteOnly
-                              ? `Remote only model ${model.name}`
-                              : activeJob?.action === "install"
-                                ? `Downloading ${model.name}`
-                                : `Download ${model.name}`
-                          }
-                        >
-                          <Download aria-hidden="true" />
-                        </button>
+                            title={
+                              isRemoteOnly
+                                ? `Remote only model ${model.name}`
+                                : activeJob?.action === "install"
+                                  ? `Downloading ${model.name}`
+                                  : `Download ${model.name}`
+                            }
+                          >
+                            <Download aria-hidden="true" />
+                          </button>
+                        </div>
                       </div>
                     </div>
                   </div>

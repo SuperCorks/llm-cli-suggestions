@@ -36,7 +36,7 @@ The engine uses these inputs when choosing a suggestion:
 
 ## Empty Buffer Behavior
 
-When the current buffer is empty, the engine does not open history-prefix matching or token retrieval against the whole command corpus. Instead, it only permits a model-backed suggestion when there is a non-empty `last_command` context available. The prompt appends explicit empty-buffer guidance at the end of the snapshot, in place of a blank `current_buffer` block, so the model sees the normal request context first and then the instruction to prefer either a correction of the last command, an immediate follow-up command, or an empty response when there is no clear next step.
+When the current buffer is empty, the engine does not open history-prefix matching or token retrieval against the whole command corpus. Instead, it only permits a model-backed suggestion when there is a non-empty `last_command` context available. The prompt appends one compact empty-buffer instruction at the end of the snapshot, in place of a blank `current_buffer` block, telling the model to prefer a correction of the last command or the most likely immediate follow-up command, and otherwise return an empty response.
 
 ## Prompt Shape
 

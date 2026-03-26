@@ -37,6 +37,8 @@ type SuggestionRecord struct {
 	RequestLatencyMS      int64
 	ModelName             string
 	RequestModelName      string
+	ModelKeepAlive        string
+	ModelStartState       string
 	ModelTotalDurationMS  int64
 	ModelLoadDurationMS   int64
 	ModelPromptEvalMS     int64
@@ -146,6 +148,8 @@ func (s *Store) migrate(ctx context.Context) error {
 			request_latency_ms INTEGER NOT NULL DEFAULT -1,
 			model_name TEXT NOT NULL,
 			request_model_name TEXT NOT NULL DEFAULT '',
+			model_keep_alive TEXT NOT NULL DEFAULT '',
+			model_start_state TEXT NOT NULL DEFAULT '',
 			model_total_duration_ms INTEGER NOT NULL DEFAULT -1,
 			model_load_duration_ms INTEGER NOT NULL DEFAULT -1,
 			model_prompt_eval_duration_ms INTEGER NOT NULL DEFAULT -1,
@@ -185,6 +189,12 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 	if err := s.ensureColumn(ctx, "suggestions", "request_model_name", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "suggestions", "model_keep_alive", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "suggestions", "model_start_state", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	if err := s.ensureColumn(ctx, "suggestions", "model_total_duration_ms", "INTEGER NOT NULL DEFAULT -1"); err != nil {
@@ -567,10 +577,11 @@ func (s *Store) CreateSuggestion(ctx context.Context, record SuggestionRecord) (
 		`INSERT INTO suggestions(
 			session_id, buffer, suggestion_text, source, cwd, repo_root, branch,
 			last_exit_code, latency_ms, request_latency_ms, model_name, request_model_name,
+			model_keep_alive, model_start_state,
 			model_total_duration_ms, model_load_duration_ms, model_prompt_eval_duration_ms,
 			model_eval_duration_ms, model_prompt_eval_count, model_eval_count,
 			prompt_text, structured_context_json, created_at_ms
-		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		record.SessionID,
 		record.Buffer,
 		record.Suggestion,
@@ -583,6 +594,8 @@ func (s *Store) CreateSuggestion(ctx context.Context, record SuggestionRecord) (
 		record.RequestLatencyMS,
 		record.ModelName,
 		record.RequestModelName,
+		record.ModelKeepAlive,
+		record.ModelStartState,
 		record.ModelTotalDurationMS,
 		record.ModelLoadDurationMS,
 		record.ModelPromptEvalMS,

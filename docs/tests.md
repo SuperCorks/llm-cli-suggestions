@@ -109,6 +109,8 @@ This now verifies both package integrity and a first slice of focused engine beh
 - inspect responses and prompts that expose selected recent output context
 - prompt construction with a configured static system-prompt prefix
 - prompt construction that includes retrieved local context
+- live suggestion telemetry persistence for request keep-alive and tolerant hot/cold start-state classification
+- daemon request tracing logs that expose request model, keep-alive, start state, and Ollama timing breakdowns for dashboard validation
 
 There is also a focused engine microbenchmark for a mixed `git checkout fea` workload that exercises session context hydration, history lookup, path retrieval, and git branch retrieval together:
 

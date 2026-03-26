@@ -109,7 +109,8 @@ func TestSuggestAllowsEmptyBufferWithLastCommandContext(t *testing.T) {
 	if response.Source != "model" {
 		t.Fatalf("expected model source, got %q", response.Source)
 	}
-	if !strings.Contains(observedPrompt, "buffer is empty right now. Use last_command and recent context") {
+	const emptyBufferGuidance = "buffer is empty. Use last_command and recent context to suggest one full command only when there is a clear, high-confidence next step; prefer correcting the last command or the most likely immediate follow-up, otherwise return an empty response."
+	if !strings.Contains(observedPrompt, emptyBufferGuidance) {
 		t.Fatalf("expected empty-buffer prompt guidance, got %q", observedPrompt)
 	}
 	if !strings.Contains(observedPrompt, "recent_context:") {
@@ -154,18 +155,10 @@ func TestSuggestAllowsEmptyBufferWithLastCommandContext(t *testing.T) {
 	if strings.Contains(observedPrompt, "last_exit_code: 1") == false {
 		t.Fatalf("expected last exit code in prompt, got %q", observedPrompt)
 	}
-	if strings.Contains(observedPrompt, "buffer is empty right now. Prefer the most likely correction of the last command or the most likely immediate follow-up command.") == false {
-		t.Fatalf("expected empty-buffer correction guidance, got %q", observedPrompt)
+	if strings.Count(observedPrompt, "buffer is empty") != 1 {
+		t.Fatalf("expected a single empty-buffer guidance line, got %q", observedPrompt)
 	}
-	if strings.Contains(observedPrompt, "buffer is empty right now. If there is no clear next step, return an empty response.") == false {
-		t.Fatalf("expected empty-buffer empty-response guidance, got %q", observedPrompt)
-	}
-	if !strings.HasSuffix(
-		observedPrompt,
-		"buffer is empty right now. Use last_command and recent context to suggest one full command only when there is a clear, high-confidence next step.\n"+
-			"buffer is empty right now. Prefer the most likely correction of the last command or the most likely immediate follow-up command.\n"+
-			"buffer is empty right now. If there is no clear next step, return an empty response.\n",
-	) {
+	if !strings.HasSuffix(observedPrompt, emptyBufferGuidance+"\n") {
 		t.Fatalf("expected empty-buffer guidance at end of prompt, got %q", observedPrompt)
 	}
 	if strings.Contains(observedPrompt, "The returned command must begin exactly with the current buffer.") == false {

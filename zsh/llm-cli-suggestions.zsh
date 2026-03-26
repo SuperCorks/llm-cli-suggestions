@@ -41,18 +41,42 @@ _lac_runtime_value() {
   ) 2>/dev/null
 }
 
-typeset -gx LAC_SOCKET_PATH="${LAC_SOCKET_PATH:-$(_lac_runtime_value LAC_SOCKET_PATH)}"
-typeset -gx LAC_DB_PATH="${LAC_DB_PATH:-$(_lac_runtime_value LAC_DB_PATH)}"
-typeset -gx LAC_MODEL_NAME="${LAC_MODEL_NAME:-$(_lac_runtime_value LAC_MODEL_NAME)}"
-typeset -gx LAC_FAST_MODEL_NAME="${LAC_FAST_MODEL_NAME:-$(_lac_runtime_value LAC_FAST_MODEL_NAME)}"
-typeset -gx LAC_MODEL_BASE_URL="${LAC_MODEL_BASE_URL:-$(_lac_runtime_value LAC_MODEL_BASE_URL)}"
-typeset -gx LAC_SUGGEST_STRATEGY="${LAC_SUGGEST_STRATEGY:-$(_lac_runtime_value LAC_SUGGEST_STRATEGY)}"
-typeset -gx LAC_SUGGEST_TIMEOUT_MS="${LAC_SUGGEST_TIMEOUT_MS:-$(_lac_runtime_value LAC_SUGGEST_TIMEOUT_MS)}"
-typeset -gx LAC_ACCEPT_KEY="${LAC_ACCEPT_KEY:-$(_lac_runtime_value LAC_ACCEPT_KEY)}"
-typeset -gx LAC_AUTO_CAPTURE_ENABLED="${LAC_AUTO_CAPTURE_ENABLED:-$(_lac_runtime_value LAC_AUTO_CAPTURE_ENABLED)}"
-typeset -gx LAC_PTY_CAPTURE_MODE="${LAC_PTY_CAPTURE_MODE:-$(_lac_runtime_value LAC_PTY_CAPTURE_MODE)}"
-typeset -gx LAC_PTY_CAPTURE_ALLOWLIST="${LAC_PTY_CAPTURE_ALLOWLIST:-$(_lac_runtime_value LAC_PTY_CAPTURE_ALLOWLIST)}"
-typeset -gx LAC_PTY_CAPTURE_BLOCKLIST="${LAC_PTY_CAPTURE_BLOCKLIST:-$(_lac_runtime_value LAC_PTY_CAPTURE_BLOCKLIST)}"
+_lac_resolve_setting() {
+  local key="$1"
+  local current_value="$2"
+  local runtime_value=""
+
+  runtime_value="$(_lac_runtime_value "$key")"
+
+  case "${FANCY:-}" in
+    1|true|yes|on)
+      if [[ -n "$runtime_value" ]]; then
+        print -r -- "$runtime_value"
+        return 0
+      fi
+      ;;
+  esac
+
+  if [[ -n "$current_value" ]]; then
+    print -r -- "$current_value"
+    return 0
+  fi
+
+  print -r -- "$runtime_value"
+}
+
+typeset -gx LAC_SOCKET_PATH="$(_lac_resolve_setting LAC_SOCKET_PATH "$LAC_SOCKET_PATH")"
+typeset -gx LAC_DB_PATH="$(_lac_resolve_setting LAC_DB_PATH "$LAC_DB_PATH")"
+typeset -gx LAC_MODEL_NAME="$(_lac_resolve_setting LAC_MODEL_NAME "$LAC_MODEL_NAME")"
+typeset -gx LAC_FAST_MODEL_NAME="$(_lac_resolve_setting LAC_FAST_MODEL_NAME "$LAC_FAST_MODEL_NAME")"
+typeset -gx LAC_MODEL_BASE_URL="$(_lac_resolve_setting LAC_MODEL_BASE_URL "$LAC_MODEL_BASE_URL")"
+typeset -gx LAC_SUGGEST_STRATEGY="$(_lac_resolve_setting LAC_SUGGEST_STRATEGY "$LAC_SUGGEST_STRATEGY")"
+typeset -gx LAC_SUGGEST_TIMEOUT_MS="$(_lac_resolve_setting LAC_SUGGEST_TIMEOUT_MS "$LAC_SUGGEST_TIMEOUT_MS")"
+typeset -gx LAC_ACCEPT_KEY="$(_lac_resolve_setting LAC_ACCEPT_KEY "$LAC_ACCEPT_KEY")"
+typeset -gx LAC_AUTO_CAPTURE_ENABLED="$(_lac_resolve_setting LAC_AUTO_CAPTURE_ENABLED "$LAC_AUTO_CAPTURE_ENABLED")"
+typeset -gx LAC_PTY_CAPTURE_MODE="$(_lac_resolve_setting LAC_PTY_CAPTURE_MODE "$LAC_PTY_CAPTURE_MODE")"
+typeset -gx LAC_PTY_CAPTURE_ALLOWLIST="$(_lac_resolve_setting LAC_PTY_CAPTURE_ALLOWLIST "$LAC_PTY_CAPTURE_ALLOWLIST")"
+typeset -gx LAC_PTY_CAPTURE_BLOCKLIST="$(_lac_resolve_setting LAC_PTY_CAPTURE_BLOCKLIST "$LAC_PTY_CAPTURE_BLOCKLIST")"
 typeset -gx LAC_STATE_DIR
 
 typeset -gx LAC_SOCKET_PATH="${LAC_SOCKET_PATH:-$LAC_STATE_DIR/daemon.sock}"
@@ -110,6 +134,20 @@ _lac_repo_root() {
 
 _lac_git_branch() {
   git symbolic-ref --quiet --short HEAD 2>/dev/null
+}
+
+_lac_daemon_inputs_newer_than_pid() {
+  [[ -f "$LAC_DAEMON_PID_PATH" ]] || return 0
+
+  if [[ -x "$LAC_DAEMON_BIN" && "$LAC_DAEMON_BIN" -nt "$LAC_DAEMON_PID_PATH" ]]; then
+    return 0
+  fi
+
+  if [[ -f "$LAC_RUNTIME_ENV_PATH" && "$LAC_RUNTIME_ENV_PATH" -nt "$LAC_DAEMON_PID_PATH" ]]; then
+    return 0
+  fi
+
+  return 1
 }
 
 _lac_trim_capture() {
@@ -876,6 +914,7 @@ _lac_single_request_stage_role() {
 
 _lac_parse_suggestion_line() {
   local line="$1"
+  local rest=""
   typeset -ga LAC_PARSED_SUGGESTION_FIELDS
   LAC_PARSED_SUGGESTION_FIELDS=(0 "" "" "")
 
@@ -884,7 +923,31 @@ _lac_parse_suggestion_line() {
   fi
 
   local suggestion_id suggestion source stage_role
-  IFS=$'\t' read -r suggestion_id suggestion source stage_role <<< "$line"
+
+  if [[ "$line" == *$'\t'* ]]; then
+    suggestion_id="${line%%$'\t'*}"
+    rest="${line#*$'\t'}"
+  else
+    suggestion_id="$line"
+    rest=""
+  fi
+
+  if [[ "$rest" == *$'\t'* ]]; then
+    suggestion="${rest%%$'\t'*}"
+    rest="${rest#*$'\t'}"
+  else
+    suggestion="$rest"
+    rest=""
+  fi
+
+  if [[ "$rest" == *$'\t'* ]]; then
+    source="${rest%%$'\t'*}"
+    stage_role="${rest#*$'\t'}"
+  else
+    source="$rest"
+    stage_role=""
+  fi
+
   LAC_PARSED_SUGGESTION_FIELDS=("$suggestion_id" "$suggestion" "$source" "$stage_role")
 }
 
@@ -1292,14 +1355,19 @@ lac-start-daemon() {
   if "$LAC_CLIENT_BIN" health --socket "$LAC_SOCKET_PATH" >/dev/null 2>&1; then
     active_pids=(${(f)"$(_lac_list_socket_daemon_pids "$LAC_SOCKET_PATH")"})
     keep_pid="${active_pids[1]-}"
+    if [[ -n "$keep_pid" ]] && ! _lac_daemon_inputs_newer_than_pid; then
+      all_pids=(${(f)"$(_lac_list_daemon_pids)"})
+      competing_pids=()
+      for daemon_pid in "${all_pids[@]}"; do
+        [[ -n "$keep_pid" && "$daemon_pid" == "$keep_pid" ]] && continue
+        competing_pids+=("$daemon_pid")
+      done
+      _lac_stop_daemon_pids "${competing_pids[@]}"
+      return 0
+    fi
+
     all_pids=(${(f)"$(_lac_list_daemon_pids)"})
-    competing_pids=()
-    for daemon_pid in "${all_pids[@]}"; do
-      [[ -n "$keep_pid" && "$daemon_pid" == "$keep_pid" ]] && continue
-      competing_pids+=("$daemon_pid")
-    done
-    _lac_stop_daemon_pids "${competing_pids[@]}"
-    return 0
+    _lac_stop_daemon_pids "${all_pids[@]}"
   fi
 
   all_pids=(${(f)"$(_lac_list_daemon_pids)"})
@@ -1527,3 +1595,7 @@ _lac_bind_accept_widget
 
 add-zsh-hook preexec _lac_preexec
 add-zsh-hook precmd _lac_precmd
+
+if [[ -o interactive ]]; then
+  lac-start-daemon >/dev/null 2>&1 || true
+fi

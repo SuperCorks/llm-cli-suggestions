@@ -143,8 +143,9 @@ Supports:
 - visibility into the daemon's configured model and the current live model
 - a dedicated `Installed Locally` operations panel that tracks both downloads and removals, survives page refreshes, supports multiple concurrent model jobs, and lets you cancel stalled work or dismiss cancelled and failed jobs
 - automatic cleanup of completed model operations so finished downloads and removals drop out of the attention list once the inventory refreshes
-- hover actions on installed-model rows so any non-active local model can be promoted to the daemon's active model and applied through an immediate daemon restart
-- safe local model removal, with the configured daemon model protected from removal
+- inline installed-model role actions for the progressive dual-model strategies, so any extra local model can be assigned as the fast-stage model or the large/slow-stage model without leaving the page
+- live-role chips and green row accents for the currently assigned fast and slow models, with those rows pinned to the top of the installed list
+- safe local model removal, with the currently assigned live model rows protected from removal
 - searchable available-model catalog controls plus a compact dropdown multi-select size filter, while installed local models stay visible as a stable inventory list
 
 ### Daemon
@@ -167,9 +168,9 @@ Supports:
 - live pull-progress toasts while a model is downloading
 - a read-only runtime details panel for the model base URL, socket and database paths, and daemon file locations, with hover actions on filesystem paths to reveal items in Finder or open their directory in Terminal
 - live PID fallback from process discovery when the pid file is missing or stale
-- daemon process-memory rows that show the daemon RSS plus loaded-model memory, VRAM, and a tracked total, with an explicit unloaded-model state when Ollama has no active model resident
+- daemon process-memory rows that show the daemon RSS plus loaded-model memory, VRAM, and a tracked total, with dual-model strategies rendering separate slow and fast model rows so both configured footprints remain visible
 - daemon status and memory rows that refresh while the page is open, without clobbering unsaved runtime form edits
-- unloaded model-memory rows keep the last seen footprint for the active model in a muted style, so the page preserves recent usage context without implying the model is still resident
+- unloaded model-memory rows keep the last seen footprint for each configured model in a muted style, so the page preserves recent usage context without implying those models are still resident
 - daemon log viewing through a live-updating stream with reconnect status in the panel header
 - destructive maintenance actions with typed confirmation, placed after the log section so runtime inspection stays primary
 

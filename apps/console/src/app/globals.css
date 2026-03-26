@@ -1405,6 +1405,97 @@ th {
   gap: 12px;
 }
 
+.runtime-model-details {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.runtime-model-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+.runtime-model-card {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border-left: 2px solid transparent;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.06),
+    0 14px 28px rgba(0, 0, 0, 0.22);
+}
+
+.runtime-model-card-single {
+  border-left-color: rgba(121, 166, 232, 0.72);
+  background:
+    linear-gradient(135deg, rgba(28, 40, 61, 0.96), rgba(23, 27, 34, 0.98));
+}
+
+.runtime-model-card-slow {
+  border-left-color: rgba(229, 188, 103, 0.72);
+  background:
+    linear-gradient(135deg, rgba(56, 42, 21, 0.96), rgba(29, 25, 20, 0.98));
+}
+
+.runtime-model-card-fast {
+  border-left-color: rgba(118, 218, 160, 0.72);
+  background:
+    linear-gradient(135deg, rgba(33, 50, 42, 0.96), rgba(24, 30, 28, 0.98));
+}
+
+.runtime-model-card-header {
+  display: grid;
+  gap: 6px;
+}
+
+.runtime-model-card-label,
+.runtime-model-card-list dt,
+.runtime-model-total dt {
+  color: var(--text-muted);
+  font-family: var(--font-space-grotesk), sans-serif;
+  font-size: 0.62rem;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+}
+
+.runtime-model-card-name {
+  font-size: 1.28rem;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.runtime-model-card-list {
+  display: grid;
+  gap: 12px;
+}
+
+.runtime-model-card-list > div,
+.runtime-model-total > div {
+  display: grid;
+  gap: 5px;
+}
+
+.runtime-model-card-list dd,
+.runtime-model-total dd {
+  margin: 0;
+}
+
+.runtime-model-total {
+  padding: 14px 18px;
+  background: linear-gradient(180deg, rgba(37, 40, 47, 0.86) 0%, rgba(23, 25, 31, 0.94) 100%);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+
+.runtime-model-total-value {
+  font-size: 1rem;
+}
+
+.runtime-shared-details {
+  padding-top: 4px;
+}
+
 .path-row {
   gap: 4px !important;
 }
@@ -2264,6 +2355,14 @@ th {
   min-width: 0;
 }
 
+.model-catalog-side {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
+}
+
 .model-catalog-badges {
   display: flex;
   align-items: center;
@@ -2278,7 +2377,10 @@ th {
   justify-content: flex-end;
   gap: 6px;
   flex: none;
-  min-width: 36px;
+}
+
+.model-catalog-actions-inline-fixed {
+  min-width: 138px;
 }
 
 .model-catalog-role-actions {
@@ -2293,6 +2395,7 @@ th {
   min-height: 30px;
   padding: 0 10px;
   white-space: nowrap;
+  font-weight: 400;
 }
 
 .model-catalog-icon-button {

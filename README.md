@@ -242,6 +242,8 @@ The daemon uses sensible defaults:
 | Accept key | `tab` | `LAC_ACCEPT_KEY` |
 
 Settings saved from the control app persist to `runtime.env` and are picked up by new shells automatically.
+When a new shell runs `lac-start-daemon`, the plugin now also replaces an already-healthy daemon if the daemon binary or persisted `runtime.env` settings are newer than the running instance, so fresh fancy shells do not stay attached to stale daemon builds.
+When a shell is started through `fancy`, the plugin also prefers persisted `runtime.env` values over inherited exported `LAC_*` variables from the previous shell session, so stale strategy or fast-model exports do not suppress staged badges like `[ai/fast]` or `[ai/slow]`.
 
 ---
 

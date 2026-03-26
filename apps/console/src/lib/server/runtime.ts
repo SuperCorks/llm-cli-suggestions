@@ -14,7 +14,7 @@ import {
   type PersistedKey,
   writePersistedRuntimeSettings,
 } from "@/lib/server/config";
-import { getLoadedOllamaModelUsage } from "@/lib/server/ollama";
+import { getLoadedOllamaModelUsages } from "@/lib/server/ollama";
 import type { RuntimeStatus } from "@/lib/types";
 
 function getDaemonBinaryPath() {
@@ -45,6 +45,7 @@ export function getRuntimeStatus() {
       modelVramBytes: null,
       totalTrackedBytes: null,
       modelName: null,
+      models: [],
     },
   } satisfies RuntimeStatus;
 }
@@ -139,23 +140,55 @@ async function hydrateHealth(status: RuntimeStatus) {
 }
 
 async function hydrateMemory(status: RuntimeStatus) {
-  const activeModelName = status.health.modelName || status.settings.modelName;
-  const modelUsage = await getLoadedOllamaModelUsage(
+  const fastModelName = status.settings.fastModelName.trim();
+  const dualModelMode =
+    fastModelName !== "" &&
+    (status.settings.suggestStrategy === "history-then-fast-then-model" ||
+      status.settings.suggestStrategy === "fast-then-model");
+  const requestedModels = [
+    { modelName: status.settings.modelName, role: "primary" as const },
+    ...(dualModelMode ? [{ modelName: fastModelName, role: "fast" as const }] : []),
+  ].filter(
+    (entry, index, collection) =>
+      entry.modelName.trim() !== "" &&
+      collection.findIndex(
+        (candidate) => candidate.modelName.trim().toLowerCase() === entry.modelName.trim().toLowerCase(),
+      ) === index,
+  );
+  const modelUsages = await getLoadedOllamaModelUsages(
     status.settings.modelBaseUrl,
-    activeModelName,
+    requestedModels.map((entry) => entry.modelName),
   );
   const daemonRssBytes = status.memory.daemonRssBytes;
+  const runtimeModels = requestedModels.map((requestedModel, index) => ({
+    modelName: modelUsages[index]?.modelName || requestedModel.modelName,
+    role: requestedModel.role,
+    modelLoadedBytes: modelUsages[index]?.modelLoadedBytes ?? null,
+    modelVramBytes: modelUsages[index]?.modelVramBytes ?? null,
+  }));
+  const loadedModelBytes = runtimeModels.reduce(
+    (sum, model) => sum + (model.modelLoadedBytes || 0),
+    0,
+  );
+  const loadedModelVramBytes = runtimeModels.reduce(
+    (sum, model) => sum + (model.modelVramBytes || 0),
+    0,
+  );
+  const hasLoadedModel = runtimeModels.some((model) => model.modelLoadedBytes !== null);
   const totalTrackedBytes =
     daemonRssBytes !== null
-      ? daemonRssBytes + (modelUsage.modelLoadedBytes || 0)
-      : modelUsage.modelLoadedBytes;
+      ? daemonRssBytes + loadedModelBytes
+      : hasLoadedModel
+        ? loadedModelBytes
+        : null;
 
   status.memory = {
     daemonRssBytes,
-    modelLoadedBytes: modelUsage.modelLoadedBytes,
-    modelVramBytes: modelUsage.modelVramBytes,
+    modelLoadedBytes: hasLoadedModel ? loadedModelBytes : null,
+    modelVramBytes: hasLoadedModel ? loadedModelVramBytes : null,
     totalTrackedBytes,
-    modelName: modelUsage.modelName,
+    modelName: status.health.modelName || runtimeModels[0]?.modelName || status.settings.modelName,
+    models: runtimeModels,
   };
   return status;
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -108,6 +109,7 @@ func (s *Server) handleSuggest(writer http.ResponseWriter, request *http.Request
 
 	response, err := s.engine.Suggest(request.Context(), payload)
 	if err != nil {
+		log.Printf("suggest_error session=%q strategy=%q request_model=%q buffer_chars=%d err=%q", payload.SessionID, payload.Strategy, payload.ModelName, len(payload.Buffer), err)
 		writeError(writer, http.StatusInternalServerError, err.Error())
 		return
 	}

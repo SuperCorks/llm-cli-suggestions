@@ -24,6 +24,9 @@ The `zsh` plugin in `zsh/llm-cli-suggestions.zsh` is the live terminal integrati
 - stale async requests are discarded
 - progressive suggestion modes can apply more than one result for the same buffer generation, with stage ordering so a slower lower-priority stage cannot overwrite a newer higher-priority stage
 - completed async work wakes ZLE through a per-session notify pipe and `zle -F` widget handler
+- interactive shells source-time call `lac-start-daemon`, so the local singleton daemon is started or refreshed before the first suggestion request instead of relying on an external bootstrap step
+- `lac-start-daemon` keeps the local singleton daemon when it is already healthy, but restarts it when the daemon binary or persisted `runtime.env` settings are newer than the daemon pid marker so new fancy shells pick up rebuilt daemon behavior
+- when a shell is started through `fancy`, runtime settings loaded from `runtime.env` override inherited exported `LAC_*` values from the parent shell so stale session exports do not mask newer persisted strategy or fast-model changes
 - accepted suggestions are first logged as `accepted_buffer`
 - accepted suggestions are then resolved at `preexec` as either `executed_unchanged` or `executed_edited`
 - accepting a suggestion immediately re-runs the async suggestion flow against the accepted buffer so chained completions can appear without extra typing

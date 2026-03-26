@@ -173,10 +173,14 @@ They now also persist request-level timing fields alongside the older winner-can
 
 - end-to-end request latency for the stored suggestion
 - request model name, even when the model was invoked but did not produce the winning suggestion
+- the configured Ollama `keep_alive` value that was sent on that request
+- a persisted live-request start-state classification (`hot`, `cold`, `unknown`, or `not-applicable`) using the same small warm-load tolerance as benchmarks
 - Ollama total, load, prompt-eval, and eval durations
 - Ollama prompt-eval and eval token counts
 
 That lets the performance dashboard distinguish hot resident requests from cold wake-up requests and estimate how much of the tail comes from model loading versus other overhead in the engine or control path.
+
+The daemon log now also emits one structured `suggest_trace` JSON line per live suggestion request with the effective request model, keep-alive setting, start-state classification, request latency, and Ollama timing breakdown so dashboard aggregates can be cross-checked against raw request traces.
 
 The benchmark tables now store benchmark metadata separately from per-attempt rows:
 
@@ -197,6 +201,8 @@ For the daemon and shell plugin, the precedence is:
 1. explicit environment variables
 2. persisted values from `runtime.env`
 3. code defaults
+
+The main exception is `fancy` mode in the `zsh` plugin: because `fancy` commonly re-execs a shell that inherits older exported `LAC_*` variables, the plugin prefers persisted `runtime.env` values over those inherited session exports for shell-facing runtime settings so fresh fancy shells pick up the latest saved strategy and fast-model configuration.
 
 The control app is more defensive by default: it resolves from the standard state directory and persisted `runtime.env` instead of inheriting ambient `LAC_*` shell variables from whatever terminal launched Next. That avoids the console silently reading a stale socket or SQLite path when a development shell still exports older repo-specific values. For isolated runs like end-to-end tests, the console can opt back into process-environment overrides with `LAC_CONSOLE_USE_PROCESS_ENV_OVERRIDES=1`.
 

@@ -50,6 +50,12 @@ function ensureSuggestionColumns(db: Database.Database) {
   if (!columns.has("request_model_name")) {
     db.exec("ALTER TABLE suggestions ADD COLUMN request_model_name TEXT NOT NULL DEFAULT ''");
   }
+  if (!columns.has("model_keep_alive")) {
+    db.exec("ALTER TABLE suggestions ADD COLUMN model_keep_alive TEXT NOT NULL DEFAULT ''");
+  }
+  if (!columns.has("model_start_state")) {
+    db.exec("ALTER TABLE suggestions ADD COLUMN model_start_state TEXT NOT NULL DEFAULT ''");
+  }
   if (!columns.has("model_total_duration_ms")) {
     db.exec("ALTER TABLE suggestions ADD COLUMN model_total_duration_ms INTEGER NOT NULL DEFAULT -1");
   }

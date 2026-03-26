@@ -1,4 +1,10 @@
-export type SuggestionOutcome = "all" | "accepted" | "rejected" | "unreviewed";
+export type SuggestionOutcome =
+  | "all"
+  | "accepted"
+  | "edited"
+  | "buffered"
+  | "rejected"
+  | "unreviewed";
 export type SuggestionQuality = "good" | "bad";
 export type SuggestionQualityFilter = "all" | SuggestionQuality | "unlabeled";
 export type SuggestionSort =
@@ -10,7 +16,13 @@ export type SuggestionSort =
   | "model-asc"
   | "quality-desc";
 export type ClearDataset = "suggestions" | "feedback" | "benchmarks";
-export type SuggestStrategy = "history-only" | "history+model" | "model-only";
+export type SuggestStrategy =
+  | "history-only"
+  | "history+model"
+  | "history-then-model"
+  | "history-then-fast-then-model"
+  | "fast-then-model"
+  | "model-only";
 export type PtyCaptureMode = "allowlist" | "blocklist";
 export type AcceptSuggestionKey = "tab" | "right-arrow";
 
@@ -20,6 +32,7 @@ export interface RuntimeSettings {
   socketPath: string;
   dbPath: string;
   modelName: string;
+  fastModelName: string;
   modelBaseUrl: string;
   modelKeepAlive: string;
   suggestStrategy: SuggestStrategy;
@@ -62,6 +75,14 @@ export interface RuntimeMemoryStatus {
   modelVramBytes: number | null;
   totalTrackedBytes: number | null;
   modelName: string | null;
+  models: RuntimeModelUsage[];
+}
+
+export interface RuntimeModelUsage {
+  modelName: string;
+  role: "primary" | "fast";
+  modelLoadedBytes: number | null;
+  modelVramBytes: number | null;
 }
 
 export interface RuntimeStatus {
@@ -81,8 +102,8 @@ export interface RuntimeStatus {
 export interface ActivitySignal {
   id: number;
   timestamp: string;
-  tone: "accepted" | "rejected" | "observed";
-  label: "ACCEPT" | "REJECT" | "TRACE";
+  tone: "accepted" | "edited" | "rejected" | "observed";
+  label: "ACCEPT" | "EDIT" | "REJECT" | "BUFFER" | "TRACE";
   message: string;
 }
 
@@ -93,6 +114,8 @@ export interface OverviewData {
     commands: number;
     suggestions: number;
     accepted: number;
+    edited: number;
+    buffered: number;
     rejected: number;
   };
   acceptanceRate: number;
@@ -101,7 +124,13 @@ export interface OverviewData {
   topRejectedSuggestions: Array<{ suggestion: string; count: number }>;
   recentSuggestions: SuggestionRow[];
   latencyByModel: Array<{ model: string; avgLatencyMs: number; count: number }>;
-  acceptanceByPath: Array<{ path: string; accepted: number; rejected: number; acceptanceRate: number }>;
+  acceptanceByPath: Array<{
+    path: string;
+    accepted: number;
+    edited: number;
+    rejected: number;
+    acceptanceRate: number;
+  }>;
 }
 
 export interface SuggestionRow {
@@ -115,9 +144,14 @@ export interface SuggestionRow {
   branch: string;
   lastExitCode: number;
   modelName: string;
+  requestModelName: string;
   latencyMs: number;
   createdAtMs: number;
+  outcome: Exclude<SuggestionOutcome, "all">;
+  outcomeEventType: string;
   accepted: boolean;
+  edited: boolean;
+  buffered: boolean;
   rejected: boolean;
   acceptedCommand: string;
   actualCommand: string;

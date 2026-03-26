@@ -28,7 +28,6 @@ interface DaemonConsoleProps {
 type LastSeenModelMemory = {
   modelLoadedBytes: number | null;
   modelVramBytes: number | null;
-  totalTrackedBytes: number | null;
   observedAtMs: number;
 };
 
@@ -70,6 +69,15 @@ function formatStreamStatus(status: LiveStreamStatus) {
     return "Reconnecting";
   }
   return "Connecting";
+}
+
+function runtimeUsesDualModelMode(status: RuntimeStatus) {
+  const fastModelName = status.settings.fastModelName.trim();
+  return (
+    fastModelName !== "" &&
+    (status.settings.suggestStrategy === "history-then-fast-then-model" ||
+      status.settings.suggestStrategy === "fast-then-model")
+  );
 }
 
 export function DaemonConsole({
@@ -137,46 +145,120 @@ export function DaemonConsole({
       setLogText(payload.log || "");
     },
   );
-  const activeModelLabel = status.memory.modelName || status.health.modelName || status.settings.modelName;
-  const activeModelKey = normalizeModelMemoryKey(activeModelLabel);
-  const lastSeenMemory = activeModelKey ? lastSeenMemoryByModel[activeModelKey] || null : null;
-  const usingLastSeenMemory = status.memory.modelLoadedBytes === null && lastSeenMemory !== null;
-  const displayedModelLoadedBytes =
-    status.memory.modelLoadedBytes !== null
-      ? status.memory.modelLoadedBytes
+  const dualModelMode = runtimeUsesDualModelMode(status);
+  const runtimeModelByKey = new Map(
+    status.memory.models.map((model) => [normalizeModelMemoryKey(model.modelName), model] as const),
+  );
+  const configuredModels = (dualModelMode
+    ? [
+        {
+          label: "Slow Model",
+          modelName:
+            status.memory.models.find((model) => model.role === "primary")?.modelName || status.settings.modelName,
+        },
+        {
+          label: "Fast Model",
+          modelName:
+            status.memory.models.find((model) => model.role === "fast")?.modelName || status.settings.fastModelName.trim(),
+        },
+      ]
+    : [
+        {
+          label: "Model",
+          modelName:
+            status.memory.models[0]?.modelName ||
+            status.memory.modelName ||
+            status.health.modelName ||
+            status.settings.modelName,
+        },
+      ]).filter(
+    (entry, index, collection) =>
+      entry.modelName.trim() !== "" &&
+      collection.findIndex(
+        (candidate) => normalizeModelMemoryKey(candidate.modelName) === normalizeModelMemoryKey(entry.modelName),
+      ) === index,
+  );
+  const modelMemoryRows = configuredModels.map((configuredModel) => {
+    const modelKey = normalizeModelMemoryKey(configuredModel.modelName);
+    const runtimeModel = modelKey ? runtimeModelByKey.get(modelKey) || null : null;
+    const lastSeenMemory = modelKey ? lastSeenMemoryByModel[modelKey] || null : null;
+    const currentLoaded = runtimeModel?.modelLoadedBytes !== null;
+    const usingLastSeenMemory = !currentLoaded && lastSeenMemory !== null;
+    const displayedModelLoadedBytes = currentLoaded
+      ? runtimeModel?.modelLoadedBytes ?? null
       : lastSeenMemory?.modelLoadedBytes ?? null;
-  const displayedModelVramBytes =
-    status.memory.modelVramBytes !== null
-      ? status.memory.modelVramBytes
+    const displayedModelVramBytes = currentLoaded
+      ? runtimeModel?.modelVramBytes ?? null
       : lastSeenMemory?.modelVramBytes ?? null;
-  const displayedTotalTrackedBytes =
-    status.memory.modelLoadedBytes !== null
-      ? status.memory.totalTrackedBytes
-      : lastSeenMemory?.totalTrackedBytes ?? status.memory.totalTrackedBytes;
-  const modelMemoryText = displayedModelLoadedBytes !== null
-    ? `${formatBytes(displayedModelLoadedBytes)} (${activeModelLabel})`
-    : status.health.ok
-      ? `${activeModelLabel} not currently loaded`
-      : "daemon offline";
-  const modelVramText = displayedModelVramBytes !== null
-    ? formatBytes(displayedModelVramBytes)
-    : status.health.ok
-      ? "model not loaded"
-      : "daemon offline";
+
+    return {
+      key: modelKey || configuredModel.label,
+      label: configuredModel.label,
+      modelName: configuredModel.modelName,
+      cardClassName: dualModelMode
+        ? configuredModel.label === "Slow Model"
+          ? "runtime-model-card runtime-model-card-slow"
+          : "runtime-model-card runtime-model-card-fast"
+        : "runtime-model-card runtime-model-card-single",
+      currentLoaded,
+      usingLastSeenMemory,
+      displayedModelLoadedBytes,
+      displayedModelVramBytes,
+      modelMemoryText:
+        displayedModelLoadedBytes !== null
+          ? formatBytes(displayedModelLoadedBytes)
+          : status.health.ok
+            ? "not currently loaded"
+            : "daemon offline",
+      modelVramText:
+        displayedModelVramBytes !== null
+          ? formatBytes(displayedModelVramBytes)
+          : status.health.ok
+            ? "model not loaded"
+            : "daemon offline",
+      modelStateText: currentLoaded
+        ? "Active now"
+        : lastSeenMemory
+          ? `Inactive - last seen ${formatTimestamp(lastSeenMemory.observedAtMs)}`
+          : status.health.ok
+            ? "Inactive"
+            : "Daemon offline",
+      observedText: currentLoaded
+        ? observedAtMs
+          ? formatTimestamp(observedAtMs)
+          : "Waiting for client sync..."
+        : lastSeenMemory
+          ? formatTimestamp(lastSeenMemory.observedAtMs)
+          : status.health.ok
+            ? "Not observed yet"
+            : "daemon offline",
+    };
+  });
+  const hasActiveModelMemory = modelMemoryRows.some((row) => row.currentLoaded);
+  const hasLastSeenModelMemory = modelMemoryRows.some(
+    (row) => row.usingLastSeenMemory && row.displayedModelLoadedBytes !== null,
+  );
+  const lastSeenLoadedBytes = modelMemoryRows.reduce(
+    (sum, row) => sum + (row.usingLastSeenMemory ? row.displayedModelLoadedBytes || 0 : 0),
+    0,
+  );
+  const displayedTotalTrackedBytes = hasActiveModelMemory
+    ? status.memory.totalTrackedBytes
+    : hasLastSeenModelMemory
+      ? status.memory.daemonRssBytes !== null
+        ? status.memory.daemonRssBytes + lastSeenLoadedBytes
+        : lastSeenLoadedBytes
+      : status.memory.totalTrackedBytes;
   const totalTrackedText = displayedTotalTrackedBytes !== null
-    ? usingLastSeenMemory
-      ? `${formatBytes(displayedTotalTrackedBytes)} last seen`
-      : status.memory.modelLoadedBytes !== null
-        ? formatBytes(displayedTotalTrackedBytes)
+    ? hasActiveModelMemory
+      ? formatBytes(displayedTotalTrackedBytes)
+      : hasLastSeenModelMemory
+        ? `${formatBytes(displayedTotalTrackedBytes)} last seen`
         : `${formatBytes(displayedTotalTrackedBytes)} (daemon only)`
     : "n/a";
-  const modelStateText = status.memory.modelLoadedBytes !== null
-    ? "Active now"
-    : lastSeenMemory
-      ? `Inactive - last seen ${formatTimestamp(lastSeenMemory.observedAtMs)}`
-      : status.health.ok
-        ? "Inactive"
-        : "Daemon offline";
+  const totalTrackedClassName = !hasActiveModelMemory && hasLastSeenModelMemory
+    ? "runtime-model-total-value memory-value memory-value-stale"
+    : "runtime-model-total-value memory-value";
   const ptyModeIsBlocklist = settings.LAC_PTY_CAPTURE_MODE === "blocklist";
   const activePtyListKey = ptyModeIsBlocklist
     ? "LAC_PTY_CAPTURE_BLOCKLIST"
@@ -304,32 +386,45 @@ export function DaemonConsole({
   }, [refreshAvailableModels, refreshRuntime]);
 
   useEffect(() => {
-    if (!activeModelKey || status.memory.modelLoadedBytes === null) {
+    const loadedModels = status.memory.models.filter((model) => model.modelLoadedBytes !== null);
+    if (loadedModels.length === 0) {
       return;
     }
 
-    const nextSnapshot: LastSeenModelMemory = {
-      modelLoadedBytes: status.memory.modelLoadedBytes,
-      modelVramBytes: status.memory.modelVramBytes,
-      totalTrackedBytes: status.memory.totalTrackedBytes,
-      observedAtMs: observedAtMs || Date.now(),
-    };
+    const nextObservedAtMs = observedAtMs || Date.now();
 
     setLastSeenMemoryByModel((current) => {
-      const existing = current[activeModelKey];
-      if (
-        existing?.modelLoadedBytes === nextSnapshot.modelLoadedBytes &&
-        existing?.modelVramBytes === nextSnapshot.modelVramBytes &&
-        existing?.totalTrackedBytes === nextSnapshot.totalTrackedBytes &&
-        existing?.observedAtMs === nextSnapshot.observedAtMs
-      ) {
-        return current;
+      let changed = false;
+      const next = { ...current };
+
+      for (const model of loadedModels) {
+        const modelKey = normalizeModelMemoryKey(model.modelName);
+        if (!modelKey) {
+          continue;
+        }
+
+        const nextSnapshot: LastSeenModelMemory = {
+          modelLoadedBytes: model.modelLoadedBytes,
+          modelVramBytes: model.modelVramBytes,
+          observedAtMs: nextObservedAtMs,
+        };
+        const existing = current[modelKey];
+
+        if (
+          existing?.modelLoadedBytes === nextSnapshot.modelLoadedBytes &&
+          existing?.modelVramBytes === nextSnapshot.modelVramBytes &&
+          existing?.observedAtMs === nextSnapshot.observedAtMs
+        ) {
+          continue;
+        }
+
+        next[modelKey] = nextSnapshot;
+        changed = true;
       }
 
-      const next = {
-        ...current,
-        [activeModelKey]: nextSnapshot,
-      };
+      if (!changed) {
+        return current;
+      }
 
       try {
         window.localStorage.setItem(LAST_SEEN_MEMORY_STORAGE_KEY, JSON.stringify(next));
@@ -339,7 +434,7 @@ export function DaemonConsole({
 
       return next;
     });
-  }, [activeModelKey, observedAtMs, status.memory.modelLoadedBytes, status.memory.modelVramBytes, status.memory.totalTrackedBytes]);
+  }, [observedAtMs, status.memory.models]);
 
   async function persistSettings(nextMessage = "Runtime settings saved to runtime.env.") {
     const response = await fetch("/api/runtime/settings", {
@@ -797,7 +892,53 @@ export function DaemonConsole({
 
         <div className="detail-block">
           <h3>Runtime Details</h3>
-          <dl className="meta-list path-meta-list">
+          <div className="runtime-model-details">
+            <div className="runtime-model-grid">
+              {modelMemoryRows.map((row) => (
+                <section key={row.key} className={row.cardClassName}>
+                  <div className="runtime-model-card-header">
+                    <span className="runtime-model-card-label">{row.label}</span>
+                    <strong className="runtime-model-card-name">{row.modelName}</strong>
+                  </div>
+                  <dl className="runtime-model-card-list">
+                    <div>
+                      <dt>Memory</dt>
+                      <dd className={row.usingLastSeenMemory ? "memory-value memory-value-stale" : "memory-value"}>
+                        <span>{row.modelMemoryText}</span>
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>VRAM</dt>
+                      <dd className={row.usingLastSeenMemory ? "memory-value memory-value-stale" : "memory-value"}>
+                        <span>{row.modelVramText}</span>
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>State</dt>
+                      <dd className={row.usingLastSeenMemory ? "memory-value memory-value-stale" : "memory-value memory-value-status"}>
+                        <span>{row.modelStateText}</span>
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Observed</dt>
+                      <dd className={row.usingLastSeenMemory ? "memory-value memory-value-stale" : "memory-value"}>
+                        <span>{row.observedText}</span>
+                      </dd>
+                    </div>
+                  </dl>
+                </section>
+              ))}
+            </div>
+            <dl className="runtime-model-total">
+              <div>
+                <dt>Total Tracked</dt>
+                <dd className={totalTrackedClassName}>
+                  <span>{totalTrackedText}</span>
+                </dd>
+              </div>
+            </dl>
+          </div>
+          <dl className="meta-list path-meta-list runtime-shared-details">
             {runtimeValueRows.map((row) => (
               <div key={row.label}>
                 <dt>{row.label}</dt>
@@ -823,34 +964,6 @@ export function DaemonConsole({
             <div>
               <dt>Daemon RSS</dt>
               <dd>{formatBytes(status.memory.daemonRssBytes)}</dd>
-            </div>
-            <div>
-              <dt>Model Memory</dt>
-              <dd className={usingLastSeenMemory ? "memory-value memory-value-stale" : "memory-value"}>
-                <span>{modelMemoryText}</span>
-              </dd>
-            </div>
-            <div>
-              <dt>Model VRAM</dt>
-              <dd className={usingLastSeenMemory ? "memory-value memory-value-stale" : "memory-value"}>
-                <span>{modelVramText}</span>
-              </dd>
-            </div>
-            <div>
-              <dt>Total Tracked</dt>
-              <dd className={usingLastSeenMemory ? "memory-value memory-value-stale" : "memory-value"}>
-                <span>{totalTrackedText}</span>
-              </dd>
-            </div>
-            <div>
-              <dt>Model State</dt>
-              <dd className={usingLastSeenMemory ? "memory-value memory-value-stale" : "memory-value memory-value-status"}>
-                <span>{modelStateText}</span>
-              </dd>
-            </div>
-            <div>
-              <dt>Observed</dt>
-              <dd>{observedAtMs ? formatTimestamp(observedAtMs) : "Waiting for client sync..."}</dd>
             </div>
           </dl>
         </div>

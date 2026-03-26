@@ -990,6 +990,8 @@ export function exportRows(dataset: "suggestions" | "commands" | "benchmarks") {
            s.latency_ms,
            s.request_latency_ms,
            s.request_model_name,
+           s.model_keep_alive,
+           s.model_start_state,
            s.model_total_duration_ms,
            s.model_load_duration_ms,
            s.model_prompt_eval_duration_ms,
