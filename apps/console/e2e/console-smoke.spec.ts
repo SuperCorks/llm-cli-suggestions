@@ -1396,16 +1396,16 @@ test("model lab benchmark flow works with local fixtures", async ({ page }) => {
   const benchmarkModelInput = benchmarkPanel.getByRole("textbox", { name: "Models", exact: true });
   await benchmarkPanel.getByLabel("Models").click();
   await benchmarkPanel
-    .getByRole("option", { name: /mistral-small.*installed/i })
+    .getByRole("option", { name: /mistral-small/i })
     .first()
     .click();
   await expect(benchmarkModelInput).toHaveValue("");
   await expect(benchmarkPanel.getByText("mistral-small")).toBeVisible();
   await benchmarkModelInput.click();
   await expect(
-    benchmarkPanel.getByRole("option", { name: /phi4.*installed/i }).first(),
+    benchmarkPanel.getByRole("option", { name: /phi4/i }).first(),
   ).toBeVisible();
-  await benchmarkPanel.getByRole("option", { name: /phi4.*installed/i }).first().click();
+  await benchmarkPanel.getByRole("option", { name: /phi4/i }).first().click();
   await expect(benchmarkPanel.getByText("phi4")).toBeVisible();
 
   await Promise.all([
@@ -1416,9 +1416,14 @@ test("model lab benchmark flow works with local fixtures", async ({ page }) => {
   ]);
 
   await expect(page.getByText("Benchmark queued as run #77.")).toBeVisible();
-  await expect(page.getByRole("cell", { name: "#77" })).toBeVisible();
+  await expect(page.getByRole("cell", { name: "#77", exact: true })).toBeVisible();
   await expect(page.getByText("1 benchmark run active")).toBeVisible();
   await expect(page.getByText("3/18")).toBeVisible();
+  await expect(benchmarkPanel.getByRole("columnheader", { name: "Suite" })).toHaveCount(0);
+  await expect(benchmarkPanel.getByRole("columnheader", { name: "Protocol" })).toHaveCount(0);
+  await expect(benchmarkPanel.getByRole("columnheader", { name: "Repeat" })).toHaveCount(0);
+  await expect(benchmarkPanel.getByRole("columnheader", { name: "Timeout" })).toHaveCount(0);
+  await expect(benchmarkPanel.getByRole("columnheader", { name: "Created" })).toHaveCount(0);
   expect(benchmarkRunPayloads[0]).toMatchObject({
     track: "static",
     suiteName: "core",
@@ -1430,7 +1435,20 @@ test("model lab benchmark flow works with local fixtures", async ({ page }) => {
     timeoutMs: 5000,
   });
 
-  const queuedRunRow = page.locator("tr").filter({ has: page.getByRole("cell", { name: "#77" }) });
+  const queuedRunRow = page
+    .locator("tr")
+    .filter({ has: page.getByRole("cell", { name: "#77", exact: true }) });
+  await queuedRunRow.getByRole("button", { name: "Show details for run #77" }).click();
+  const runInfo = queuedRunRow.locator(".run-info-popover");
+  await expect(runInfo).toBeVisible();
+  await expect(runInfo.getByText("Run #77 details")).toBeVisible();
+  await expect(runInfo.getByText("Suite")).toBeVisible();
+  await expect(runInfo.getByText("core")).toBeVisible();
+  await expect(runInfo.getByText("Protocol")).toBeVisible();
+  await expect(runInfo.getByText("full")).toBeVisible();
+  await expect(runInfo.getByText("Repeat")).toBeVisible();
+  await expect(runInfo.getByText("Timeout")).toBeVisible();
+  await expect(runInfo.getByText("5.00 s")).toBeVisible();
   await Promise.all([
     page.waitForResponse((response) =>
       response.url().includes("/api/benchmarks/77") && response.request().method() === "GET",
@@ -1445,7 +1463,9 @@ test("model lab benchmark flow works with local fixtures", async ({ page }) => {
   await page.getByRole("button", { name: "Close Run" }).click();
   await expect(page.getByRole("heading", { name: "Benchmark Run #77" })).toHaveCount(0);
 
-  const completedRunRow = page.locator("tr").filter({ has: page.getByRole("cell", { name: "#1" }) });
+  const completedRunRow = page
+    .locator("tr")
+    .filter({ has: page.getByRole("cell", { name: "#1", exact: true }) });
   await Promise.all([
     page.waitForResponse((response) =>
       response.url().includes("/api/benchmarks/run") && response.request().method() === "POST",
@@ -1453,7 +1473,7 @@ test("model lab benchmark flow works with local fixtures", async ({ page }) => {
     completedRunRow.getByRole("button", { name: "Replay" }).click(),
   ]);
   await expect(page.getByText("Benchmark replay queued as run #78.")).toBeVisible();
-  await expect(page.getByRole("cell", { name: "#78" })).toBeVisible();
+  await expect(page.getByRole("cell", { name: "#78", exact: true })).toBeVisible();
   expect(benchmarkRunPayloads[1]).toMatchObject({
     track: "static",
     suiteName: "core",
@@ -1659,13 +1679,17 @@ test("model lab refreshes saved benchmarks on first load and deletes completed r
 
   await page.goto("/lab");
 
-  const completedRunRow = page.locator("tr").filter({ has: page.getByRole("cell", { name: "#901" }) });
+  const completedRunRow = page
+    .locator("tr")
+    .filter({ has: page.getByRole("cell", { name: "#901", exact: true }) });
   await expect(completedRunRow).toBeVisible();
   const deleteButton = completedRunRow.getByRole("button", { name: "Delete" });
   await expect(deleteButton).toBeVisible();
   await expect(deleteButton).toBeEnabled();
 
-  const remainingRunRow = page.locator("tr").filter({ has: page.getByRole("cell", { name: "#902" }) });
+  const remainingRunRow = page
+    .locator("tr")
+    .filter({ has: page.getByRole("cell", { name: "#902", exact: true }) });
   await expect(remainingRunRow).toBeVisible();
 
   const deleteResponse = page.waitForResponse(
@@ -2684,7 +2708,13 @@ test("models page manages installed and downloadable Ollama models", async ({ pa
       contentType: "application/json",
       body: JSON.stringify({
         models: [
-          { name: "qwen2.5-coder:7b", installed: true, source: "installed", sizeLabel: "7B" },
+          {
+            name: "qwen2.5-coder:7b",
+            installed: true,
+            source: "installed",
+            sizeLabel: "7B",
+            contextWindowLabel: "32K",
+          },
           {
             name: "llama3.2:latest",
             installed: llamaInstalled,
@@ -2696,6 +2726,7 @@ test("models page manages installed and downloadable Ollama models", async ({ pa
             installed: gemmaInstalled,
             source: gemmaInstalled ? "installed" : "library",
             sizeLabel: "4B",
+            contextWindowLabel: "128K",
             capabilities: ["vision", "tools"],
           },
           {
@@ -2828,6 +2859,7 @@ test("models page manages installed and downloadable Ollama models", async ({ pa
   await expect(page.getByRole("heading", { name: "Models" })).toBeVisible();
   await expect(page.getByText("qwen2.5-coder:7b").first()).toBeVisible();
   await expect(page.getByText("7B").first()).toBeVisible();
+  await expect(page.locator(".model-status-chip-available")).toHaveCount(0);
 
   const qwenRow = page.locator(".model-catalog-item").filter({
     has: page.getByText("qwen2.5-coder:7b"),
@@ -2858,17 +2890,34 @@ test("models page manages installed and downloadable Ollama models", async ({ pa
   await page.getByRole("textbox", { name: "Search" }).fill("gemma");
   await expect(page.getByText("vision")).toBeVisible();
   await expect(page.getByText("tools")).toBeVisible();
-  await page.getByRole("button", { name: "All sizes" }).click();
-  await page.getByRole("menu", { name: "Size filters" }).getByRole("button", { name: "4B" }).click();
+  await page.getByRole("button", { name: "Size" }).click();
+  await page
+    .getByRole("menu", { name: "Size filters" })
+    .getByRole("button", { name: "4B", exact: true })
+    .click();
   await expect(page.getByText("gemma3:4b").first()).toBeVisible();
   await expect(page.getByText("phi4")).toHaveCount(0);
-  await page.getByRole("button", { name: "4B" }).click();
-  await page.getByRole("menu", { name: "Size filters" }).getByRole("button", { name: "All sizes" }).click();
+  await page.getByRole("button", { name: "4B", exact: true }).click();
+  await page
+    .getByRole("menu", { name: "Size filters" })
+    .getByRole("button", { name: "All sizes", exact: true })
+    .click();
   await page.getByRole("textbox", { name: "Search" }).fill("");
 
   const downloadBlock = getDetailBlock(page, "Download Model");
   await downloadBlock.getByLabel("Model").fill("gemma");
-  await page.getByRole("option", { name: /gemma3:4b/i }).click();
+  const gemmaOption = page.getByRole("option", { name: /gemma3:4b/i });
+  await expect(gemmaOption.locator(".model-meta-chip").filter({ hasText: /^4B$/ })).toBeVisible();
+  await expect(
+    gemmaOption.locator(".model-meta-chip").filter({ hasText: /^128K ctx$/ }),
+  ).toBeVisible();
+  await expect(
+    gemmaOption.locator(".model-capability-chip").filter({ hasText: /^vision$/ }),
+  ).toBeVisible();
+  await expect(
+    gemmaOption.locator(".model-capability-chip").filter({ hasText: /^tools$/ }),
+  ).toBeVisible();
+  await gemmaOption.click();
   await downloadBlock.getByRole("button", { name: "Download", exact: true }).click();
   await downloadBlock.getByLabel("Model").fill("phi");
   await page.getByRole("option", { name: /phi4/i }).click();
@@ -2924,6 +2973,9 @@ test("models page manages installed and downloadable Ollama models", async ({ pa
   await expect(stalledOperation).toHaveCount(0);
 
   await page.getByRole("textbox", { name: "Search" }).fill("");
+  await qwenRow.hover();
+  await qwenRow.getByRole("button", { name: "Use as active model" }).click();
+  await expect(page.getByText("qwen2.5-coder:7b is now the active model.")).toBeVisible();
   await llamaRow.getByRole("button", { name: "Remove" }).click();
   await expect(installedBlock.getByText("Removal llama3.2:latest")).toBeVisible();
   await expect.poll(async () => await llamaRow.count()).toBe(0);

@@ -4,6 +4,7 @@ import { ChevronDown, Download, Play, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { ModelMetadataChips } from "@/components/model-metadata-chips";
 import { ModelPicker } from "@/components/model-picker";
 import type {
   OllamaInstallJob,
@@ -690,29 +691,18 @@ export function ModelsConsole({
                       </div>
                       <div className="model-catalog-meta">
                         <div className="model-catalog-badges">
-                          <span className="model-status-chip model-status-chip-installed">installed</span>
-                          {model.sizeLabel ? <span className="model-meta-chip">{model.sizeLabel}</span> : null}
-                          {model.contextWindowLabel ? (
-                            <span className="model-meta-chip" title={`Context window ${model.contextWindowLabel}`}>
-                              {model.contextWindowLabel} ctx
-                            </span>
-                          ) : null}
+                          <ModelMetadataChips model={model} showInstalledStatus />
                           {isConfigured ? (
                             <span className="status-pill status-pill-running">configured</span>
                           ) : null}
                           {isLive ? <span className="status-pill status-pill-completed">live</span> : null}
-                          {model.capabilities?.map((capability) => (
-                              <span key={`${model.name}-${capability}`} className="model-capability-chip">
-                                {capability}
-                              </span>
-                            ))}
                         </div>
                       </div>
                       <div className="model-catalog-actions-inline">
                         {canActivate ? (
                           <button
                             type="button"
-                            className="icon-button model-catalog-icon-button model-catalog-hover-action"
+                            className="icon-button model-catalog-icon-button"
                             disabled={switchingModel !== null}
                             onClick={() => void activateModel(model.name)}
                             aria-label={switchingModel === model.name ? "Activating model" : "Use as active model"}
@@ -808,29 +798,10 @@ export function ModelsConsole({
                       </div>
                       <div className="model-catalog-meta">
                         <div className="model-catalog-badges">
-                          <span
-                            className={
-                              isRemoteOnly
-                                ? "model-status-chip model-status-chip-remote"
-                                : "model-status-chip model-status-chip-available"
-                            }
-                          >
-                            {isRemoteOnly ? "remote" : "available"}
-                          </span>
-                          {model.sizeLabel ? <span className="model-meta-chip">{model.sizeLabel}</span> : null}
-                          {model.contextWindowLabel ? (
-                            <span className="model-meta-chip" title={`Context window ${model.contextWindowLabel}`}>
-                              {model.contextWindowLabel} ctx
-                            </span>
-                          ) : null}
+                          <ModelMetadataChips model={model} showRemoteStatus />
                           {isConfigured ? (
                             <span className="status-pill status-pill-running">configured</span>
                           ) : null}
-                          {model.capabilities?.map((capability) => (
-                              <span key={`${model.name}-${capability}`} className="model-capability-chip">
-                                {capability}
-                              </span>
-                            ))}
                         </div>
                       </div>
                       <div className="model-catalog-actions-inline">

@@ -170,6 +170,8 @@ cd llm-cli-suggestions
 make build
 ```
 
+If you change Go-backed commands later, `npm run dev` rebuilds the local binaries and restarts the daemon automatically for console development. If you are testing direct shell or CLI flows without the console dev server, rebuild the affected binary yourself, for example with `make build` or `go build -o bin/autocomplete-daemon ./cmd/autocomplete-daemon`.
+
 Start the daemon:
 
 ```bash
@@ -254,6 +256,8 @@ npm run dev
 ```
 
 Open the local URL shown by Next.js to access the dashboard, suggestions, signals, inspector, models, model lab, and daemon controls.
+
+`npm run dev` now rebuilds the Go-backed binaries and restarts the local daemon before Next.js starts, so console changes do not accidentally talk to stale daemon or benchmark code.
 
 The console app resolves its runtime paths from the standard state directory and persisted `runtime.env` by default, so it does not accidentally inherit stale `LAC_*` variables from the shell used to launch `next dev`. If you intentionally want to inspect or edit an alternate state dir or SQLite file through process env, also set `LAC_CONSOLE_USE_PROCESS_ENV_OVERRIDES=1`. Daemon start, stop, and restart still enforce a single active local daemon process at a time, so switching to an alternate state dir replaces the currently running daemon instead of running both in parallel.
 

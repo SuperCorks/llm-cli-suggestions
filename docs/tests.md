@@ -53,12 +53,12 @@ The Playwright suite currently covers a seeded local happy path for:
 - inspector resilience when the daemon returns `null` prompt-context fields
 - inspector validation states, payload wiring, inferred-context form contract, and API error handling
 - inspector strategy override coverage for `history-only`, `history+model`, and `model-only`
-- inspector `model-only` states for successful raw model output, empty-output fallback rendering, and surfaced model timeout diagnostics
+- inspector `model-only` states for successful raw model output, rejected-output explanations when the model does not match the current buffer, empty-output fallback rendering, and surfaced model timeout diagnostics
 - model lab guardrails, default state, and reset flows
 - model lab sync against live runtime defaults for current model and saved suggestion strategy
-- model lab benchmark queueing, first-load saved-run refresh, replay actions from saved runs, per-run deletion for completed or failed runs, running-progress indicators, refreshed run lists, fail-fast failed-run handling with partial results, closable detail views, and stricter picker validation
+- model lab benchmark queueing, compact saved-run table rendering, hover/click run-info popovers, first-load saved-run refresh, replay actions from saved runs, per-run deletion for completed or failed runs, running-progress indicators, refreshed run lists, fail-fast failed-run handling with partial results, closable detail views, and stricter picker validation
 - model lab ad-hoc multi-model test results, strategy overrides, session-or-cwd context wiring, picker interactions, and clear-results flow
-- models page concurrent download, stable operation ordering during multi-download progress, in-place operation polling for multi-download progress, active-model quick switching for installed rows, tracked removal, refresh-safe operation hydration, automatic completed-job cleanup, stalled-job cancellation, dismissed cancelled jobs, available-catalog pagination, capability-display flows, and dropdown multi-select size-filtering flows for local Ollama inventory management
+- models page concurrent download, stable operation ordering during multi-download progress, in-place operation polling for multi-download progress, active-model quick switching for installed rows, tracked removal, refresh-safe operation hydration, automatic completed-job cleanup, stalled-job cancellation, dismissed cancelled jobs, available-catalog pagination, metadata-chip rendering for parameter size, context window, and capabilities, and dropdown multi-select size-filtering flows for local Ollama inventory management
 - overview live activity stream updates through the browser EventSource client
 - daemon page settings save flow, shared model-picker interactions, live log rendering, and danger-zone ordering below the log section
 - daemon runtime strategy persistence through the shared settings form

@@ -6,6 +6,7 @@
     "node": ">=24 <25"
   },
   "scripts": {
+    "predev": "node ./scripts/prepare-dev-runtime.mjs",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",

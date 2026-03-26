@@ -4,6 +4,7 @@ import { X } from "lucide-react";
 import type { ReactNode } from "react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 
+import { ModelMetadataChips } from "@/components/model-metadata-chips";
 import type { OllamaModelOption } from "@/lib/types";
 
 interface BaseModelPickerProps {
@@ -268,16 +269,11 @@ export function ModelPicker(props: ModelPickerProps) {
                 }}
               >
                 <span className="model-picker-option-name">{option.name}</span>
-                <span
-                  className={
-                    option.installed
-                      ? "model-status-chip model-status-chip-installed"
-                      : option.remoteOnly
-                        ? "model-status-chip model-status-chip-remote"
-                      : "model-status-chip model-status-chip-available"
-                  }
-                >
-                  {option.installed ? "installed" : option.remoteOnly ? "remote" : "available"}
+                <span className="model-picker-option-meta">
+                  <ModelMetadataChips
+                    model={option}
+                    showRemoteStatus
+                  />
                 </span>
               </button>
             ))}

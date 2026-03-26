@@ -52,6 +52,38 @@ function localCapabilities(capabilities: string[]) {
 	return capabilities.filter((capability) => capability !== "cloud");
 }
 
+function mergeCapabilities(left?: string[], right?: string[]) {
+  const merged = Array.from(
+    new Set([...(left || []), ...(right || [])].filter(Boolean)),
+  );
+  return merged.length > 0 ? merged : undefined;
+}
+
+function mergeModelOptions(
+  existing: OllamaModelOption,
+  incoming: OllamaModelOption,
+): OllamaModelOption {
+  const preferred =
+    !existing.installed && incoming.installed
+      ? incoming
+      : existing.remoteOnly && !incoming.remoteOnly
+        ? incoming
+        : existing;
+  const fallback = preferred === existing ? incoming : existing;
+  const installed = existing.installed || incoming.installed;
+
+  return {
+    ...preferred,
+    installed,
+    source: installed ? "installed" : preferred.source,
+    remoteOnly: installed ? false : Boolean(preferred.remoteOnly ?? fallback.remoteOnly),
+    sizeLabel: preferred.sizeLabel || fallback.sizeLabel,
+    contextWindowLabel:
+      preferred.contextWindowLabel || fallback.contextWindowLabel,
+    capabilities: mergeCapabilities(existing.capabilities, incoming.capabilities),
+  };
+}
+
 function uniqueSortedModels(models: OllamaModelOption[]) {
   const deduped = new Map<string, OllamaModelOption>();
   for (const model of models) {
@@ -61,27 +93,7 @@ function uniqueSortedModels(models: OllamaModelOption[]) {
       continue;
     }
 
-    if (!existing.installed && model.installed) {
-      deduped.set(model.name, { ...existing, ...model });
-      continue;
-    }
-
-    if (existing.remoteOnly && !model.remoteOnly) {
-      deduped.set(model.name, { ...existing, ...model });
-      continue;
-    }
-
-    if (!existing.sizeLabel && model.sizeLabel) {
-      deduped.set(model.name, { ...existing, sizeLabel: model.sizeLabel });
-      continue;
-    }
-
-    if (!existing.contextWindowLabel && model.contextWindowLabel) {
-      deduped.set(model.name, {
-        ...existing,
-        contextWindowLabel: model.contextWindowLabel,
-      });
-    }
+    deduped.set(model.name, mergeModelOptions(existing, model));
   }
 
   return Array.from(deduped.values()).sort((left, right) => {
@@ -237,6 +249,44 @@ async function fetchInstalledModels(baseUrl: string): Promise<OllamaModelOption[
       sizeLabel: model.metadata.sizeLabel,
       contextWindowLabel: model.metadata.contextWindowLabel,
     }));
+}
+
+function metadataScore(model: OllamaModelOption) {
+  return (
+    Number(Boolean(model.sizeLabel)) +
+    Number(Boolean(model.contextWindowLabel)) +
+    (model.capabilities?.length || 0)
+  );
+}
+
+function enrichInstalledModelsFromLibrary(
+  installedModels: OllamaModelOption[],
+  libraryModels: OllamaModelOption[],
+) {
+  const bestLibraryByNormalizedName = new Map<string, OllamaModelOption>();
+
+  for (const model of libraryModels) {
+    if (model.remoteOnly) {
+      continue;
+    }
+
+    const normalizedName = normalizeModelName(model.name);
+    if (!normalizedName) {
+      continue;
+    }
+
+    const existing = bestLibraryByNormalizedName.get(normalizedName);
+    if (!existing || metadataScore(model) > metadataScore(existing)) {
+      bestLibraryByNormalizedName.set(normalizedName, model);
+    }
+  }
+
+  return installedModels.map((model) => {
+    const matchedLibraryModel = bestLibraryByNormalizedName.get(
+      normalizeModelName(model.name),
+    );
+    return matchedLibraryModel ? mergeModelOptions(model, matchedLibraryModel) : model;
+  });
 }
 
 function normalizeBaseUrl(baseUrl: string) {
@@ -494,12 +544,16 @@ export async function listAvailableOllamaModels(baseUrl: string) {
 
   const installedModels = installedResult.status === "fulfilled" ? installedResult.value : [];
   const libraryModels = libraryResult.status === "fulfilled" ? libraryResult.value : [];
+  const enrichedInstalledModels = enrichInstalledModelsFromLibrary(
+    installedModels,
+    libraryModels,
+  );
   const downloadableLibraryModels = libraryModels.filter((model) => !model.remoteOnly);
   const remoteLibraryModels = libraryModels.filter((model) => model.remoteOnly);
 
   return {
-    models: uniqueSortedModels([...installedModels, ...libraryModels]),
-    installedCount: installedModels.length,
+    models: uniqueSortedModels([...enrichedInstalledModels, ...libraryModels]),
+    installedCount: enrichedInstalledModels.length,
     libraryCount: downloadableLibraryModels.length,
     remoteLibraryCount: remoteLibraryModels.length,
     installedError:

@@ -224,6 +224,8 @@ func (e *Engine) inspectDetailed(ctx context.Context, request api.InspectRequest
 		candidate.Score = max(candidate.Score, retrievalCandidate.Score)
 	}
 
+	addQuotedGitCommitContextCandidates(candidateMap, buffer, selectedRecentOutput)
+
 	initialCandidates := sortedCandidates(candidateMap)
 	historyTrusted := useHistory && len(initialCandidates) > 0 && shouldTrustHistory(initialCandidates)
 	inspectLastCommandContext := toInspectCommandContexts(lastCommandContexts)
@@ -275,7 +277,7 @@ func (e *Engine) inspectDetailed(ctx context.Context, request api.InspectRequest
 				} else if strings.TrimSpace(suggestResult.Response) == "" {
 					modelError = fmt.Sprintf("%s returned an empty response.", activeModelName)
 				} else {
-					modelError = fmt.Sprintf("%s returned output that did not start with the current buffer %q.", activeModelName, buffer)
+					modelError = fmt.Sprintf("%s returned output that did not start with the current buffer.", activeModelName)
 				}
 			} else {
 				modelError = formatInspectModelError(activeModelName, modelTimeout, modelErr)
@@ -380,6 +382,9 @@ func (e *Engine) inspectDetailed(ctx context.Context, request api.InspectRequest
 		response.Winner = &inspectCandidates[0]
 		winnerCopy := *ranked[0]
 		winner = &winnerCopy
+		if response.ModelError != "" {
+			response.ModelError = ""
+		}
 	}
 	return inspectResult{
 		response:         response,
@@ -780,11 +785,63 @@ func BuildPrompt(
 		builder.WriteString("buffer is empty right now. Prefer the most likely correction of the last command or the most likely immediate follow-up command.\n")
 		builder.WriteString("buffer is empty right now. If there is no clear next step, return an empty response.\n")
 	} else {
-		builder.WriteString("\ncurrent_buffer:\n")
+		builder.WriteString("\nThe current buffer below is literal shell text. Copy it exactly, character-for-character, at the start of your answer.\n")
+		builder.WriteString("Preserve unmatched quotes, parentheses, colons, and trailing spaces from the current buffer.\n")
+		builder.WriteString("Continue the same command. Ignore recent commands or context that do not share the current buffer prefix.\n")
+		appendQuotedCommitPrefixExample(&builder, request.Buffer)
+		builder.WriteString("\ncurrent_buffer_begin\n")
 		builder.WriteString(request.Buffer)
-		builder.WriteString("\n")
+		builder.WriteString("\ncurrent_buffer_end\n")
 	}
 	return builder.String()
+}
+
+func appendQuotedCommitPrefixExample(builder *strings.Builder, buffer string) {
+	if builder == nil || !shouldAddQuotedCommitPrefixExample(buffer) {
+		return
+	}
+
+	exampleCommand := buffer
+	if !strings.HasSuffix(exampleCommand, " ") {
+		exampleCommand += " "
+	}
+	exampleCommand += "describe the change\""
+
+	builder.WriteString("Example:\n")
+	builder.WriteString("current_buffer_begin\n")
+	builder.WriteString(buffer)
+	builder.WriteString("\ncurrent_buffer_end\n")
+	builder.WriteString("command: ")
+	builder.WriteString(exampleCommand)
+	builder.WriteString("\n")
+}
+
+func shouldAddQuotedCommitPrefixExample(buffer string) bool {
+	trimmed := strings.TrimSpace(buffer)
+	if !strings.HasPrefix(trimmed, "git commit") || !strings.Contains(buffer, " -m \"") {
+		return false
+	}
+	return hasUnmatchedUnescapedQuote(buffer, '"')
+}
+
+func hasUnmatchedUnescapedQuote(value string, quote byte) bool {
+	count := 0
+	escaped := false
+	for index := 0; index < len(value); index++ {
+		current := value[index]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if current == '\\' {
+			escaped = true
+			continue
+		}
+		if current == quote {
+			count += 1
+		}
+	}
+	return count%2 == 1
 }
 
 type promptRecentContextEntry struct {
@@ -1129,15 +1186,98 @@ func CleanSuggestion(prefix, raw string) string {
 		if strings.HasPrefix(line, "command:") {
 			line = strings.TrimSpace(strings.TrimPrefix(line, "command:"))
 		}
-		if !strings.HasPrefix(line, prefix) {
-			continue
+		if strings.HasPrefix(line, prefix) {
+			if line == prefix {
+				return ""
+			}
+			return line
 		}
-		if line == prefix {
-			return ""
+		if rewritten := rewriteQuotedGitCommitSuggestion(prefix, line); rewritten != "" {
+			return rewritten
 		}
-		return line
 	}
 	return ""
+}
+
+func rewriteQuotedGitCommitSuggestion(prefix, line string) string {
+	commandPrefix, prefixMessage, ok := splitQuotedGitCommitMessage(prefix)
+	if !ok || !strings.HasPrefix(line, commandPrefix) {
+		return ""
+	}
+
+	rawMessage := line[len(commandPrefix):]
+	if strings.HasPrefix(rawMessage, prefixMessage) {
+		return line
+	}
+	if !strings.Contains(prefixMessage, ": ") || !strings.Contains(rawMessage, ": ") {
+		if strings.HasSuffix(prefixMessage, ")") && strings.Contains(rawMessage, "): ") {
+			rawMessageParts := strings.SplitN(rawMessage, "): ", 2)
+			if len(rawMessageParts) != 2 || strings.TrimSpace(rawMessageParts[1]) == "" {
+				return ""
+			}
+			rewritten := commandPrefix + prefixMessage + ": " + rawMessageParts[1]
+			if rewritten == prefix || !strings.HasPrefix(rewritten, prefix) {
+				return ""
+			}
+			return rewritten
+		}
+		return ""
+	}
+
+	rawMessageParts := strings.SplitN(rawMessage, ": ", 2)
+	if len(rawMessageParts) != 2 || strings.TrimSpace(rawMessageParts[1]) == "" {
+		return ""
+	}
+
+	rewritten := commandPrefix + prefixMessage + rawMessageParts[1]
+	if rewritten == prefix || !strings.HasPrefix(rewritten, prefix) {
+		return ""
+	}
+	return rewritten
+}
+
+func splitQuotedGitCommitMessage(buffer string) (string, string, bool) {
+	if !shouldAddQuotedCommitPrefixExample(buffer) {
+		return "", "", false
+	}
+
+	messagePrefixIndex := strings.Index(buffer, ` -m "`)
+	if messagePrefixIndex == -1 {
+		return "", "", false
+	}
+
+	messagePrefixIndex += len(` -m "`)
+	return buffer[:messagePrefixIndex], buffer[messagePrefixIndex:], true
+}
+
+func addQuotedGitCommitContextCandidates(candidateMap map[string]*rankedCandidate, buffer string, contexts []api.InspectRecentOutputContext) {
+	if candidateMap == nil || !shouldAddQuotedCommitPrefixExample(buffer) {
+		return
+	}
+
+	for _, context := range contexts {
+		command := CleanSuggestion(buffer, context.Command)
+		if command == "" {
+			continue
+		}
+
+		candidate := candidateMap[command]
+		if candidate == nil {
+			candidateMap[command] = &rankedCandidate{
+				Command: command,
+				Source:  "output-context",
+				Score:   1,
+			}
+			continue
+		}
+
+		if !strings.Contains(candidate.Source, "output-context") {
+			candidate.Source = addSourceTag(candidate.Source, "output-context")
+		}
+		if candidate.Score < 1 {
+			candidate.Score = 1
+		}
+	}
 }
 
 func formatInspectModelError(modelName string, timeout time.Duration, err error) string {

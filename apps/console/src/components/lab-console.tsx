@@ -1,5 +1,6 @@
 "use client";
 
+import { Info } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -88,6 +89,47 @@ function formatRecencyLabel(value?: number) {
   return formatTimestamp(value);
 }
 
+function parseReplaySampleLimit(filtersJson: string) {
+  try {
+    return Number(
+      (JSON.parse(filtersJson || "{}") as { sample_limit?: number }).sample_limit || 200,
+    );
+  } catch {
+    return 200;
+  }
+}
+
+function formatRunInfoTimestamp(value: number) {
+  return value > 0 ? formatTimestamp(value) : "n/a";
+}
+
+function buildRunInfoItems(run: BenchmarkRunRow) {
+  const items = [
+    { label: "Status", value: run.status },
+    { label: "Track", value: run.track },
+    { label: "Surface", value: run.surface },
+    { label: "Strategy", value: run.strategy },
+    { label: "Suite", value: run.suiteName },
+    { label: "Protocol", value: run.timingProtocol },
+    { label: "Repeat", value: String(run.repeatCount) },
+    { label: "Timeout", value: formatDurationMs(run.timeoutMs) },
+    { label: "Models", value: run.models.join(", ") || "n/a" },
+    { label: "Dataset", value: run.datasetSize > 0 ? `${run.datasetSize} cases` : "n/a" },
+    { label: "Created", value: formatRunInfoTimestamp(run.createdAtMs) },
+    { label: "Started", value: formatRunInfoTimestamp(run.startedAtMs) },
+    { label: "Finished", value: formatRunInfoTimestamp(run.finishedAtMs) },
+  ];
+
+  if (run.track === "replay") {
+    items.push({
+      label: "Replay Sample",
+      value: `${parseReplaySampleLimit(run.filtersJson)} rows`,
+    });
+  }
+
+  return items;
+}
+
 function normalizeAggregateSummary(
   aggregate?: Partial<BenchmarkAggregateSummary> | null,
 ): BenchmarkAggregateSummary {
@@ -166,6 +208,7 @@ export function LabConsole({
   const [loadingRunId, setLoadingRunId] = useState<number | null>(null);
   const [replayingRunId, setReplayingRunId] = useState<number | null>(null);
   const [deletingRunId, setDeletingRunId] = useState<number | null>(null);
+  const [pinnedRunInfoId, setPinnedRunInfoId] = useState<number | null>(null);
   const [loadingTest, setLoadingTest] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -203,6 +246,31 @@ export function LabConsole({
     (selectedRunId !== null ? runs.find((run) => run.id === selectedRunId) : null) ||
     selectedRun?.run ||
     null;
+
+  useEffect(() => {
+    function handlePointerDown(event: PointerEvent) {
+      const target = event.target;
+      if (!(target instanceof Element)) {
+        return;
+      }
+      if (!target.closest("[data-run-info-root]")) {
+        setPinnedRunInfoId(null);
+      }
+    }
+
+    function handleEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setPinnedRunInfoId(null);
+      }
+    }
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleEscape);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleEscape);
+    };
+  }, []);
 
   function parseRunSummary(summary: BenchmarkRunSummary | null) {
     const fallback = {
@@ -640,13 +708,7 @@ export function LabConsole({
           models: run.models,
           repeatCount: run.repeatCount,
           timeoutMs: run.timeoutMs,
-          replaySampleLimit: (() => {
-            try {
-              return Number((JSON.parse(run.filtersJson || "{}") as { sample_limit?: number }).sample_limit || 200);
-            } catch {
-              return 200;
-            }
-          })(),
+          replaySampleLimit: parseReplaySampleLimit(run.filtersJson),
         }),
       });
       const data = (await response.json()) as { runId?: number; error?: string };
@@ -1172,11 +1234,6 @@ export function LabConsole({
                 <th>Track</th>
                 <th>Progress</th>
                 <th>Models</th>
-                <th>Suite</th>
-                <th>Protocol</th>
-                <th>Repeat</th>
-                <th>Timeout</th>
-                <th>Created</th>
                 <th></th>
               </tr>
             </thead>
@@ -1218,13 +1275,48 @@ export function LabConsole({
                     })()}
                   </td>
                   <td>{run.models.join(", ")}</td>
-                  <td>{run.suiteName}</td>
-                  <td>{run.timingProtocol}</td>
-                  <td>{run.repeatCount}</td>
-                  <td>{formatDurationMs(run.timeoutMs)}</td>
-                  <td>{formatTimestamp(run.createdAtMs)}</td>
                   <td>
                     <div className="inline-actions">
+                      <div
+                        className={
+                          pinnedRunInfoId === run.id
+                            ? "run-info-popover-root run-info-popover-root-open"
+                            : "run-info-popover-root"
+                        }
+                        data-run-info-root
+                      >
+                        <button
+                          type="button"
+                          className="icon-button run-info-button"
+                          aria-label={`Show details for run #${run.id}`}
+                          aria-expanded={pinnedRunInfoId === run.id}
+                          aria-controls={`run-info-${run.id}`}
+                          onClick={() =>
+                            setPinnedRunInfoId((current) =>
+                              current === run.id ? null : run.id,
+                            )
+                          }
+                        >
+                          <Info aria-hidden="true" />
+                        </button>
+                        <div
+                          id={`run-info-${run.id}`}
+                          className="run-info-popover"
+                          role="tooltip"
+                        >
+                          <strong className="run-info-popover-title">
+                            Run #{run.id} details
+                          </strong>
+                          <dl className="run-info-popover-grid">
+                            {buildRunInfoItems(run).map((item) => (
+                              <div key={`${run.id}-${item.label}`}>
+                                <dt>{item.label}</dt>
+                                <dd>{item.value}</dd>
+                              </div>
+                            ))}
+                          </dl>
+                        </div>
+                      </div>
                       <button
                         type="button"
                         className="button-secondary"
@@ -1263,7 +1355,7 @@ export function LabConsole({
               ))}
               {runs.length === 0 ? (
                 <tr>
-                  <td colSpan={11}>No benchmark runs saved yet.</td>
+                  <td colSpan={6}>No benchmark runs saved yet.</td>
                 </tr>
               ) : null}
             </tbody>

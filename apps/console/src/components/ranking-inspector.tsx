@@ -85,6 +85,11 @@ type InspectFormState = {
   recentCommands: string;
 };
 
+type RejectedModelOutput = {
+  message: string;
+  rawOutput: string;
+};
+
 function normalizeCandidate(
   input: Partial<InspectCandidate> | null | undefined,
 ): InspectCandidate | null {
@@ -216,6 +221,27 @@ function normalizeInspectResponse(
   };
 }
 
+function describeRejectedModelOutput(
+  response: InspectResponse | null,
+): RejectedModelOutput | null {
+  if (!response || !response.raw_model_output.trim()) {
+    return null;
+  }
+
+  const rejectedPrefixMismatch =
+    response.model_error.includes("did not start with the current buffer") ||
+    (!response.cleaned_model_output && response.raw_model_output.trim().length > 0);
+  if (!rejectedPrefixMismatch) {
+    return null;
+  }
+
+  return {
+    message:
+      "The model did return output, but the engine rejected it because it did not continue the current buffer exactly, so it would not have been a safe completion.",
+    rawOutput: response.raw_model_output,
+  };
+}
+
 interface RankingInspectorProps {
   defaultModelName: string;
   defaultSuggestStrategy: SuggestStrategy;
@@ -245,6 +271,10 @@ export function RankingInspector({
   const [loading, setLoading] = useState(false);
   const didAutoInspect = useRef(false);
   const canInspect = form.buffer.trim().length > 0 && !loading;
+  const rejectedModelOutput = useMemo(
+    () => describeRejectedModelOutput(response),
+    [response],
+  );
 
   const parsedRecentCommands = useMemo(
     () =>
@@ -451,6 +481,23 @@ export function RankingInspector({
               <p className="error-text">{response.model_error}</p>
             ) : null}
           </div>
+
+          {rejectedModelOutput ? (
+            <div className="detail-block">
+              <h3>Rejected Raw Model Output</h3>
+              <p className="error-text">{rejectedModelOutput.message}</p>
+              <div className="grid two-up">
+                <div>
+                  <p className="helper-text">Current buffer</p>
+                  <pre className="code-block">{form.buffer}</pre>
+                </div>
+                <div>
+                  <p className="helper-text">Model output that was rejected</p>
+                  <pre className="code-block">{rejectedModelOutput.rawOutput}</pre>
+                </div>
+              </div>
+            </div>
+          ) : null}
 
           <div className="detail-block">
             <h3>Candidate Scores</h3>

@@ -90,6 +90,7 @@ Calls the daemon `/inspect` route to show:
 - ranked alternatives
 - per-candidate score breakdowns
 - retrieval-aware score breakdowns that distinguish history, local retrieval, and model contribution
+- an explicit rejected-output explanation when the raw model output does not continue the current buffer exactly, including the rejected output beside the current buffer for quick debugging
 - retrieved local context such as matching history commands, path candidates, git branches, matching project tasks, and the broader project task list loaded from local manifests
 - prompt text
 - raw and cleaned model output
@@ -111,6 +112,7 @@ Supports:
 - a per-test suggestion-strategy override for ad-hoc ranking requests
 - ad-hoc tests that accept an optional `session id` and `cwd`, then let the backend infer repo root, branch, and recent session context when available
 - saved benchmark run history
+- condensed saved benchmark run rows with a trailing info button that reveals the full run configuration on hover or click instead of keeping suite, protocol, repeat, timeout, and created columns always visible
 - persisted benchmark results stored in SQLite
 - track selection between static, replay, and raw benchmark modes
 - timing protocol selection for cold-only, hot-only, mixed, and full passes
@@ -134,8 +136,9 @@ Supports:
 - pagination for the larger `Available From Ollama` catalog so library browsing stays usable without overwhelming the page
 - supplemental family-page loading for important Ollama model families whose local tags do not reliably appear on the top-level library landing page, so models like `qwen3-coder` still show up in the console catalog
 - capability chips on downloadable library models so vision, tools, and thinking support are visible at a glance
-- model-size chips on installed and library entries, using Ollama parameter-size metadata for local models and catalog size labels for library entries when available
+- parameter-size chips on installed and library entries, using Ollama parameter-size metadata for local models and catalog size labels for library entries when available
 - context-window chips on installed and supported library entries, using Ollama local model metadata when a model is already downloaded and family-page catalog details when the public library exposes them
+- model pickers that prioritize parameter size, context window, and capability chips over a generic available-state badge, while still marking installed and remote rows when that distinction matters
 - exclusion of Ollama cloud-only catalog entries from the local console inventory so remote models do not appear as downloadable local options, while mixed cloud-plus-local families like `qwen3.5` still surface their local tags
 - visible but disabled cloud and remote-only catalog entries, styled as greyed-out reference items so unsupported downloads are explicit instead of silently disappearing
 - visibility into the daemon's configured model and the current live model

@@ -121,7 +121,10 @@ func TestSuggestAllowsEmptyBufferWithLastCommandContext(t *testing.T) {
 	if !strings.Contains(observedPrompt, "  last_command: true") {
 		t.Fatalf("expected last_command marker in prompt, got %q", observedPrompt)
 	}
-	if strings.Contains(observedPrompt, "current_buffer:") {
+	if strings.Contains(observedPrompt, "current_buffer_begin") {
+		t.Fatalf("did not expect current_buffer block for empty buffer, got %q", observedPrompt)
+	}
+	if strings.Contains(observedPrompt, "current_buffer_end") {
 		t.Fatalf("did not expect current_buffer block for empty buffer, got %q", observedPrompt)
 	}
 	if strings.Contains(observedPrompt, "matching_history:") {
@@ -598,6 +601,45 @@ func TestBuildPromptPrependsStaticSystemPrompt(t *testing.T) {
 	}
 }
 
+func TestBuildPromptDelimitsCurrentBuffer(t *testing.T) {
+	t.Parallel()
+
+	buffer := "git commit -a -m \"feat(console): "
+	prompt := BuildPrompt(
+		"",
+		api.SuggestRequest{
+			Buffer:       buffer,
+			CWD:          "/tmp/project",
+			RepoRoot:     "/tmp/project",
+			Branch:       "main",
+			LastExitCode: 0,
+		},
+		nil,
+		db.CommandContext{},
+		nil,
+		nil,
+		api.InspectRetrievedContext{},
+	)
+
+	expectedBlock := "\ncurrent_buffer_begin\n" + buffer + "\ncurrent_buffer_end\n"
+	if !strings.Contains(prompt, expectedBlock) {
+		t.Fatalf("expected prompt to delimit current buffer, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "Copy it exactly, character-for-character, at the start of your answer.") {
+		t.Fatalf("expected literal buffer guidance, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "Preserve unmatched quotes, parentheses, colons, and trailing spaces from the current buffer.") {
+		t.Fatalf("expected unmatched quote guidance, got %q", prompt)
+	}
+	expectedExample := "Example:\ncurrent_buffer_begin\n" + buffer + "\ncurrent_buffer_end\ncommand: " + buffer + "describe the change\"\n"
+	if !strings.Contains(prompt, expectedExample) {
+		t.Fatalf("expected quoted commit example, got %q", prompt)
+	}
+	if strings.Contains(prompt, "\ncurrent_buffer:\n") {
+		t.Fatalf("did not expect legacy current_buffer block, got %q", prompt)
+	}
+}
+
 func TestBuildPromptUsesDefaultSystemPromptWhenUnset(t *testing.T) {
 	t.Parallel()
 
@@ -613,6 +655,34 @@ func TestBuildPromptUsesDefaultSystemPromptWhenUnset(t *testing.T) {
 
 	if !strings.HasPrefix(prompt, config.DefaultSystemPromptStatic+"\n\ncwd: ") {
 		t.Fatalf("expected default system prompt prefix, got %q", prompt)
+	}
+}
+
+func TestCleanSuggestionRewritesQuotedGitCommitMessage(t *testing.T) {
+	t.Parallel()
+
+	prefix := `git commit -a -m "feat(console): `
+	raw := `git commit -a -m "feat(console,engine): add live suggestion refresh and prompt-size latency insights"`
+
+	cleaned := CleanSuggestion(prefix, raw)
+
+	expected := `git commit -a -m "feat(console): add live suggestion refresh and prompt-size latency insights"`
+	if cleaned != expected {
+		t.Fatalf("expected rewritten commit suggestion %q, got %q", expected, cleaned)
+	}
+}
+
+func TestCleanSuggestionRewritesQuotedGitCommitScopeWithoutColon(t *testing.T) {
+	t.Parallel()
+
+	prefix := `git commit -a -m "feat(console)`
+	raw := `git commit -a -m "feat(console,engine): add live suggestion refresh and prompt-size latency insights"`
+
+	cleaned := CleanSuggestion(prefix, raw)
+
+	expected := `git commit -a -m "feat(console): add live suggestion refresh and prompt-size latency insights"`
+	if cleaned != expected {
+		t.Fatalf("expected rewritten commit suggestion %q, got %q", expected, cleaned)
 	}
 }
 
@@ -729,7 +799,7 @@ func TestInspectSurfacesModelTimeoutError(t *testing.T) {
 
 	response, err := engine.Inspect(context.Background(), api.InspectRequest{
 		SessionID: "test-session",
-		Buffer:    "git st",
+		Buffer:    `git commit -a -m "feat(console)"`,
 		Strategy:  config.SuggestStrategyModelOnly,
 	})
 	if err != nil {
@@ -776,7 +846,7 @@ func TestInspectSurfacesRejectedModelOutput(t *testing.T) {
 
 	response, err := engine.Inspect(context.Background(), api.InspectRequest{
 		SessionID: "test-session",
-		Buffer:    "git st",
+		Buffer:    `git commit -a -m "feat(console)"`,
 		Strategy:  config.SuggestStrategyModelOnly,
 	})
 	if err != nil {
@@ -794,6 +864,76 @@ func TestInspectSurfacesRejectedModelOutput(t *testing.T) {
 	}
 	if !strings.Contains(response.ModelError, "did not start with the current buffer") {
 		t.Fatalf("expected cleaned-output model error, got %q", response.ModelError)
+	}
+	if strings.Contains(response.ModelError, `git commit -a -m "feat(console)"`) {
+		t.Fatalf("expected model error to avoid repeating the raw buffer inline, got %q", response.ModelError)
+	}
+}
+
+func TestInspectFallsBackToRecentQuotedGitCommitContext(t *testing.T) {
+	t.Parallel()
+
+	store, err := db.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	recordTestCommand(t, store, db.CommandRecord{
+		SessionID:     "test-session",
+		Command:       `git commit -a -m "feat(console): add performance dashboard and richer benchmarks & telemetry"`,
+		CWD:           "/tmp/project",
+		RepoRoot:      "/tmp/project",
+		Branch:        "main",
+		ExitCode:      0,
+		DurationMS:    40,
+		StartedAtMS:   1000,
+		FinishedAtMS:  1040,
+		StdoutExcerpt: `[main abc1234] feat(console): add performance dashboard and richer benchmarks & telemetry`,
+	})
+
+	engine := NewWithSystemPrompt(
+		store,
+		stubModelClient{suggest: func(ctx context.Context, prompt string) (model.SuggestResult, error) {
+			return model.SuggestResult{Response: "git push"}, nil
+		}},
+		"qwen3-coder:latest",
+		"http://127.0.0.1:11434",
+		"5m",
+		config.SuggestStrategyModelOnly,
+		"",
+		2*time.Second,
+	)
+
+	response, err := engine.Inspect(context.Background(), api.InspectRequest{
+		SessionID: "test-session",
+		Buffer:    `git commit -a -m "`,
+		CWD:       "/tmp/project",
+		RepoRoot:  "/tmp/project",
+		Branch:    "main",
+		Strategy:  config.SuggestStrategyModelOnly,
+	})
+	if err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+
+	if response.Winner == nil {
+		t.Fatalf("expected winner from recent output context, got %#v", response)
+	}
+	expected := `git commit -a -m "feat(console): add performance dashboard and richer benchmarks & telemetry"`
+	if response.Winner.Command != expected {
+		t.Fatalf("expected fallback winner %q, got %#v", expected, response.Winner)
+	}
+	if !strings.Contains(response.Winner.Source, "output-context") {
+		t.Fatalf("expected output-context source, got %#v", response.Winner)
+	}
+	if response.RawModelOutput != "git push" {
+		t.Fatalf("expected raw model output to be preserved, got %q", response.RawModelOutput)
+	}
+	if response.ModelError != "" {
+		t.Fatalf("expected fallback winner to suppress model error, got %q", response.ModelError)
 	}
 }
 
