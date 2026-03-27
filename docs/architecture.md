@@ -15,7 +15,7 @@ The current implementation is built from six main pieces:
 
 1. The user types in `zsh`.
 2. The plugin watches buffer changes and schedules a debounced helper process.
-3. The helper process calls `autocomplete-client suggest` once for classic modes, or multiple staged suggest requests in parallel for progressive modes.
+3. The helper process calls `autocomplete-client suggest` once for classic modes, or multiple staged suggest requests for progressive modes, with the dual-model flow starting the fast-stage model before the slow-stage model to reduce backend contention.
 4. The client sends an HTTP request over a local Unix socket to the daemon.
 5. The daemon builds a suggestion using local history, feedback, context, and optional model output.
 6. The daemon stores the suggestion in SQLite.

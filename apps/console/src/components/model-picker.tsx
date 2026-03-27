@@ -33,6 +33,7 @@ interface SingleModelPickerProps extends BaseModelPickerProps {
   value: string;
   onValueChange: (value: string) => void;
   onSelect?: (value: string) => void;
+  clearable?: boolean;
 }
 
 type ModelPickerProps = MultiModelPickerProps | SingleModelPickerProps;
@@ -134,13 +135,19 @@ export function ModelPicker(props: ModelPickerProps) {
   }
 
   function clearSelection() {
-    if (props.mode !== "multi") {
+    if (props.mode === "multi") {
+      props.onClearAll();
+      setIsOpen(false);
+      setValidationMessage("");
       return;
     }
 
-    props.onClearAll();
-    setIsOpen(false);
+    props.onValueChange("");
     setValidationMessage("");
+    setIsOpen(true);
+    window.setTimeout(() => {
+      inputRef.current?.focus();
+    }, 0);
   }
 
   function selectOption(optionName: string) {
@@ -205,7 +212,28 @@ export function ModelPicker(props: ModelPickerProps) {
               }
             }}
             placeholder={props.placeholder}
+            className={props.mode === "single" && props.clearable ? "model-picker-input-clearable" : undefined}
           />
+          {props.mode === "single" && props.clearable && inputValue.trim() ? (
+            <button
+              type="button"
+              className="model-picker-inline-clear"
+              onMouseDown={(event) => {
+                event.preventDefault();
+                clearSelection();
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  clearSelection();
+                }
+              }}
+              aria-label={`Clear ${props.label}`}
+              title={`Clear ${props.label}`}
+            >
+              <X aria-hidden="true" />
+            </button>
+          ) : null}
           {props.mode === "multi" ? (
             <div className="model-picker-actions">
               {props.selected.length > 0 ? (

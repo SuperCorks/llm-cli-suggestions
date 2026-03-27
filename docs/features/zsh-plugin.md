@@ -23,6 +23,7 @@ The `zsh` plugin in `zsh/llm-cli-suggestions.zsh` is the live terminal integrati
 - suggestions can still render on an empty prompt when the cursor is at the end of the buffer and the daemon returns a full-command suggestion
 - stale async requests are discarded
 - progressive suggestion modes can apply more than one result for the same buffer generation, with stage ordering so a slower lower-priority stage cannot overwrite a newer higher-priority stage
+- in the dual-model progressive flows, the helper starts the fast-stage model before the slow-stage model so the fast suggestion can arrive without competing with the large-model request on the same local backend
 - completed async work wakes ZLE through a per-session notify pipe and `zle -F` widget handler
 - interactive shells source-time call `lac-start-daemon`, so the local singleton daemon is started or refreshed before the first suggestion request instead of relying on an external bootstrap step
 - `lac-start-daemon` keeps the local singleton daemon when it is already healthy, but restarts it when the daemon binary or persisted `runtime.env` settings are newer than the daemon pid marker so new fancy shells pick up rebuilt daemon behavior

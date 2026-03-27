@@ -596,6 +596,15 @@ select {
   font-size: 0.86rem;
 }
 
+select {
+  appearance: none;
+  padding-right: 42px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14' fill='none'%3E%3Cpath d='M3.5 5.25L7 8.75L10.5 5.25' stroke='%23a6aebd' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 14px 14px;
+}
+
 textarea {
   min-height: 120px;
   resize: vertical;
@@ -1777,6 +1786,7 @@ th {
 
 .model-picker-row-single {
   grid-template-columns: minmax(0, 1fr);
+  position: relative;
 }
 
 .model-picker {
@@ -1785,6 +1795,37 @@ th {
 
 .model-picker input {
   min-height: 44px;
+}
+
+.model-picker-input-clearable {
+  padding-right: 42px;
+}
+
+.model-picker-inline-clear {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  width: 24px;
+  height: 24px;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  z-index: 1;
+}
+
+.model-picker-inline-clear:hover {
+  color: var(--text);
+}
+
+.model-picker-inline-clear svg {
+  width: 14px;
+  height: 14px;
 }
 
 .model-picker-menu {

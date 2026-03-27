@@ -678,6 +678,7 @@ export function DaemonConsole({
               mode="single"
               label="Model Name"
               value={settings.LAC_MODEL_NAME}
+              clearable
               options={availableModels}
               installedOnly
               onValueChange={(value) => {
@@ -712,6 +713,7 @@ export function DaemonConsole({
               mode="single"
               label="Fast Stage Model"
               value={settings.LAC_FAST_MODEL_NAME}
+              clearable
               options={availableModels}
               installedOnly
               onValueChange={(value) =>

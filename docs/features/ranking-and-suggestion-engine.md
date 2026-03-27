@@ -61,7 +61,7 @@ When the live daemon rejects a non-empty model response, the structured `suggest
 - `fast-then-model`
 - `model-only`
 
-The progressive modes are shell-orchestrated. The helper can fire a history-only stage first, then one or two rerank requests that force model participation with either the configured fast-stage model or the primary daemon model. In `fast-then-model`, the helper skips history entirely and stages a fast `model-only` request before the primary model. Each later stage reuses the same ranking engine and only replaces the ghost text if it produces a stronger winner for the same buffer generation.
+The progressive modes are shell-orchestrated. The helper can fire a history-only stage first, then one or two rerank requests that force model participation with either the configured fast-stage model or the primary daemon model. In the dual-model flows, the helper now starts the fast-stage model first and only starts the slow-stage model afterward so the two Ollama requests do not contend with each other. In `fast-then-model`, the helper skips history entirely and stages a fast `model-only` request before the primary model. Each later stage reuses the same ranking engine and only replaces the ghost text if it produces a stronger winner for the same buffer generation.
 
 ## Performance Notes
 

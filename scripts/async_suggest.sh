@@ -108,11 +108,14 @@ launch_stage() {
   write_snapshot "notify-sent:${worker_pid}:${notify_status}:${seq}:${order}" "$line"
 }
 
-launch_parallel_plan() {
+launch_stage_plan() {
   local -a stage_strategies=()
   local -a stage_models=()
   local -a stage_roles=()
   local normalized_strategy normalized_primary_model normalized_fast_model
+  local total=0
+  local index=0
+  local history_pid=""
 
   normalized_strategy="$(trim "$configured_strategy")"
   normalized_primary_model="$(trim "$primary_model")"
@@ -161,19 +164,48 @@ launch_parallel_plan() {
       ;;
   esac
 
-  local total="${#stage_strategies[@]}"
+  total="${#stage_strategies[@]}"
   (( total > 0 )) || return 0
 
-  for index in "${!stage_strategies[@]}"; do
-    launch_stage \
-      "$(( index + 1 ))" \
-      "$total" \
-      "${stage_strategies[$index]}" \
-      "${stage_models[$index]}" \
-      "${stage_roles[$index]}" &
-  done
+  case "$normalized_strategy" in
+    history-then-fast-then-model|fast-then-model)
+      if [[ "$normalized_strategy" == "history-then-fast-then-model" ]] && (( total > 0 )) && [[ "${stage_strategies[0]}" == "history-only" ]]; then
+        launch_stage \
+          "1" \
+          "$total" \
+          "${stage_strategies[0]}" \
+          "${stage_models[0]}" \
+          "${stage_roles[0]}" &
+        history_pid="$!"
+        index=1
+      fi
 
-  wait
+      for (( ; index < total; index += 1 )); do
+        launch_stage \
+          "$(( index + 1 ))" \
+          "$total" \
+          "${stage_strategies[$index]}" \
+          "${stage_models[$index]}" \
+          "${stage_roles[$index]}"
+      done
+
+      if [[ -n "$history_pid" ]]; then
+        wait "$history_pid"
+      fi
+      ;;
+    *)
+      for index in "${!stage_strategies[@]}"; do
+        launch_stage \
+          "$(( index + 1 ))" \
+          "$total" \
+          "${stage_strategies[$index]}" \
+          "${stage_models[$index]}" \
+          "${stage_roles[$index]}" &
+      done
+
+      wait
+      ;;
+  esac
 }
 
-launch_parallel_plan
+launch_stage_plan
