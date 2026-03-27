@@ -1,7 +1,9 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { ModelPicker } from "@/components/model-picker";
 import { PathHoverActions } from "@/components/path-hover-actions";
 import { formatDurationMs } from "@/lib/format";
 import {
@@ -9,6 +11,7 @@ import {
   type SuggestStrategy,
 } from "@/lib/suggest-strategy";
 import { SuggestStrategyField } from "@/components/suggest-strategy-field";
+import type { OllamaModelOption } from "@/lib/types";
 
 type InspectCandidate = {
   command: string;
@@ -264,6 +267,13 @@ interface RankingInspectorProps {
   defaultModelName: string;
   defaultFastModelName: string;
   defaultSuggestStrategy: SuggestStrategy;
+  availableModels: OllamaModelOption[];
+  inventorySummary: {
+    installedCount: number;
+    libraryCount: number;
+    installedError?: string;
+    libraryError?: string;
+  };
   initialForm?: Partial<InspectFormState>;
   autoInspect?: boolean;
 }
@@ -272,6 +282,8 @@ export function RankingInspector({
   defaultModelName,
   defaultFastModelName,
   defaultSuggestStrategy,
+  availableModels,
+  inventorySummary,
   initialForm,
   autoInspect = false,
 }: RankingInspectorProps) {
@@ -296,6 +308,18 @@ export function RankingInspector({
   const rejectedModelOutput = useMemo(
     () => describeRejectedModelOutput(response),
     [response],
+  );
+  const installedModelHelperText =
+    inventorySummary.installedError || inventorySummary.libraryError
+      ? [inventorySummary.installedError, inventorySummary.libraryError]
+          .filter(Boolean)
+          .join(" · ")
+      : `${inventorySummary.installedCount} installed locally · ${inventorySummary.libraryCount} available to download`;
+  const installedModelEmptyMessage = (
+    <>
+      No matching installed models. Download additional models from the{" "}
+      <Link href="/models">Models</Link> page.
+    </>
   );
 
   const parsedRecentCommands = useMemo(
@@ -588,47 +612,62 @@ export function RankingInspector({
           {form.suggestStrategy === "history-then-fast-then-model" ||
           form.suggestStrategy === "fast-then-model" ? (
             <>
-              <label>
-                Fast Model
-                <input
+              <div>
+                <ModelPicker
+                  mode="single"
+                  label="Fast Model"
                   value={form.fastModelName}
-                  onChange={(event) =>
+                  options={availableModels}
+                  installedOnly
+                  onValueChange={(value) =>
                     setForm((current) => ({
                       ...current,
-                      fastModelName: event.target.value,
+                      fastModelName: value,
                     }))
                   }
-                  placeholder={defaultFastModelName}
+                  placeholder={defaultFastModelName || "Pick an installed model"}
+                  helperText={installedModelHelperText}
+                  emptyMessage={installedModelEmptyMessage}
                 />
-              </label>
-              <label>
-                Slow Model
-                <input
+              </div>
+              <div>
+                <ModelPicker
+                  mode="single"
+                  label="Slow Model"
                   value={form.modelName}
-                  onChange={(event) =>
+                  options={availableModels}
+                  installedOnly
+                  onValueChange={(value) =>
                     setForm((current) => ({
                       ...current,
-                      modelName: event.target.value,
+                      modelName: value,
                     }))
                   }
-                  placeholder={defaultModelName}
+                  placeholder={defaultModelName || "Pick an installed model"}
+                  helperText={installedModelHelperText}
+                  emptyMessage={installedModelEmptyMessage}
                 />
-              </label>
+              </div>
             </>
           ) : (
-            <label>
-              Model
-              <input
+            <div>
+              <ModelPicker
+                mode="single"
+                label="Model"
                 value={form.modelName}
-                onChange={(event) =>
+                options={availableModels}
+                installedOnly
+                onValueChange={(value) =>
                   setForm((current) => ({
                     ...current,
-                    modelName: event.target.value,
+                    modelName: value,
                   }))
                 }
-                placeholder={defaultModelName}
+                placeholder={defaultModelName || "Pick an installed model"}
+                helperText={installedModelHelperText}
+                emptyMessage={installedModelEmptyMessage}
               />
-            </label>
+            </div>
           )}
         </div>
         <p className="helper-text">

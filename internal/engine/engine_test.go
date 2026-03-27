@@ -167,7 +167,7 @@ func TestSuggestAllowsEmptyBufferWithLastCommandContext(t *testing.T) {
 	if strings.Contains(observedPrompt, "cwd: /tmp/project") == false {
 		t.Fatalf("expected cwd in prompt, got %q", observedPrompt)
 	}
-	if strings.Contains(observedPrompt, "branch: main") == false {
+	if strings.Contains(observedPrompt, "current branch: main") == false {
 		t.Fatalf("expected branch in prompt, got %q", observedPrompt)
 	}
 	if strings.Contains(observedPrompt, "repo_root: /tmp/project") == false {
@@ -679,6 +679,80 @@ func TestCleanSuggestionRewritesQuotedGitCommitScopeWithoutColon(t *testing.T) {
 	}
 }
 
+func TestCleanSuggestionStripsCaseInsensitiveCommandLabel(t *testing.T) {
+	t.Parallel()
+
+	prefix := "cd "
+	raw := "Command: cd apps/console/"
+
+	cleaned := CleanSuggestion(prefix, raw)
+
+	if cleaned != "cd apps/console/" {
+		t.Fatalf("expected command label to be stripped, got %q", cleaned)
+	}
+}
+
+func TestCleanSuggestionUnwrapsSingleBackticks(t *testing.T) {
+	t.Parallel()
+
+	prefix := "git chec"
+	raw := "`git checkout feature/demo`"
+
+	cleaned := CleanSuggestion(prefix, raw)
+
+	if cleaned != "git checkout feature/demo" {
+		t.Fatalf("expected backticks to be unwrapped, got %q", cleaned)
+	}
+}
+
+func TestCleanSuggestionExtractsSingleCommandFromFence(t *testing.T) {
+	t.Parallel()
+
+	prefix := "git chec"
+	raw := "```bash\ngit checkout feature/demo\n```"
+
+	cleaned := CleanSuggestion(prefix, raw)
+
+	if cleaned != "git checkout feature/demo" {
+		t.Fatalf("expected fenced command to be extracted, got %q", cleaned)
+	}
+}
+
+func TestCleanSuggestionContinuesPastExactPrefixEcho(t *testing.T) {
+	t.Parallel()
+
+	prefix := "cd "
+	raw := "command: cd\nCommand: cd apps/console/"
+
+	cleaned := CleanSuggestion(prefix, raw)
+
+	if cleaned != "cd apps/console/" {
+		t.Fatalf("expected cleaner to continue past exact prefix echo, got %q", cleaned)
+	}
+}
+
+func TestRejectedModelOutputSnippetTruncates(t *testing.T) {
+	t.Parallel()
+
+	raw := strings.Repeat("x", 300)
+	snippet := rejectedModelOutputSnippet("model returned output that did not start with the current buffer", raw)
+
+	if !strings.HasSuffix(snippet, "...") {
+		t.Fatalf("expected truncated snippet suffix, got %q", snippet)
+	}
+	if len([]rune(snippet)) != 243 {
+		t.Fatalf("expected 243 runes including ellipsis, got %d", len([]rune(snippet)))
+	}
+}
+
+func TestRejectedModelOutputSnippetSkipsEmptyError(t *testing.T) {
+	t.Parallel()
+
+	if snippet := rejectedModelOutputSnippet("", "git status"); snippet != "" {
+		t.Fatalf("expected no snippet without an error, got %q", snippet)
+	}
+}
+
 func TestInspectReturnsLastThreeCommandContexts(t *testing.T) {
 	t.Parallel()
 
@@ -790,10 +864,10 @@ func TestInspectProgressiveStrategiesInvokeModelEvenWhenHistoryTrusted(t *testin
 	})
 
 	cases := []struct {
-		name         string
-		strategy     string
-		wantCalls    int
-		wantModelRun bool
+		name               string
+		strategy           string
+		wantCalls          int
+		wantModelRun       bool
 		wantHistoryTrusted bool
 	}{
 		{name: "hybrid short circuits trusted history", strategy: config.SuggestStrategyHistoryModel, wantCalls: 0, wantModelRun: false, wantHistoryTrusted: true},

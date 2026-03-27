@@ -647,3 +647,31 @@ export async function removeOllamaModel(baseUrl: string, model: string, signal?:
 
   return { ok: true };
 }
+
+export async function unloadOllamaModel(baseUrl: string, model: string, signal?: AbortSignal) {
+  const response = await fetch(`${normalizeBaseUrl(baseUrl)}/api/generate`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      model,
+      prompt: "",
+      stream: false,
+      keep_alive: 0,
+    }),
+    cache: "no-store",
+    signal,
+  });
+
+  if (!response.ok) {
+    const body = (await response.text()).trim();
+    throw new Error(
+      body
+        ? `ollama unload request failed with ${response.status}: ${body}`
+        : `ollama unload request failed with ${response.status}`,
+    );
+  }
+
+  return { ok: true };
+}

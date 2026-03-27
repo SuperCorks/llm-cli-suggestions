@@ -208,7 +208,7 @@ The control app is more defensive by default: it resolves from the standard stat
 
 Runtime file overrides do not imply multi-daemon support. The shell startup path and the control-app daemon controls intentionally maintain one active `autocomplete-daemon` process at a time on the local machine, even if different state directories or socket paths are configured.
 
-The control app writes this file, and the `zsh` plugin reads it before launching the daemon in `fancy` mode. That gives the app a durable way to control:
+The control app writes this file, and the `zsh` plugin reads it before launching the daemon in `fancy` mode. When the control app changes the runtime model configuration, it compares the previous and next configured roles plus the previous and next active runtime flow, then sends a best-effort Ollama unload for any displaced or no-longer-active model unless that same tag is still needed by the next live strategy. That gives the app a durable way to control:
 
 Persisted values are written as shell-sourceable single-line escaped assignments so multiline settings like the system prompt round-trip cleanly through the control app, `zsh`, and the Go daemon.
 
@@ -235,6 +235,8 @@ The current strategy modes are:
 - `model-only`
 
 The daemon uses the persisted runtime strategy for live shell suggestions, while the inspector can override it per inspect request for debugging and comparison. Inspector requests also enforce a higher minimum model timeout than live shell suggestions because they are manual debug flows rather than latency-sensitive ghost-text updates.
+
+When the control app replaces the configured slow or fast runtime model or changes which roles are active, it compares the old and new configured runtime roles alongside the old and new active runtime flow and sends a best-effort Ollama unload request for any displaced or no-longer-active resident model before the daemon restart. That keeps old model residency from lingering until keep-alive expiry, while still leaving models alone when the same tag remains needed by the next live strategy.
 
 ## Local Model Layer
 

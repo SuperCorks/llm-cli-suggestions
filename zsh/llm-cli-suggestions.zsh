@@ -779,7 +779,7 @@ _lac_format_suggestion_source_marker() {
         ;;
       model)
         case "$LAC_SUGGEST_STRATEGY:$stage_role" in
-          history-then-fast-then-model:fast|history-then-fast-then-model:slow|fast-then-model:fast|fast-then-model:slow)
+          history-then-fast-then-model:fast|fast-then-model:fast)
             label="ai/$stage_role"
             ;;
           *)

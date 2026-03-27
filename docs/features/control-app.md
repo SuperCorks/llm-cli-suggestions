@@ -84,7 +84,7 @@ Shows:
 
 Calls the daemon `/inspect` route to show:
 
-- a leaner inspect form centered on `buffer`, optional `session id`, optional `cwd`, optional `repo root`, optional `branch`, optional `last exit code`, optional recent commands, model choice, and strategy
+- a leaner inspect form centered on `buffer`, optional `session id`, optional `cwd`, optional `repo root`, optional `branch`, optional `last exit code`, optional recent commands, installed-model pickers for slow and fast model selection, and strategy
 - automatic context inference from `cwd` and session history when those fields are not pinned directly by a replayed suggestion snapshot
 - the winning candidate
 - ranked alternatives
@@ -145,6 +145,7 @@ Supports:
 - automatic cleanup of completed model operations so finished downloads and removals drop out of the attention list once the inventory refreshes
 - inline installed-model role actions for the progressive dual-model strategies, so any extra local model can be assigned as the fast-stage model or the large/slow-stage model without leaving the page
 - live-role chips and green row accents for the currently assigned fast and slow models, with those rows pinned to the top of the installed list
+- switching the assigned slow or fast model unloads any displaced Ollama resident model before the daemon restart, unless that same model still remains part of the next active runtime flow
 - safe local model removal, with the currently assigned live model rows protected from removal
 - searchable available-model catalog controls plus a compact dropdown multi-select size filter, while installed local models stay visible as a stable inventory list
 
@@ -156,6 +157,7 @@ Supports:
 - daemon lifecycle actions that maintain a single active local daemon process even when the runtime form points at an alternate state dir or socket path
 - runtime actions that wait for the daemon to become healthy before reporting successful start or restart
 - runtime settings saved to `runtime.env`
+- runtime model changes trigger a best-effort Ollama unload for any displaced or no-longer-active resident slow or fast model before the daemon restart, so stale model footprints do not linger until keep-alive expiry even when a fast model remains saved but is no longer part of the live strategy
 - the same installed-only model picker used in the lab
 - a persisted suggestion-strategy selector shared with the daemon and shell runtime
 - an Ollama keep-alive setting persisted to `runtime.env` and applied on daemon inference requests so loaded models can stay warm longer between suggestions

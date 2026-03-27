@@ -771,6 +771,7 @@ func (e *Engine) logSuggestTrace(inspection inspectResult, candidate *rankedCand
 		SuggestionChars      int    `json:"suggestion_chars,omitempty"`
 		CandidateCount       int    `json:"candidate_count"`
 		ModelError           string `json:"model_error,omitempty"`
+		RejectedModelOutput  string `json:"rejected_model_output,omitempty"`
 	}{
 		Event:                "suggest_trace",
 		SuggestionID:         suggestionID,
@@ -795,6 +796,7 @@ func (e *Engine) logSuggestTrace(inspection inspectResult, candidate *rankedCand
 		BufferChars:          len(inspection.resolvedRequest.Buffer),
 		CandidateCount:       len(inspection.response.Candidates),
 		ModelError:           inspection.response.ModelError,
+		RejectedModelOutput:  rejectedModelOutputSnippet(inspection.response.ModelError, inspection.response.RawModelOutput),
 	}
 	if candidate != nil {
 		payload.Source = candidate.Source
@@ -807,6 +809,24 @@ func (e *Engine) logSuggestTrace(inspection inspectResult, candidate *rankedCand
 		return
 	}
 	log.Printf("%s", encoded)
+}
+
+func rejectedModelOutputSnippet(modelError, raw string) string {
+	if strings.TrimSpace(modelError) == "" {
+		return ""
+	}
+
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+
+	const limit = 240
+	runes := []rune(trimmed)
+	if len(runes) <= limit {
+		return trimmed
+	}
+	return string(runes[:limit]) + "..."
 }
 
 func marshalSuggestionContext(inspection inspectResult, modelKeepAlive string) string {
@@ -883,7 +903,7 @@ func BuildPrompt(
 	builder.WriteString("\n\n")
 	builder.WriteString(fmt.Sprintf("cwd: %s\n", request.CWD))
 	builder.WriteString(fmt.Sprintf("repo_root: %s\n", request.RepoRoot))
-	builder.WriteString(fmt.Sprintf("branch: %s\n", request.Branch))
+	builder.WriteString(fmt.Sprintf("current branch: %s\n", request.Branch))
 	builder.WriteString(fmt.Sprintf("last_exit_code: %d\n", request.LastExitCode))
 	builder.WriteString(fmt.Sprintf("current_token: %s\n", retrievedContext.CurrentToken))
 	appendRecentContext(&builder, recentCommands, lastContext, lastCommandContext, recentOutputContext)
@@ -1281,24 +1301,23 @@ func prefixTokenMatch(token string, tokens map[string]struct{}) int {
 
 func CleanSuggestion(prefix, raw string) string {
 	lines := strings.Split(raw, "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(strings.TrimPrefix(line, "$"))
-		line = strings.ReplaceAll(line, "\t", " ")
+	candidates := make([]string, 0, len(lines)+2)
+	if fenced := extractFencedSuggestionCandidate(raw); fenced != "" {
+		candidates = append(candidates, fenced)
+	}
+	if inline := unwrapInlineSuggestionCandidate(raw); inline != "" {
+		candidates = append(candidates, inline)
+	}
+	candidates = append(candidates, lines...)
+
+	for _, candidate := range candidates {
+		line := normalizeSuggestionCandidate(candidate)
 		if line == "" {
 			continue
 		}
-		if strings.HasPrefix(line, "```") {
-			continue
-		}
-		if strings.Contains(line, "cwd=") || strings.Contains(line, "cwd:") {
-			continue
-		}
-		if strings.HasPrefix(line, "command:") {
-			line = strings.TrimSpace(strings.TrimPrefix(line, "command:"))
-		}
 		if strings.HasPrefix(line, prefix) {
 			if line == prefix {
-				return ""
+				continue
 			}
 			return line
 		}
@@ -1307,6 +1326,83 @@ func CleanSuggestion(prefix, raw string) string {
 		}
 	}
 	return ""
+}
+
+func normalizeSuggestionCandidate(candidate string) string {
+	line := strings.ReplaceAll(candidate, "\t", " ")
+	line = strings.TrimSpace(line)
+	for line != "" {
+		lower := strings.ToLower(line)
+		switch {
+		case strings.HasPrefix(line, "```"):
+			return ""
+		case strings.HasPrefix(lower, "cwd=") || strings.HasPrefix(lower, "cwd:"):
+			return ""
+		case strings.HasPrefix(line, "$"):
+			line = strings.TrimSpace(strings.TrimPrefix(line, "$"))
+			continue
+		case hasCaseInsensitivePrefix(line, "command:"):
+			line = strings.TrimSpace(line[len("command:"):])
+			continue
+		case isSingleBacktickWrapped(line):
+			line = strings.TrimSpace(line[1 : len(line)-1])
+			continue
+		}
+		break
+	}
+	return line
+}
+
+func extractFencedSuggestionCandidate(raw string) string {
+	lines := strings.Split(strings.TrimSpace(raw), "\n")
+	if len(lines) < 3 {
+		return ""
+	}
+	if !strings.HasPrefix(strings.TrimSpace(lines[0]), "```") {
+		return ""
+	}
+	if !strings.HasPrefix(strings.TrimSpace(lines[len(lines)-1]), "```") {
+		return ""
+	}
+
+	candidate := ""
+	for _, line := range lines[1 : len(lines)-1] {
+		normalized := normalizeSuggestionCandidate(line)
+		if normalized == "" {
+			continue
+		}
+		if candidate != "" {
+			return ""
+		}
+		candidate = normalized
+	}
+	return candidate
+}
+
+func unwrapInlineSuggestionCandidate(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if !isSingleBacktickWrapped(trimmed) {
+		return ""
+	}
+	return strings.TrimSpace(trimmed[1 : len(trimmed)-1])
+}
+
+func hasCaseInsensitivePrefix(value, prefix string) bool {
+	if len(value) < len(prefix) {
+		return false
+	}
+	return strings.EqualFold(value[:len(prefix)], prefix)
+}
+
+func isSingleBacktickWrapped(value string) bool {
+	if len(value) < 2 {
+		return false
+	}
+	if !strings.HasPrefix(value, "`") || !strings.HasSuffix(value, "`") {
+		return false
+	}
+	inner := value[1 : len(value)-1]
+	return inner != "" && !strings.Contains(inner, "\n")
 }
 
 func rewriteQuotedGitCommitSuggestion(prefix, line string) string {

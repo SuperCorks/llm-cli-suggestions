@@ -14,8 +14,15 @@ import {
   type PersistedKey,
   writePersistedRuntimeSettings,
 } from "@/lib/server/config";
-import { getLoadedOllamaModelUsages } from "@/lib/server/ollama";
+import { getLoadedOllamaModelUsages, unloadOllamaModel } from "@/lib/server/ollama";
 import type { RuntimeStatus } from "@/lib/types";
+
+type RuntimeModelSettingsLike = {
+  modelName: string;
+  fastModelName: string;
+  suggestStrategy: string;
+  modelBaseUrl: string;
+};
 
 function getDaemonBinaryPath() {
   return path.join(getProjectRoot(), "bin", "autocomplete-daemon");
@@ -48,6 +55,112 @@ export function getRuntimeStatus() {
       models: [],
     },
   } satisfies RuntimeStatus;
+}
+
+function normalizeRuntimeModelName(modelName: string) {
+  const trimmed = modelName.trim().toLowerCase();
+  if (!trimmed) {
+    return "";
+  }
+  return trimmed.endsWith(":latest") ? trimmed.slice(0, -7) : trimmed;
+}
+
+function configuredRuntimeModels(settings: RuntimeModelSettingsLike) {
+  return [
+    { modelName: settings.modelName, role: "primary" as const },
+    ...(settings.fastModelName.trim() !== ""
+      ? [{ modelName: settings.fastModelName, role: "fast" as const }]
+      : []),
+  ].filter(
+    (entry, index, collection) =>
+      entry.modelName.trim() !== "" &&
+      collection.findIndex(
+        (candidate) =>
+          normalizeRuntimeModelName(candidate.modelName) ===
+          normalizeRuntimeModelName(entry.modelName),
+      ) === index,
+  );
+}
+
+function requestedRuntimeModels(settings: RuntimeModelSettingsLike) {
+  const dualModelMode =
+    settings.fastModelName.trim() !== "" &&
+    (settings.suggestStrategy === "history-then-fast-then-model" ||
+      settings.suggestStrategy === "fast-then-model");
+
+  if (!dualModelMode) {
+    return configuredRuntimeModels({ ...settings, fastModelName: "" });
+  }
+
+  return configuredRuntimeModels(settings);
+}
+
+async function unloadReplacedRuntimeModels(
+  previous: RuntimeModelSettingsLike,
+  next: RuntimeModelSettingsLike,
+) {
+  const previousBaseUrl = previous.modelBaseUrl.trim();
+  if (previousBaseUrl === "") {
+    return;
+  }
+
+  const baseUrlChanged = previousBaseUrl !== next.modelBaseUrl.trim();
+  const previousActiveKeys = new Set(
+    requestedRuntimeModels(previous)
+      .map((entry) => normalizeRuntimeModelName(entry.modelName))
+      .filter(Boolean),
+  );
+  const nextActiveKeys = new Set(
+    requestedRuntimeModels(next)
+      .map((entry) => normalizeRuntimeModelName(entry.modelName))
+      .filter(Boolean),
+  );
+  const nextConfiguredKeys = new Set(
+    configuredRuntimeModels(next)
+      .map((entry) => normalizeRuntimeModelName(entry.modelName))
+      .filter(Boolean),
+  );
+  const nextKeys = new Set(
+    [...nextConfiguredKeys, ...nextActiveKeys].filter(Boolean),
+  );
+  const previousModelsByKey = new Map<string, string>();
+
+  for (const entry of configuredRuntimeModels(previous)) {
+    const modelName = entry.modelName.trim();
+    const key = normalizeRuntimeModelName(modelName);
+    if (!key || previousModelsByKey.has(key)) {
+      continue;
+    }
+    previousModelsByKey.set(key, modelName);
+  }
+
+  for (const entry of requestedRuntimeModels(previous)) {
+    const modelName = entry.modelName.trim();
+    const key = normalizeRuntimeModelName(modelName);
+    if (!key || previousModelsByKey.has(key)) {
+      continue;
+    }
+    previousModelsByKey.set(key, modelName);
+  }
+
+  for (const [key, modelName] of previousModelsByKey) {
+    const droppedFromConfiguredRoles = !nextConfiguredKeys.has(key);
+    const droppedFromActiveRoles = previousActiveKeys.has(key) && !nextActiveKeys.has(key);
+
+    if (!baseUrlChanged && nextKeys.has(key) && !droppedFromConfiguredRoles && !droppedFromActiveRoles) {
+      continue;
+    }
+
+    try {
+      await unloadOllamaModel(previousBaseUrl, modelName);
+    } catch (error) {
+      console.warn(
+        `best-effort ollama unload failed for ${modelName}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
 }
 
 function readPidFile(pidPath: string) {
@@ -140,21 +253,7 @@ async function hydrateHealth(status: RuntimeStatus) {
 }
 
 async function hydrateMemory(status: RuntimeStatus) {
-  const fastModelName = status.settings.fastModelName.trim();
-  const dualModelMode =
-    fastModelName !== "" &&
-    (status.settings.suggestStrategy === "history-then-fast-then-model" ||
-      status.settings.suggestStrategy === "fast-then-model");
-  const requestedModels = [
-    { modelName: status.settings.modelName, role: "primary" as const },
-    ...(dualModelMode ? [{ modelName: fastModelName, role: "fast" as const }] : []),
-  ].filter(
-    (entry, index, collection) =>
-      entry.modelName.trim() !== "" &&
-      collection.findIndex(
-        (candidate) => candidate.modelName.trim().toLowerCase() === entry.modelName.trim().toLowerCase(),
-      ) === index,
-  );
+  const requestedModels = requestedRuntimeModels(status.settings);
   const modelUsages = await getLoadedOllamaModelUsages(
     status.settings.modelBaseUrl,
     requestedModels.map((entry) => entry.modelName),
@@ -200,7 +299,7 @@ export async function getRuntimeStatusWithHealth() {
 
 export async function saveRuntimeSettings(input: Partial<Record<PersistedKey, string>>) {
   const current = getResolvedRuntimeSettings();
-  writePersistedRuntimeSettings({
+  const nextValues = {
     LAC_MODEL_NAME: input.LAC_MODEL_NAME || current.modelName,
     LAC_FAST_MODEL_NAME: input.LAC_FAST_MODEL_NAME ?? current.fastModelName,
     LAC_MODEL_BASE_URL: input.LAC_MODEL_BASE_URL || current.modelBaseUrl,
@@ -220,8 +319,15 @@ export async function saveRuntimeSettings(input: Partial<Record<PersistedKey, st
       input.LAC_PTY_CAPTURE_ALLOWLIST ?? current.ptyCaptureAllowlist,
     LAC_PTY_CAPTURE_BLOCKLIST:
       input.LAC_PTY_CAPTURE_BLOCKLIST ?? current.ptyCaptureBlocklist,
+  };
+
+  writePersistedRuntimeSettings({
+    ...nextValues,
   });
-  return getResolvedRuntimeSettings();
+
+  const next = getResolvedRuntimeSettings();
+  await unloadReplacedRuntimeModels(current, next);
+  return next;
 }
 
 async function waitForHealth(attempts = 80, delayMs = 150) {

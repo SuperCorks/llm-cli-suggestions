@@ -25,6 +25,7 @@ These checks currently verify:
 - App Router pages and API routes compile under TypeScript
 - lint catches client and routing issues in the UI layer
 - the production build succeeds with the server-side SQLite and daemon integrations wired in
+- server-side runtime setting helpers continue to compile when they orchestrate best-effort Ollama unloads for displaced or no-longer-active runtime-role models before daemon restarts
 - the Playwright e2e smoke suite can boot the app against a seeded local fixture and exercise the major happy paths
 
 This is the current safety net for the control app until dedicated route and query tests are added.

@@ -258,7 +258,7 @@ export function ModelsConsole({
 
   useEffect(() => {
     setAvailablePage(1);
-  }, [search, models, sizeFilters]);
+  }, [search, sizeFilters]);
 
   useEffect(() => {
     function handlePointerDown(event: MouseEvent) {
@@ -742,7 +742,18 @@ export function ModelsConsole({
                 const canActivate = !dualModelMode && !isConfigured && !activeJob;
                 const canAssignSlow = dualModelMode && !isSlowModel && !isFastModel && !activeJob;
                 const canAssignFast = dualModelMode && !isSlowModel && !isFastModel && !activeJob;
-                const canRemove = !activeJob && switchingModel === null && !isSlowModel && !isFastModel && !isConfigured;
+                const canRemove = dualModelMode
+                  ? !activeJob && switchingModel === null && !isSlowModel && !isFastModel && !isConfigured
+                  : !activeJob && switchingModel === null && !isConfigured && !isLive;
+                const showActions = dualModelMode
+                  ? isSlowModel || isFastModel || canAssignSlow || canAssignFast || canRemove
+                  : canActivate || canRemove;
+                const actionsClassName =
+                  dualModelMode
+                    ? isSlowModel || isFastModel
+                      ? "model-catalog-actions-inline"
+                      : "model-catalog-actions-inline model-catalog-actions-inline-fixed"
+                    : "model-catalog-actions-inline";
                 return (
                   <div
                     key={model.name}
@@ -767,74 +778,78 @@ export function ModelsConsole({
                             ) : null}
                           </div>
                         </div>
-                        <div className="model-catalog-actions-inline model-catalog-actions-inline-fixed">
-                          {dualModelMode ? (
-                            <>
-                              {isSlowModel ? (
-                                <span className="status-pill status-pill-completed">slow</span>
-                              ) : null}
-                              {isFastModel ? (
-                                <span className="status-pill status-pill-completed">fast</span>
-                              ) : null}
-                              {canAssignSlow ? (
-                                <button
-                                  type="button"
-                                  className="button-secondary model-catalog-role-button"
-                                  disabled={switchingModel !== null}
-                                  onClick={() => void activateModel(model.name)}
-                                >
-                                  Slow
-                                </button>
-                              ) : null}
-                              {canAssignFast ? (
-                                <button
-                                  type="button"
-                                  className="button-secondary model-catalog-role-button"
-                                  disabled={switchingModel !== null}
-                                  onClick={() => void activateFastModel(model.name)}
-                                >
-                                  Fast
-                                </button>
-                              ) : null}
-                              {canRemove ? (
-                                <button
-                                  type="button"
-                                  className="icon-button model-catalog-icon-button model-catalog-icon-button-danger"
-                                  onClick={() => void removeModel(model.name)}
-                                  aria-label="Remove"
-                                  title={`Remove ${model.name}`}
-                                >
-                                  <Trash2 aria-hidden="true" />
-                                </button>
-                              ) : null}
-                            </>
-                          ) : (
-                            <>
-                              {canActivate ? (
-                                <button
-                                  type="button"
-                                  className="icon-button model-catalog-icon-button"
-                                  disabled={switchingModel !== null}
-                                  onClick={() => void activateModel(model.name)}
-                                  aria-label={switchingModel === `slow:${model.name}` ? "Activating model" : "Use as active model"}
-                                  title={switchingModel === `slow:${model.name}` ? `Activating ${model.name}` : `Use ${model.name} as the active model`}
-                                >
-                                  <Play aria-hidden="true" />
-                                </button>
-                              ) : null}
-                              <button
-                                type="button"
-                                className="icon-button model-catalog-icon-button model-catalog-icon-button-danger"
-                                disabled={Boolean(activeJob) || isConfigured || switchingModel !== null}
-                                onClick={() => void removeModel(model.name)}
-                                aria-label={activeJob?.action === "remove" ? "Removing" : "Remove"}
-                                title={activeJob?.action === "remove" ? `Removing ${model.name}` : `Remove ${model.name}`}
-                              >
-                                <Trash2 aria-hidden="true" />
-                              </button>
-                            </>
-                          )}
-                        </div>
+                        {showActions ? (
+                          <div className={actionsClassName}>
+                            {dualModelMode ? (
+                              <>
+                                {isSlowModel ? (
+                                  <span className="status-pill status-pill-completed">slow</span>
+                                ) : null}
+                                {isFastModel ? (
+                                  <span className="status-pill status-pill-completed">fast</span>
+                                ) : null}
+                                {canAssignSlow ? (
+                                  <button
+                                    type="button"
+                                    className="button-secondary model-catalog-role-button"
+                                    disabled={switchingModel !== null}
+                                    onClick={() => void activateModel(model.name)}
+                                  >
+                                    Slow
+                                  </button>
+                                ) : null}
+                                {canAssignFast ? (
+                                  <button
+                                    type="button"
+                                    className="button-secondary model-catalog-role-button"
+                                    disabled={switchingModel !== null}
+                                    onClick={() => void activateFastModel(model.name)}
+                                  >
+                                    Fast
+                                  </button>
+                                ) : null}
+                                {canRemove ? (
+                                  <button
+                                    type="button"
+                                    className="icon-button model-catalog-icon-button model-catalog-icon-button-danger"
+                                    onClick={() => void removeModel(model.name)}
+                                    aria-label="Remove"
+                                    title={`Remove ${model.name}`}
+                                  >
+                                    <Trash2 aria-hidden="true" />
+                                  </button>
+                                ) : null}
+                              </>
+                            ) : (
+                              <>
+                                {canActivate ? (
+                                  <button
+                                    type="button"
+                                    className="icon-button model-catalog-icon-button"
+                                    disabled={switchingModel !== null}
+                                    onClick={() => void activateModel(model.name)}
+                                    aria-label={switchingModel === `slow:${model.name}` ? "Activating model" : "Use as active model"}
+                                    title={switchingModel === `slow:${model.name}` ? `Activating ${model.name}` : `Use ${model.name} as the active model`}
+                                  >
+                                    <Play aria-hidden="true" />
+                                  </button>
+                                ) : null}
+                                {canRemove ? (
+                                  <button
+                                    type="button"
+                                    className="icon-button model-catalog-icon-button model-catalog-icon-button-danger"
+                                    disabled={switchingModel !== null}
+                                    onClick={() => void removeModel(model.name)}
+                                    aria-label={activeJob?.action === "remove" ? "Removing" : "Remove"}
+                                    title={activeJob?.action === "remove" ? `Removing ${model.name}` : `Remove ${model.name}`}
+                                  >
+                                    <Trash2 aria-hidden="true" />
+                                  </button>
+                                ) : null}
+                              </>
+                            )}
+                          </div>
+                        ) : null}
                       </div>
                     </div>
                   </div>

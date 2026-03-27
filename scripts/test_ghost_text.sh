@@ -109,8 +109,8 @@ expect_marker() {
 
 expect_marker "model-only" "model" "" " [ai]"
 expect_marker "history-then-fast-then-model" "model" "fast" " [ai/fast]"
-expect_marker "history-then-fast-then-model" "model" "slow" " [ai/slow]"
-expect_marker "fast-then-model" "history+model" "slow" " [history+ai/slow]"
+expect_marker "history-then-fast-then-model" "model" "slow" " [ai]"
+expect_marker "fast-then-model" "history+model" "slow" " [history+ai]"
 expect_marker "history-only" "history" "" " [history]"
 
 parse_output="$({

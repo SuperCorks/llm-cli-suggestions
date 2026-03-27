@@ -38,7 +38,7 @@ The `zsh` plugin in `zsh/llm-cli-suggestions.zsh` is the live terminal integrati
 - long captured excerpts keep the first 400 bytes and the last 800 bytes of the output with a small middle truncation marker
 - bounded stdout and stderr can be captured automatically for simple commands when `LAC_AUTO_CAPTURE_ENABLED=1`, and are still skipped for interactive, backgrounded, piped, or stdout-redirected commands; stderr-only redirection falls back to this path so stderr stays hidden and out of captured suggestion context
 - automatic capture stays disabled by default because shell-level redirection changes TTY detection and can suppress command color in the live terminal
-- ghost text is styled through `region_highlight` and can append a square-bracket source badge such as `[history]`, `[ai]`, `[ai/fast]`, or `[ai/slow]` without changing what the configured accept key accepts; the dual-model strategies use the fast/slow suffixes for model-backed ghost text
+- ghost text is styled through `region_highlight` and can append a square-bracket source badge such as `[history]`, `[ai]`, or `[ai/fast]` without changing what the configured accept key accepts; in dual-model strategies the fast-stage model is marked as `[ai/fast]` while the slow-stage model stays `[ai]`
 - optional redraw snapshots can be written to `LAC_SNAPSHOT_PATH` for integration testing
 
 ## Important Settings

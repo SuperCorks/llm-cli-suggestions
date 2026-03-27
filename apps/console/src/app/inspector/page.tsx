@@ -3,6 +3,7 @@ import { unstable_noStore as noStore } from "next/cache";
 import { Panel } from "@/components/panel";
 import { RankingInspector } from "@/components/ranking-inspector";
 import { getResolvedRuntimeSettings } from "@/lib/server/config";
+import { listAvailableOllamaModels } from "@/lib/server/ollama";
 import { normalizeSuggestStrategy } from "@/lib/suggest-strategy";
 
 export const dynamic = "force-dynamic";
@@ -19,6 +20,7 @@ export default async function InspectorPage({
 }) {
   noStore();
   const settings = getResolvedRuntimeSettings();
+  const modelInventory = await listAvailableOllamaModels(settings.modelBaseUrl);
   const params = await searchParams;
 
   return (
@@ -39,6 +41,8 @@ export default async function InspectorPage({
           defaultModelName={settings.modelName}
           defaultFastModelName={settings.fastModelName}
           defaultSuggestStrategy={settings.suggestStrategy}
+          availableModels={modelInventory.models}
+          inventorySummary={modelInventory}
           initialForm={{
             sessionId: getString(params.session),
             buffer: getString(params.buffer),
