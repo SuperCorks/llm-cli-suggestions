@@ -23,6 +23,8 @@ import type {
 
 type QueryValue = string | number;
 
+const prefixGateModelErrorSnippet = "did not start with the current buffer";
+
 function parseJsonObject(value: unknown) {
   if (!value) {
     return null;
@@ -325,6 +327,7 @@ export function listSuggestions(input: {
   outcome?: SuggestionOutcome;
   quality?: SuggestionQualityFilter;
   sort?: SuggestionSort;
+  showPrefixRejected?: boolean;
 }): PagedResult<SuggestionRow> {
   const db = getDb();
   const page = Math.max(1, input.page || 1);
@@ -384,6 +387,10 @@ export function listSuggestions(input: {
     params.push(input.quality);
   } else if (input.quality === "unlabeled") {
     clauses.push("COALESCE(r.review_label, '') = ''");
+  }
+  if (!input.showPrefixRejected) {
+    clauses.push("COALESCE(s.model_error, '') NOT LIKE ?");
+    params.push(`%${prefixGateModelErrorSnippet}%`);
   }
 
   const where = buildWhere(clauses);
@@ -462,6 +469,7 @@ export function listSuggestions(input: {
          COALESCE(f.actual_command, '') AS actualCommand,
          COALESCE(s.prompt_text, '') AS promptText,
          COALESCE(s.structured_context_json, '') AS structuredContextJson,
+         COALESCE(s.model_error, '') AS modelError,
          NULLIF(COALESCE(r.review_label, ''), '') AS qualityLabel,
          COALESCE(r.updated_at_ms, 0) AS qualityUpdatedAtMs
        ${fromClause}

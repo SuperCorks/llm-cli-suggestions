@@ -57,6 +57,7 @@ Shows paginated suggestion history with filters for:
 - cwd
 - feedback outcome
 - quality label
+- a hidden-by-default toggle for rows where model output was rejected because it did not start with the current buffer
 - server-side sort modes for recency, latency, buffer ordering, model ordering, and labeled-first review
 - page-size controls with top and bottom pagination affordances
 - session ids directly in the history table for quicker cross-referencing with commands and feedback

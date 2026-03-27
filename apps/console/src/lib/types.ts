@@ -157,6 +157,7 @@ export interface SuggestionRow {
   actualCommand: string;
   promptText: string;
   structuredContextJson: string;
+  modelError: string;
   qualityLabel: SuggestionQuality | null;
   qualityUpdatedAtMs: number;
 }

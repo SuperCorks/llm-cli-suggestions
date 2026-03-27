@@ -12,7 +12,7 @@ The `zsh` plugin in `zsh/llm-cli-suggestions.zsh` is the live terminal integrati
 - configurable `Tab` or Right Arrow acceptance
 - fallback to native completion
 - command lifecycle hooks through `preexec` and `precmd`
-- optional PTY-backed output capture for external commands, configurable as either an allowlist or a blocklist
+- optional PTY-backed output capture for external commands, configurable as either a blocklist or an allowlist, with blocklist mode as the default
 - opt-in automatic bounded output capture for safe non-interactive commands
 - explicit bounded output capture with `lac-capture`
 - explicit PTY-backed bounded output capture with `lac-capture-pty`

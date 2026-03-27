@@ -88,7 +88,7 @@ typeset -gx LAC_SUGGEST_STRATEGY="${LAC_SUGGEST_STRATEGY:-history+model}"
 typeset -gx LAC_SUGGEST_TIMEOUT_MS="${LAC_SUGGEST_TIMEOUT_MS:-1200}"
 typeset -gx LAC_ACCEPT_KEY="${LAC_ACCEPT_KEY:-tab}"
 typeset -gx LAC_AUTO_CAPTURE_ENABLED="${LAC_AUTO_CAPTURE_ENABLED:-0}"
-typeset -gx LAC_PTY_CAPTURE_MODE="${LAC_PTY_CAPTURE_MODE:-allowlist}"
+typeset -gx LAC_PTY_CAPTURE_MODE="${LAC_PTY_CAPTURE_MODE:-blocklist}"
 typeset -gx LAC_PTY_CAPTURE_ALLOWLIST="${LAC_PTY_CAPTURE_ALLOWLIST:-}"
 typeset -gx LAC_PTY_CAPTURE_BLOCKLIST="${LAC_PTY_CAPTURE_BLOCKLIST:-}"
 
@@ -240,12 +240,12 @@ _lac_auto_capture_enabled() {
 }
 
 _lac_normalize_pty_capture_mode() {
-  case "${${1:-allowlist}:l}" in
-    blocklist)
-      print -rn -- "blocklist"
+  case "${${1:-blocklist}:l}" in
+    allowlist)
+      print -rn -- "allowlist"
       ;;
     *)
-      print -rn -- "allowlist"
+      print -rn -- "blocklist"
       ;;
   esac
 }
@@ -445,7 +445,7 @@ _lac_command_matches_pty_capture_policy() {
   local raw_command="${2:-$1}"
   local mode
 
-  mode="$(_lac_normalize_pty_capture_mode "${LAC_PTY_CAPTURE_MODE:-allowlist}")"
+  mode="$(_lac_normalize_pty_capture_mode "${LAC_PTY_CAPTURE_MODE:-blocklist}")"
   if [[ "$mode" == "blocklist" ]]; then
     _lac_command_matches_pty_capture_list "$command_name" "$raw_command" "$LAC_PTY_CAPTURE_BLOCKLIST" && return 1
     return 0

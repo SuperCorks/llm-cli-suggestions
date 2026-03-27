@@ -76,6 +76,9 @@ function ensureSuggestionColumns(db: Database.Database) {
   if (!columns.has("model_eval_count")) {
     db.exec("ALTER TABLE suggestions ADD COLUMN model_eval_count INTEGER NOT NULL DEFAULT -1");
   }
+  if (!columns.has("model_error")) {
+    db.exec("ALTER TABLE suggestions ADD COLUMN model_error TEXT NOT NULL DEFAULT ''");
+  }
 }
 
 function ensureConsoleTables(db: Database.Database) {

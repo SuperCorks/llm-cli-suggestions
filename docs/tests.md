@@ -145,7 +145,7 @@ It currently checks:
 - accepting a suggestion updates the buffer correctly
 - accepting a suggestion re-enters the shell buffer-change flow so a follow-up suggestion can be requested from the accepted prefix
 - rejecting a suggestion logs feedback correctly
-- non-allowlisted commands remain uncaptured by default
+- blocklist mode captures broad external-command coverage by default while still allowing explicit exclusions
 - allowlisted PTY capture records command output without stripping terminal behavior, including `/regex/` rules that match only specific raw command lines
 - blocklist PTY capture wraps broad external command coverage while leaving excluded commands on the normal shell path, including `/regex/` rules that can exempt one exact command shape while still wrapping other invocations of the same binary
 - PTY capture still applies when a wrapped command is prefixed with common shell modifiers or leading environment assignments

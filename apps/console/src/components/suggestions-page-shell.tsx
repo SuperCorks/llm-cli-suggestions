@@ -46,6 +46,7 @@ interface SuggestionsPageShellProps {
     outcome: SuggestionOutcome;
     quality: SuggestionQualityFilter;
     pageSize: string;
+    showPrefixRejected: string;
   };
 }
 
@@ -134,6 +135,9 @@ function describeActiveFilters(filters: SuggestionsPageShellProps["filters"]) {
   }
   if (filters.pageSize !== "25") {
     items.push(`Page Size: ${filters.pageSize} rows`);
+  }
+  if (filters.showPrefixRejected) {
+    items.push("Including prefix-gate rejected model rows");
   }
 
   return items;
@@ -352,6 +356,15 @@ export function SuggestionsPageShell({
                     </select>
                   </label>
                 </div>
+                <label className="checkbox-field">
+                  <input
+                    type="checkbox"
+                    name="showPrefixRejected"
+                    value="1"
+                    defaultChecked={Boolean(filters.showPrefixRejected)}
+                  />
+                  <span>Show rows where model output was rejected by the prefix gate</span>
+                </label>
                 <input type="hidden" name="page" value="1" />
                 <div className="inline-actions">
                   <button type="submit">Apply Filters</button>

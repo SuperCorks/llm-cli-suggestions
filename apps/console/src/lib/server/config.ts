@@ -28,7 +28,7 @@ const DEFAULTS = {
   LAC_SYSTEM_PROMPT_STATIC: DEFAULT_SYSTEM_PROMPT_STATIC,
   LAC_SUGGEST_TIMEOUT_MS: "1200",
   LAC_ACCEPT_KEY: "tab",
-  LAC_PTY_CAPTURE_MODE: "allowlist",
+  LAC_PTY_CAPTURE_MODE: "blocklist",
   LAC_PTY_CAPTURE_ALLOWLIST: "",
   LAC_PTY_CAPTURE_BLOCKLIST: "",
 } as const;
@@ -47,7 +47,7 @@ export function getProjectRoot() {
 }
 
 export function normalizePtyCaptureMode(value: string | undefined): PtyCaptureMode {
-  return value?.trim().toLowerCase() === "blocklist" ? "blocklist" : "allowlist";
+  return value?.trim().toLowerCase() === "allowlist" ? "allowlist" : "blocklist";
 }
 
 export function normalizeAcceptSuggestionKey(value: string | undefined): AcceptSuggestionKey {

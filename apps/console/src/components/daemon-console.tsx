@@ -272,8 +272,8 @@ export function DaemonConsole({
     ? "Enter one command name or one /regex/ per line. Plain lines match the executable name, while regex lines match the full command text before the lightweight PTY helper runs."
     : "Enter one command name or one /regex/ per line. Plain lines match the executable name, while regex lines match the full command text before the lightweight PTY helper runs. This affects new shells after they reload the plugin; the daemon restart is harmless but not what makes the setting take effect.";
   const ptyModeHelpText = ptyModeIsBlocklist
-    ? "Enter one command name or /regex/ per line. Plain lines match the executable name, while regex lines match the full command text, so /^codex$/ blocks only bare codex and still allows codex exec .... Use the block list when the lightweight PTY shell can mess up complex interactive CLI tools. Shell builtins still use the normal shell path."
-    : "Enter one command name or /regex/ per line. Plain lines match the executable name, while regex lines match the full command text. Use the allow list when you only want to send specific commands through the lightweight PTY shell because more complex interactive CLI tools can get confused by it.";
+    ? "Wrap most external commands and exclude only the fragile ones. Use one command name or /regex/ per line."
+    : "Wrap only the commands listed here. Use one command name or /regex/ per line.";
 
   function findModelOption(modelName: string) {
     const normalized = modelName.trim();
@@ -802,23 +802,6 @@ export function DaemonConsole({
                   <button
                     type="button"
                     className={
-                      settings.LAC_PTY_CAPTURE_MODE === "allowlist"
-                        ? "mode-toggle-button active"
-                        : "mode-toggle-button"
-                    }
-                    aria-pressed={settings.LAC_PTY_CAPTURE_MODE === "allowlist"}
-                    onClick={() =>
-                      setSettings((current) => ({
-                        ...current,
-                        LAC_PTY_CAPTURE_MODE: "allowlist",
-                      }))
-                    }
-                  >
-                    Allowlist
-                  </button>
-                  <button
-                    type="button"
-                    className={
                       settings.LAC_PTY_CAPTURE_MODE === "blocklist"
                         ? "mode-toggle-button active"
                         : "mode-toggle-button"
@@ -832,6 +815,23 @@ export function DaemonConsole({
                     }
                   >
                     Blocklist
+                  </button>
+                  <button
+                    type="button"
+                    className={
+                      settings.LAC_PTY_CAPTURE_MODE === "allowlist"
+                        ? "mode-toggle-button active"
+                        : "mode-toggle-button"
+                    }
+                    aria-pressed={settings.LAC_PTY_CAPTURE_MODE === "allowlist"}
+                    onClick={() =>
+                      setSettings((current) => ({
+                        ...current,
+                        LAC_PTY_CAPTURE_MODE: "allowlist",
+                      }))
+                    }
+                  >
+                    Allowlist
                   </button>
                 </span>
               </span>

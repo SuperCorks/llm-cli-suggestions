@@ -45,6 +45,7 @@ type SuggestionRecord struct {
 	ModelEvalDurationMS   int64
 	ModelPromptEvalCount  int64
 	ModelEvalCount        int64
+	ModelError            string
 	PromptText            string
 	StructuredContextJSON string
 	CreatedAtMS           int64
@@ -156,6 +157,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			model_eval_duration_ms INTEGER NOT NULL DEFAULT -1,
 			model_prompt_eval_count INTEGER NOT NULL DEFAULT -1,
 			model_eval_count INTEGER NOT NULL DEFAULT -1,
+			model_error TEXT NOT NULL DEFAULT '',
 			prompt_text TEXT NOT NULL DEFAULT '',
 			structured_context_json TEXT NOT NULL DEFAULT '',
 			created_at_ms INTEGER NOT NULL
@@ -213,6 +215,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 	if err := s.ensureColumn(ctx, "suggestions", "model_eval_count", "INTEGER NOT NULL DEFAULT -1"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "suggestions", "model_error", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	if err := s.ensureBenchmarkTables(ctx); err != nil {
@@ -579,9 +584,9 @@ func (s *Store) CreateSuggestion(ctx context.Context, record SuggestionRecord) (
 			last_exit_code, latency_ms, request_latency_ms, model_name, request_model_name,
 			model_keep_alive, model_start_state,
 			model_total_duration_ms, model_load_duration_ms, model_prompt_eval_duration_ms,
-			model_eval_duration_ms, model_prompt_eval_count, model_eval_count,
+			model_eval_duration_ms, model_prompt_eval_count, model_eval_count, model_error,
 			prompt_text, structured_context_json, created_at_ms
-		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		record.SessionID,
 		record.Buffer,
 		record.Suggestion,
@@ -602,6 +607,7 @@ func (s *Store) CreateSuggestion(ctx context.Context, record SuggestionRecord) (
 		record.ModelEvalDurationMS,
 		record.ModelPromptEvalCount,
 		record.ModelEvalCount,
+		record.ModelError,
 		record.PromptText,
 		record.StructuredContextJSON,
 		record.CreatedAtMS,

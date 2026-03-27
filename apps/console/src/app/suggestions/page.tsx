@@ -47,6 +47,10 @@ function normalizePageSize(value?: string) {
   return 25;
 }
 
+function normalizeShowPrefixRejected(value?: string) {
+  return value === "1" || value === "true" || value === "yes" || value === "on";
+}
+
 function getPageWindow(currentPage: number, totalPages: number) {
   const pages = new Set<number>([1, totalPages, currentPage, currentPage - 1, currentPage + 1]);
   return [...pages].filter((page) => page >= 1 && page <= totalPages).sort((left, right) => left - right);
@@ -64,6 +68,7 @@ export default async function SuggestionsPage({
   const sort = normalizeSort(getString(params.sort));
   const outcome = normalizeOutcome(getString(params.outcome));
   const quality = normalizeQuality(getString(params.quality));
+  const showPrefixRejected = normalizeShowPrefixRejected(getString(params.showPrefixRejected));
 
   const result = listSuggestions({
     page,
@@ -76,6 +81,7 @@ export default async function SuggestionsPage({
     outcome,
     quality,
     sort,
+    showPrefixRejected,
   });
   const sourceFilter = getString(params.source);
   const sourceOptions = [...new Set([...listSuggestionSources(), sourceFilter].filter(Boolean))];
@@ -118,6 +124,7 @@ export default async function SuggestionsPage({
           outcome,
           quality,
           pageSize: String(pageSize),
+          showPrefixRejected: showPrefixRejected ? "1" : "",
         }}
       />
     </div>
