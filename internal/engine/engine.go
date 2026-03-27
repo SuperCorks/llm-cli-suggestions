@@ -915,35 +915,11 @@ func BuildPrompt(
 	if strings.TrimSpace(request.Buffer) == "" {
 		builder.WriteString("\nbuffer is empty. Use last_command and recent context to suggest one full command only when there is a clear, high-confidence next step; prefer correcting the last command or the most likely immediate follow-up, otherwise return an empty response.\n")
 	} else {
-		builder.WriteString("\nThe current buffer below is literal shell text. Copy it exactly, character-for-character, at the start of your answer.\n")
-		builder.WriteString("Preserve unmatched quotes, parentheses, colons, and trailing spaces from the current buffer.\n")
-		builder.WriteString("Continue the same command. Ignore recent commands or context that do not share the current buffer prefix.\n")
-		appendQuotedCommitPrefixExample(&builder, request.Buffer)
 		builder.WriteString("\ncurrent_buffer_begin\n")
 		builder.WriteString(request.Buffer)
 		builder.WriteString("\ncurrent_buffer_end\n")
 	}
 	return builder.String()
-}
-
-func appendQuotedCommitPrefixExample(builder *strings.Builder, buffer string) {
-	if builder == nil || !shouldAddQuotedCommitPrefixExample(buffer) {
-		return
-	}
-
-	exampleCommand := buffer
-	if !strings.HasSuffix(exampleCommand, " ") {
-		exampleCommand += " "
-	}
-	exampleCommand += "describe the change\""
-
-	builder.WriteString("Example:\n")
-	builder.WriteString("current_buffer_begin\n")
-	builder.WriteString(buffer)
-	builder.WriteString("\ncurrent_buffer_end\n")
-	builder.WriteString("command: ")
-	builder.WriteString(exampleCommand)
-	builder.WriteString("\n")
 }
 
 func shouldAddQuotedCommitPrefixExample(buffer string) bool {
@@ -1343,6 +1319,9 @@ func normalizeSuggestionCandidate(candidate string) string {
 			continue
 		case hasCaseInsensitivePrefix(line, "command:"):
 			line = strings.TrimSpace(line[len("command:"):])
+			continue
+		case hasCaseInsensitivePrefix(line, "buffer:"):
+			line = strings.TrimSpace(line[len("buffer:"):])
 			continue
 		case isSingleBacktickWrapped(line):
 			line = strings.TrimSpace(line[1 : len(line)-1])

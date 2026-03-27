@@ -42,7 +42,7 @@ When the current buffer is empty, the engine does not open history-prefix matchi
 
 For live suggestions, the prompt now collapses `last_command`, recent command lists, recent command context, and recent output context into one deduplicated `recent_context` block. That keeps the most useful recent command and output details while reducing repeated command names in the prompt snapshot.
 
-Model output cleaning stays intentionally conservative. Before the engine accepts a model-backed command, it now strips a small set of formatting wrappers that show up in local-model responses, including case-insensitive `command:` labels, surrounding single backticks, and single-command fenced code blocks. The acceptance gate does not change: the cleaned candidate still has to start with the current buffer and be longer than the current buffer, so off-prefix substitutions are still rejected.
+Model output cleaning stays intentionally conservative. Before the engine accepts a model-backed command, it now strips a small set of formatting wrappers that show up in local-model responses, including case-insensitive `command:` or `buffer:` labels, surrounding single backticks, and single-command fenced code blocks. The acceptance gate does not change: the cleaned candidate still has to start with the current buffer and be longer than the current buffer, so off-prefix substitutions are still rejected.
 
 When the live daemon rejects a non-empty model response, the structured `suggest_trace` log now includes a bounded raw-output snippet so wrapper-pattern misses can be inspected from live usage without changing the SQLite suggestion schema.
 

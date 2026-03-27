@@ -618,15 +618,17 @@ func TestBuildPromptDelimitsCurrentBuffer(t *testing.T) {
 	if !strings.Contains(prompt, expectedBlock) {
 		t.Fatalf("expected prompt to delimit current buffer, got %q", prompt)
 	}
-	if !strings.Contains(prompt, "Copy it exactly, character-for-character, at the start of your answer.") {
-		t.Fatalf("expected literal buffer guidance, got %q", prompt)
+	if strings.Contains(prompt, "Copy it exactly, character-for-character, at the start of your answer.") {
+		t.Fatalf("did not expect literal buffer guidance, got %q", prompt)
 	}
-	if !strings.Contains(prompt, "Preserve unmatched quotes, parentheses, colons, and trailing spaces from the current buffer.") {
-		t.Fatalf("expected unmatched quote guidance, got %q", prompt)
+	if strings.Contains(prompt, "Preserve unmatched quotes, parentheses, colons, and trailing spaces from the current buffer.") {
+		t.Fatalf("did not expect unmatched quote guidance, got %q", prompt)
 	}
-	expectedExample := "Example:\ncurrent_buffer_begin\n" + buffer + "\ncurrent_buffer_end\ncommand: " + buffer + "describe the change\"\n"
-	if !strings.Contains(prompt, expectedExample) {
-		t.Fatalf("expected quoted commit example, got %q", prompt)
+	if strings.Contains(prompt, "Continue the same command. Ignore recent commands or context that do not share the current buffer prefix.") {
+		t.Fatalf("did not expect prefix guidance, got %q", prompt)
+	}
+	if strings.Contains(prompt, "Example:\ncurrent_buffer_begin\n"+buffer+"\ncurrent_buffer_end\ncommand: ") {
+		t.Fatalf("did not expect quoted commit example, got %q", prompt)
 	}
 	if strings.Contains(prompt, "\ncurrent_buffer:\n") {
 		t.Fatalf("did not expect legacy current_buffer block, got %q", prompt)
@@ -689,6 +691,32 @@ func TestCleanSuggestionStripsCaseInsensitiveCommandLabel(t *testing.T) {
 
 	if cleaned != "cd apps/console/" {
 		t.Fatalf("expected command label to be stripped, got %q", cleaned)
+	}
+}
+
+func TestCleanSuggestionStripsBufferLabel(t *testing.T) {
+	t.Parallel()
+
+	prefix := "git chec"
+	raw := "buffer: git checkout feature/demo"
+
+	cleaned := CleanSuggestion(prefix, raw)
+
+	if cleaned != "git checkout feature/demo" {
+		t.Fatalf("expected buffer label to be stripped, got %q", cleaned)
+	}
+}
+
+func TestCleanSuggestionStripsBufferLabelForEmptyPrefix(t *testing.T) {
+	t.Parallel()
+
+	prefix := ""
+	raw := "buffer: git commit -m \"fix(engine): simplify current-buffer prompting\""
+
+	cleaned := CleanSuggestion(prefix, raw)
+
+	if cleaned != "git commit -m \"fix(engine): simplify current-buffer prompting\"" {
+		t.Fatalf("expected buffer label to be stripped for empty prefix, got %q", cleaned)
 	}
 }
 
