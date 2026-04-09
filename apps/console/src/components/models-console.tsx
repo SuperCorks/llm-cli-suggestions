@@ -26,7 +26,13 @@ function isActiveOperation(status: OllamaInstallJob["status"]) {
 }
 
 function operationTitle(job: OllamaInstallJob) {
-  return `${job.action === "install" ? "Download" : "Removal"} ${job.model}`;
+  if (job.action === "install") {
+    return `Download ${job.model}`;
+  }
+  if (job.action === "remove") {
+    return `Removal ${job.model}`;
+  }
+  return "Update Ollama";
 }
 
 function operationStatusClass(job: OllamaInstallJob) {
@@ -37,6 +43,19 @@ function operationStatusClass(job: OllamaInstallJob) {
     return "status-pill status-pill-completed";
   }
   return "status-pill status-pill-running";
+}
+
+function isOutdatedOllamaFailure(job: OllamaInstallJob) {
+  if (job.action !== "install" || job.status !== "failed") {
+    return false;
+  }
+
+  const detail = `${job.error} ${job.message}`.toLowerCase();
+  return (
+    detail.includes("requires a newer version of ollama") ||
+    detail.includes("please download the latest version") ||
+    detail.includes("ollama pull request failed with 412")
+  );
 }
 
 export function ModelsConsole({
@@ -69,6 +88,7 @@ export function ModelsConsole({
   const [hydrated, setHydrated] = useState(false);
   const [switchingModel, setSwitchingModel] = useState<string | null>(null);
   const sizeFilterRef = useRef<HTMLDivElement | null>(null);
+  const pendingOllamaUpdateJobIdRef = useRef<string | null>(null);
 
   const configuredModel = runtime.settings.modelName;
   const fastModelName = runtime.settings.fastModelName.trim();
@@ -158,6 +178,10 @@ export function ModelsConsole({
     () => operationJobs.filter((job) => isActiveOperation(job.status)),
     [operationJobs],
   );
+  const hasActiveOllamaUpdate = useMemo(
+    () => activeOperations.some((job) => job.action === "update"),
+    [activeOperations],
+  );
 
   const recentOperations = useMemo(
     () => operationJobs.filter((job) => !isActiveOperation(job.status)).slice(0, 6),
@@ -219,8 +243,26 @@ export function ModelsConsole({
     if (!response.ok) {
       throw new Error(data.error || "Unable to refresh model operations");
     }
-    setOperationJobs(data.jobs || []);
-  }, []);
+    const jobs = data.jobs || [];
+    setOperationJobs(jobs);
+
+    const pendingUpdateJobId = pendingOllamaUpdateJobIdRef.current;
+    if (!pendingUpdateJobId) {
+      return;
+    }
+
+    const pendingJob = jobs.find((job) => job.id === pendingUpdateJobId) || null;
+    if (!pendingJob) {
+      pendingOllamaUpdateJobIdRef.current = null;
+      setMessage("Ollama updated. Ollama and autocomplete daemons restarted.");
+      await Promise.all([refreshRuntime(), refreshModels(baseUrl)]);
+      return;
+    }
+
+    if (pendingJob.status === "failed" || pendingJob.status === "cancelled") {
+      pendingOllamaUpdateJobIdRef.current = null;
+    }
+  }, [refreshModels, refreshRuntime]);
 
   useEffect(() => {
     setHydrated(true);
@@ -399,6 +441,9 @@ export function ModelsConsole({
         throw new Error(data.error || `Unable to ${action} model operation`);
       }
 
+      if (pendingOllamaUpdateJobIdRef.current === jobId) {
+        pendingOllamaUpdateJobIdRef.current = null;
+      }
       setOperationJobs(data.jobs || []);
       await refreshModels(runtime.settings.modelBaseUrl);
     } catch (requestError) {
@@ -406,6 +451,40 @@ export function ModelsConsole({
         requestError instanceof Error
           ? requestError.message
           : `Unable to ${action} model operation`,
+      );
+    }
+  }
+
+  async function updateOllama() {
+    setMessage("");
+    setError("");
+    try {
+      const response = await fetch("/api/ollama/update", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          baseUrl: runtime.settings.modelBaseUrl,
+        }),
+      });
+      const data = (await response.json()) as {
+        job?: OllamaInstallJob;
+        error?: string;
+      };
+      if (!response.ok || !data.job) {
+        throw new Error(data.error || "Unable to start the Ollama update");
+      }
+
+      pendingOllamaUpdateJobIdRef.current = data.job.id;
+      setMessage(
+        "Updating Ollama. The console will restart Ollama and the autocomplete daemon when the update finishes.",
+      );
+      await refreshOperations(runtime.settings.modelBaseUrl);
+    } catch (requestError) {
+      pendingOllamaUpdateJobIdRef.current = null;
+      setError(
+        requestError instanceof Error ? requestError.message : "Unable to start the Ollama update",
       );
     }
   }
@@ -677,7 +756,7 @@ export function ModelsConsole({
                 <div>
                   <h4>Model Operations</h4>
                   <p className="helper-text">
-                    Downloads and removals continue here across page refreshes while the console server stays running.
+                    Downloads, removals, and Ollama updates continue here across page refreshes while the console server stays running.
                   </p>
                 </div>
               </div>
@@ -717,13 +796,23 @@ export function ModelsConsole({
                           Cancel
                         </button>
                       ) : (
-                        <button
-                          type="button"
-                          className="button-secondary"
-                          onClick={() => void updateOperation(job.id, "dismiss")}
-                        >
-                          Dismiss
-                        </button>
+                        <>
+                          {isOutdatedOllamaFailure(job) && !hasActiveOllamaUpdate ? (
+                            <button
+                              type="button"
+                              onClick={() => void updateOllama()}
+                            >
+                              Update Ollama
+                            </button>
+                          ) : null}
+                          <button
+                            type="button"
+                            className="button-secondary"
+                            onClick={() => void updateOperation(job.id, "dismiss")}
+                          >
+                            Dismiss
+                          </button>
+                        </>
                       )}
                     </div>
                   </div>

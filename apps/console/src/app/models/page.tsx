@@ -1,5 +1,6 @@
 import { unstable_noStore as noStore } from "next/cache";
 
+import { ModelsPageActions } from "@/components/models-page-actions";
 import { ModelsConsole } from "@/components/models-console";
 import { Panel } from "@/components/panel";
 import { listAvailableOllamaModels } from "@/lib/server/ollama";
@@ -24,6 +25,7 @@ export default async function ModelsPage() {
             configured model in view while you work.
           </p>
         </div>
+        <ModelsPageActions modelBaseUrl={runtime.settings.modelBaseUrl} />
       </div>
 
       <Panel

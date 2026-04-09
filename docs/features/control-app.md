@@ -142,7 +142,9 @@ Supports:
 - exclusion of Ollama cloud-only catalog entries from the local console inventory so remote models do not appear as downloadable local options, while mixed cloud-plus-local families like `qwen3.5` still surface their local tags
 - visible but disabled cloud and remote-only catalog entries, styled as greyed-out reference items so unsupported downloads are explicit instead of silently disappearing
 - visibility into the daemon's configured model and the current live model
+- a page-header `Update Ollama` action that appears as soon as the Models page detects the local Homebrew-managed Ollama install is behind the latest available version
 - a dedicated `Installed Locally` operations panel that tracks both downloads and removals, survives page refreshes, supports multiple concurrent model jobs, and lets you cancel stalled work or dismiss cancelled and failed jobs
+- inline `Update Ollama` recovery for failed download jobs that report the local Ollama version is too old, with the console running a Homebrew upgrade, restarting the local Ollama service, and then restarting the autocomplete daemon before clearing the operation
 - automatic cleanup of completed model operations so finished downloads and removals drop out of the attention list once the inventory refreshes
 - inline installed-model role actions for the progressive dual-model strategies, so any extra local model can be assigned as the fast-stage model or the large/slow-stage model without leaving the page
 - live-role chips and green row accents for the currently assigned fast and slow models, with those rows pinned to the top of the installed list

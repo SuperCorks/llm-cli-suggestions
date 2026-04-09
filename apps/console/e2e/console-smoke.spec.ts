@@ -2857,7 +2857,7 @@ test("models page manages installed and downloadable Ollama models", async ({ pa
   }));
   type MockJob = {
     id: string;
-    action: "install" | "remove";
+    action: "install" | "remove" | "update";
     model: string;
     status: "pending" | "running" | "completed" | "failed" | "cancelled";
     message: string;
@@ -2888,6 +2888,23 @@ test("models page manages installed and downloadable Ollama models", async ({ pa
     finishedAtMs: 0,
     polls: 0,
     targetPolls: 999,
+  });
+  jobs.set("gemma4:e4b", {
+    id: "install-gemma4-e4b-outdated",
+    action: "install",
+    model: "gemma4:e4b",
+    status: "failed",
+    message: "Download failed",
+    progressPercent: 0,
+    completed: 0,
+    total: 0,
+    error:
+      "ollama pull request failed with 412: pull model manifest: 412: The model you are attempting to pull requires a newer version of Ollama. Please download the latest version at: https://ollama.com/download",
+    startedAtMs: Date.now(),
+    updatedAtMs: Date.now(),
+    finishedAtMs: Date.now(),
+    polls: 0,
+    targetPolls: 0,
   });
 
   function serializeJob(job: MockJob) {
@@ -2926,7 +2943,12 @@ test("models page manages installed and downloadable Ollama models", async ({ pa
         job.progressPercent = 100;
         job.completed = job.total;
         job.finishedAtMs = Date.now();
-        job.message = job.action === "install" ? "Download complete" : "Removal complete";
+        job.message =
+          job.action === "install"
+            ? "Download complete"
+            : job.action === "remove"
+              ? "Removal complete"
+              : "Ollama updated and daemons restarted";
 
         if (job.model === "gemma3:4b") {
           gemmaInstalled = true;
@@ -2943,7 +2965,12 @@ test("models page manages installed and downloadable Ollama models", async ({ pa
       const step = Math.min(92, 18 + job.polls * 28);
       job.progressPercent = step;
       job.completed = step;
-      job.message = job.action === "install" ? "pulling layers" : "removing local layers";
+      job.message =
+        job.action === "install"
+          ? "pulling layers"
+          : job.action === "remove"
+            ? "removing local layers"
+            : "Updating Ollama with Homebrew";
     }
   }
 
@@ -3085,7 +3112,12 @@ test("models page manages installed and downloadable Ollama models", async ({ pa
 
       if (payload.action === "cancel" && entry) {
         entry.status = "cancelled";
-        entry.message = entry.action === "install" ? "Download cancelled" : "Removal cancelled";
+        entry.message =
+          entry.action === "install"
+            ? "Download cancelled"
+            : entry.action === "remove"
+              ? "Removal cancelled"
+              : "Ollama update cancelled";
         entry.finishedAtMs = Date.now();
         entry.updatedAtMs = entry.finishedAtMs;
       }
@@ -3182,8 +3214,52 @@ test("models page manages installed and downloadable Ollama models", async ({ pa
     });
   });
 
+  await page.route("**/api/ollama/update", async (route) => {
+    const key = "__ollama_update__";
+    if (!jobs.has(key)) {
+      jobs.set(key, {
+        id: "update-ollama",
+        action: "update",
+        model: "Ollama",
+        status: "running",
+        message: "Updating Ollama with Homebrew",
+        progressPercent: 12,
+        completed: 0,
+        total: 100,
+        error: "",
+        startedAtMs: Date.now(),
+        updatedAtMs: Date.now(),
+        finishedAtMs: 0,
+        polls: 0,
+        targetPolls: 2,
+      });
+    }
+
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ job: serializeJob(jobs.get(key)!) }),
+    });
+  });
+
+  await page.route("**/api/ollama/update/status?*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        supported: true,
+        outdated: true,
+        installKind: "formula",
+        installedVersion: "0.18.2",
+        latestVersion: "0.20.4",
+      }),
+    });
+  });
+
   await page.goto("/models");
   await expect(page.getByRole("heading", { name: "Models" })).toBeVisible();
+  await expect(page.locator(".page-heading").getByRole("button", { name: "Update Ollama" })).toBeVisible();
+  await expect(page.getByText("Ollama 0.18.2 installed; 0.20.4 available")).toBeVisible();
   await expect(page.getByText("qwen2.5-coder:7b").first()).toBeVisible();
   await expect(page.getByText("7B").first()).toBeVisible();
   await expect(page.locator(".model-status-chip-available")).toHaveCount(0);
@@ -3194,6 +3270,16 @@ test("models page manages installed and downloadable Ollama models", async ({ pa
   await expect(qwenRow.getByRole("button", { name: "Remove" })).toHaveCount(0);
 
   const installedBlock = getDetailBlock(page, "Installed Locally");
+  const outdatedOperation = installedBlock.locator(".model-operation-item").filter({
+    has: page.getByText("Download gemma4:e4b"),
+  });
+  await expect(outdatedOperation.getByRole("button", { name: "Update Ollama" })).toBeVisible();
+  await page.locator(".page-heading").getByRole("button", { name: "Update Ollama" }).click();
+  const updateOperationTitle = installedBlock
+    .locator(".model-operation-item strong")
+    .filter({ hasText: /^Update Ollama$/i });
+  await expect(updateOperationTitle).toBeVisible();
+
   const llamaRow = installedBlock.locator(".model-catalog-item").filter({
     has: page.getByText("llama3.2:latest"),
   });

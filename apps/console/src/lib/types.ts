@@ -57,7 +57,7 @@ export interface OllamaModelOption {
 export interface OllamaInstallJob {
   id: string;
   model: string;
-  action: "install" | "remove";
+  action: "install" | "remove" | "update";
   status: "pending" | "running" | "completed" | "failed" | "cancelled";
   message: string;
   progressPercent: number;
@@ -67,6 +67,15 @@ export interface OllamaInstallJob {
   startedAtMs: number;
   updatedAtMs: number;
   finishedAtMs: number;
+}
+
+export interface OllamaUpdateStatus {
+  supported: boolean;
+  outdated: boolean;
+  installKind: "formula" | "cask" | null;
+  installedVersion: string;
+  latestVersion: string;
+  error?: string;
 }
 
 export interface RuntimeMemoryStatus {

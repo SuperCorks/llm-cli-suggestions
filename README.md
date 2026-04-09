@@ -145,6 +145,7 @@ Browse the full Ollama library, download models, and switch the active daemon mo
 
 - installed and available model inventory in one place
 - download actions for models you do not have yet
+- a top-right Ollama update action when the local Homebrew-managed install is behind the latest available version
 - quick switching of the daemon's active local model
 
 <p align="center">
