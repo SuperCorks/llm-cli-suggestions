@@ -23,7 +23,7 @@ import type {
 
 type QueryValue = string | number;
 
-const prefixGateModelErrorSnippet = "did not start with the current buffer";
+const prefixGateModelErrorSnippet = "did not begin with the current buffer";
 
 function parseJsonObject(value: unknown) {
   if (!value) {
@@ -328,6 +328,7 @@ export function listSuggestions(input: {
   quality?: SuggestionQualityFilter;
   sort?: SuggestionSort;
   showPrefixRejected?: boolean;
+  returnedToShellOnly?: boolean;
 }): PagedResult<SuggestionRow> {
   const db = getDb();
   const page = Math.max(1, input.page || 1);
@@ -388,6 +389,9 @@ export function listSuggestions(input: {
   } else if (input.quality === "unlabeled") {
     clauses.push("COALESCE(r.review_label, '') = ''");
   }
+  if (input.returnedToShellOnly) {
+    clauses.push("COALESCE(s.returned_to_shell, 0) = 1");
+  }
   if (!input.showPrefixRejected) {
     clauses.push("COALESCE(s.model_error, '') NOT LIKE ?");
     params.push(`%${prefixGateModelErrorSnippet}%`);
@@ -442,6 +446,11 @@ export function listSuggestions(input: {
          s.last_exit_code AS lastExitCode,
          s.model_name AS modelName,
          COALESCE(s.request_model_name, '') AS requestModelName,
+         COALESCE(s.request_id, '') AS requestId,
+         COALESCE(s.attempt_index, 0) AS attemptIndex,
+         COALESCE(s.returned_to_shell, 0) = 1 AS returnedToShell,
+         COALESCE(s.validation_state, 'skipped') AS validationState,
+         COALESCE(s.validation_failures_json, '') AS validationFailuresJson,
          CASE
            WHEN s.request_latency_ms > 0 THEN s.request_latency_ms
            ELSE s.latency_ms
@@ -487,6 +496,7 @@ export function getRecentActivitySignals(limit = 6) {
     page: 1,
     pageSize: limit,
     outcome: "all",
+    returnedToShellOnly: true,
   }).rows.map(mapSuggestionToActivitySignal);
 }
 
@@ -636,6 +646,16 @@ export function listCommands(input: {
     .all(...params, pageSize, offset) as CommandRow[];
 
   return { total, page, pageSize, rows };
+}
+
+export function deleteCommandsByExactText(commandText: string) {
+  if (!commandText.trim()) {
+    throw new Error("command text is required");
+  }
+
+  const db = getDb();
+  const result = db.prepare("DELETE FROM commands WHERE command_text = ?").run(commandText);
+  return Number(result.changes || 0);
 }
 
 export function getFeedbackSummary() {
@@ -1006,6 +1026,11 @@ export function exportRows(dataset: "suggestions" | "commands" | "benchmarks") {
            s.model_eval_duration_ms,
            s.model_prompt_eval_count,
            s.model_eval_count,
+           s.request_id,
+           s.attempt_index,
+           s.returned_to_shell,
+           s.validation_state,
+           s.validation_failures_json,
            s.created_at_ms,
            GROUP_CONCAT(DISTINCT fe.event_type) AS feedback_events,
            MAX(fe.accepted_command) AS accepted_command,
@@ -1083,7 +1108,9 @@ export function getOverviewData(): OverviewData {
   const totals = {
     sessions: Number(db.prepare("SELECT COUNT(*) FROM sessions").pluck().get() || 0),
     commands: Number(db.prepare("SELECT COUNT(*) FROM commands").pluck().get() || 0),
-    suggestions: Number(db.prepare("SELECT COUNT(*) FROM suggestions").pluck().get() || 0),
+    suggestions: Number(
+      db.prepare("SELECT COUNT(*) FROM suggestions WHERE COALESCE(returned_to_shell, 0) = 1").pluck().get() || 0,
+    ),
     accepted: Number(
       db
         .prepare("SELECT COUNT(*) FROM feedback_events WHERE event_type IN ('accepted', 'executed_unchanged')")
@@ -1121,7 +1148,8 @@ export function getOverviewData(): OverviewData {
              END
            ),
            0
-         ) FROM suggestions`,
+         ) FROM suggestions
+         WHERE COALESCE(returned_to_shell, 0) = 1`,
       )
       .pluck()
       .get() || 0,
@@ -1155,7 +1183,8 @@ export function getOverviewData(): OverviewData {
            1
          ) AS avgLatencyMs
        FROM suggestions
-       WHERE TRIM(CASE WHEN TRIM(request_model_name) <> '' THEN request_model_name ELSE model_name END) <> ''
+       WHERE COALESCE(returned_to_shell, 0) = 1
+         AND TRIM(CASE WHEN TRIM(request_model_name) <> '' THEN request_model_name ELSE model_name END) <> ''
        GROUP BY model
        ORDER BY count DESC, model ASC`,
     )
@@ -1173,6 +1202,7 @@ export function getOverviewData(): OverviewData {
       page: 1,
       pageSize: 8,
       outcome: "all",
+      returnedToShellOnly: true,
     }).rows,
     latencyByModel,
     acceptanceByPath: feedbackSummary.acceptanceByPath,

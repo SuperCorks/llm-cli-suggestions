@@ -2,11 +2,14 @@ package engine
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"os/exec"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -26,6 +29,7 @@ type Engine struct {
 	modelName          string
 	modelBaseURL       string
 	modelKeepAlive     string
+	modelRetryEnabled  bool
 	suggestStrategy    string
 	systemPromptStatic string
 	suggestTimeout     time.Duration
@@ -52,6 +56,41 @@ type inspectResult struct {
 	winner           *rankedCandidate
 	requestModelName string
 	modelMetrics     model.SuggestMetrics
+	modelAttempts    []modelSuggestionAttempt
+}
+
+type modelValidationFailure struct {
+	Rule          string `json:"rule"`
+	Message       string `json:"message"`
+	RawOutput     string `json:"rawOutput,omitempty"`
+	CleanedOutput string `json:"cleanedOutput,omitempty"`
+}
+
+type modelSuggestionAttempt struct {
+	AttemptIndex       int
+	ModelName          string
+	Prompt             string
+	RawOutput          string
+	CleanedOutput      string
+	Suggestion         string
+	LatencyMS          int64
+	Metrics            model.SuggestMetrics
+	ValidationState    string
+	ValidationFailures []modelValidationFailure
+	ModelError         string
+}
+
+type modelResolution struct {
+	prompt           string
+	rawOutput        string
+	cleanedOutput    string
+	modelError       string
+	requestModelName string
+	modelMetrics     model.SuggestMetrics
+	activeModelName  string
+	attempts         []modelSuggestionAttempt
+	validCandidate   string
+	validCandidateMS int64
 }
 
 const (
@@ -60,23 +99,31 @@ const (
 	recentOutputPromptLimit = 220
 	minimumInspectTimeout   = 10 * time.Second
 	hotResidentLoadFloorMS  = int64(250)
+	maxModelRetryAttempts   = 3
 )
 
-func New(store *db.Store, modelClient model.Client, modelName, modelBaseURL, modelKeepAlive, suggestStrategy string, suggestTimeout time.Duration) *Engine {
+var invalidSuggestionStartPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`^\d+\.`),
+	regexp.MustCompile(`^[-*]\s`),
+	regexp.MustCompile(`^["']`),
+}
+
+func New(store *db.Store, modelClient model.Client, modelName, modelBaseURL, modelKeepAlive string, modelRetryEnabled bool, suggestStrategy string, suggestTimeout time.Duration) *Engine {
 	return &Engine{
 		store:              store,
 		modelClient:        modelClient,
 		modelName:          modelName,
 		modelBaseURL:       modelBaseURL,
 		modelKeepAlive:     modelKeepAlive,
+		modelRetryEnabled:  modelRetryEnabled,
 		suggestStrategy:    config.NormalizeSuggestStrategy(suggestStrategy),
 		systemPromptStatic: "",
 		suggestTimeout:     suggestTimeout,
 	}
 }
 
-func NewWithSystemPrompt(store *db.Store, modelClient model.Client, modelName, modelBaseURL, modelKeepAlive, suggestStrategy, systemPromptStatic string, suggestTimeout time.Duration) *Engine {
-	engine := New(store, modelClient, modelName, modelBaseURL, modelKeepAlive, suggestStrategy, suggestTimeout)
+func NewWithSystemPrompt(store *db.Store, modelClient model.Client, modelName, modelBaseURL, modelKeepAlive string, modelRetryEnabled bool, suggestStrategy, systemPromptStatic string, suggestTimeout time.Duration) *Engine {
+	engine := New(store, modelClient, modelName, modelBaseURL, modelKeepAlive, modelRetryEnabled, suggestStrategy, suggestTimeout)
 	engine.systemPromptStatic = systemPromptStatic
 	return engine
 }
@@ -87,6 +134,7 @@ func (e *Engine) Suggest(ctx context.Context, request api.SuggestRequest) (api.S
 	}
 
 	requestStartedAt := time.Now()
+	requestID := newSuggestionRequestID()
 	recentCommands := request.RecentCommands
 	var err error
 	inspection, err := e.inspectDetailed(ctx, api.InspectRequest{
@@ -106,11 +154,15 @@ func (e *Engine) Suggest(ctx context.Context, request api.SuggestRequest) (api.S
 		return api.SuggestResponse{}, err
 	}
 
+	if err := e.recordModelAttempts(ctx, inspection, requestID); err != nil {
+		return api.SuggestResponse{}, err
+	}
+
 	if len(inspection.response.Candidates) == 0 || inspection.winner == nil {
 		e.logSuggestTrace(inspection, nil, time.Since(requestStartedAt).Milliseconds(), 0, false)
 		return api.SuggestResponse{}, nil
 	}
-	return e.recordSuggestion(ctx, inspection, *inspection.winner, time.Since(requestStartedAt).Milliseconds())
+	return e.recordSuggestion(ctx, inspection, *inspection.winner, requestID, time.Since(requestStartedAt).Milliseconds())
 }
 
 func (e *Engine) Inspect(ctx context.Context, request api.InspectRequest) (api.InspectResponse, error) {
@@ -240,7 +292,8 @@ func (e *Engine) inspectDetailed(ctx context.Context, request api.InspectRequest
 	initialCandidates := sortedCandidates(candidateMap)
 	historyTrusted := useHistory && len(initialCandidates) > 0 && shouldTrustHistory(initialCandidates)
 	inspectLastCommandContext := toInspectCommandContexts(lastCommandContexts)
-	prompt := BuildPrompt(e.systemPromptStatic, resolvedSuggestRequest, recentCommands, lastContext, inspectLastCommandContext, selectedRecentOutput, retrievedContext)
+	basePrompt := BuildPrompt(e.systemPromptStatic, resolvedSuggestRequest, recentCommands, lastContext, inspectLastCommandContext, selectedRecentOutput, retrievedContext)
+	prompt := basePrompt
 
 	rawModelOutput := ""
 	cleanedModelOutput := ""
@@ -248,6 +301,7 @@ func (e *Engine) inspectDetailed(ctx context.Context, request api.InspectRequest
 	activeModelName := e.modelName
 	requestModelName := ""
 	modelMetrics := model.SuggestMetrics{}
+	modelAttempts := []modelSuggestionAttempt{}
 
 	if useModel && (strategy == config.SuggestStrategyModelOnly || strategy == config.SuggestStrategyFastThenModel || alwaysInvokeModel || !historyTrusted) {
 		modelClient := e.modelClient
@@ -261,37 +315,40 @@ func (e *Engine) inspectDetailed(ctx context.Context, request api.InspectRequest
 		}
 
 		if modelClient != nil {
-			requestModelName = activeModelName
-			modelCtx, cancel := context.WithTimeout(ctx, modelTimeout)
-			startedAt := time.Now()
-			suggestResult, modelErr := modelClient.Suggest(modelCtx, prompt)
-			cancel()
-			if modelErr == nil {
-				modelMetrics = suggestResult.Metrics
-				rawModelOutput = suggestResult.Response
-				cleanedModelOutput = CleanSuggestion(buffer, suggestResult.Response)
-				if cleanedModelOutput != "" {
-					candidate := candidateMap[cleanedModelOutput]
-					if candidate == nil {
-						candidate = &rankedCandidate{
-							Command: cleanedModelOutput,
-							Source:  "model",
-						}
-						candidateMap[cleanedModelOutput] = candidate
-					} else if !strings.Contains(candidate.Source, "model") {
-						candidate.Source = addSourceTag(candidate.Source, "model")
-					}
+			resolution := e.resolveModelCandidate(
+				ctx,
+				modelClient,
+				activeModelName,
+				modelTimeout,
+				resolvedSuggestRequest,
+				basePrompt,
+			)
+			requestModelName = resolution.requestModelName
+			modelMetrics = resolution.modelMetrics
+			rawModelOutput = resolution.rawOutput
+			cleanedModelOutput = resolution.cleanedOutput
+			modelError = resolution.modelError
+			prompt = resolution.prompt
+			modelAttempts = resolution.attempts
+			if resolution.activeModelName != "" {
+				activeModelName = resolution.activeModelName
+			}
 
-					candidate.LatencyMS = time.Since(startedAt).Milliseconds()
-					candidate.ModelScore = scoreModelCandidate(cleanedModelOutput, resolvedSuggestRequest, recentCommands, lastContext)
-					candidate.Score = max(candidate.Score, candidate.ModelScore)
-				} else if strings.TrimSpace(suggestResult.Response) == "" {
-					modelError = fmt.Sprintf("%s returned an empty response.", activeModelName)
-				} else {
-					modelError = fmt.Sprintf("%s returned output that did not start with the current buffer.", activeModelName)
+			if resolution.validCandidate != "" {
+				candidate := candidateMap[resolution.validCandidate]
+				if candidate == nil {
+					candidate = &rankedCandidate{
+						Command: resolution.validCandidate,
+						Source:  "model",
+					}
+					candidateMap[resolution.validCandidate] = candidate
+				} else if !strings.Contains(candidate.Source, "model") {
+					candidate.Source = addSourceTag(candidate.Source, "model")
 				}
-			} else {
-				modelError = formatInspectModelError(activeModelName, modelTimeout, modelErr)
+
+				candidate.LatencyMS = resolution.validCandidateMS
+				candidate.ModelScore = scoreModelCandidate(resolution.validCandidate, resolvedSuggestRequest, recentCommands, lastContext)
+				candidate.Score = max(candidate.Score, candidate.ModelScore)
 			}
 		}
 	}
@@ -319,7 +376,7 @@ func (e *Engine) inspectDetailed(ctx context.Context, request api.InspectRequest
 			RecentOutputContext:       selectedRecentOutput,
 			RetrievedContext:          retrievedContext,
 			Candidates:                []api.InspectCandidate{},
-		}, resolvedRequest: resolvedSuggestRequest, requestModelName: requestModelName, modelMetrics: modelMetrics}, nil
+		}, resolvedRequest: resolvedSuggestRequest, requestModelName: requestModelName, modelMetrics: modelMetrics, modelAttempts: modelAttempts}, nil
 	}
 
 	feedbackStats, err := e.store.GetCommandFeedbackStats(ctx, candidateCommands(candidateMap))
@@ -403,7 +460,359 @@ func (e *Engine) inspectDetailed(ctx context.Context, request api.InspectRequest
 		winner:           winner,
 		requestModelName: requestModelName,
 		modelMetrics:     modelMetrics,
+		modelAttempts:    modelAttempts,
 	}, nil
+}
+
+func (e *Engine) resolveModelCandidate(
+	ctx context.Context,
+	modelClient model.Client,
+	activeModelName string,
+	modelTimeout time.Duration,
+	request api.SuggestRequest,
+	basePrompt string,
+) modelResolution {
+	resolution := modelResolution{
+		prompt:           basePrompt,
+		requestModelName: activeModelName,
+		activeModelName:  activeModelName,
+	}
+	if modelClient == nil {
+		return resolution
+	}
+
+	attemptLimit := 1
+	if e.modelRetryEnabled {
+		attemptLimit = maxModelRetryAttempts
+	}
+
+	rejectedSuggestions := map[string]struct{}{}
+	attempts := make([]modelSuggestionAttempt, 0, attemptLimit)
+
+	for attemptIndex := 1; attemptIndex <= attemptLimit; attemptIndex++ {
+		prompt := buildRetryPrompt(basePrompt, attempts)
+		modelCtx, cancel := context.WithTimeout(ctx, modelTimeout)
+		startedAt := time.Now()
+		suggestResult, modelErr := modelClient.Suggest(modelCtx, prompt)
+		cancel()
+
+		attempt := modelSuggestionAttempt{
+			AttemptIndex:    attemptIndex,
+			ModelName:       activeModelName,
+			Prompt:          prompt,
+			RawOutput:       suggestResult.Response,
+			CleanedOutput:   CleanSuggestion(request.Buffer, suggestResult.Response),
+			LatencyMS:       time.Since(startedAt).Milliseconds(),
+			Metrics:         suggestResult.Metrics,
+			ValidationState: "failed",
+		}
+		attempt.Suggestion = attemptSuggestionText(attempt.CleanedOutput, attempt.RawOutput)
+
+		resolution.prompt = prompt
+		resolution.rawOutput = attempt.RawOutput
+		resolution.cleanedOutput = attempt.CleanedOutput
+		resolution.modelMetrics = attempt.Metrics
+
+		if modelErr != nil {
+			attempt.ValidationFailures = []modelValidationFailure{{
+				Rule:    "model_error",
+				Message: formatInspectModelError(activeModelName, modelTimeout, modelErr),
+			}}
+			attempt.ModelError = attempt.ValidationFailures[0].Message
+			resolution.modelError = attempt.ModelError
+			attempts = append(attempts, attempt)
+			break
+		}
+
+		failures := validateModelSuggestion(
+			request.Buffer,
+			attempt.RawOutput,
+			attempt.CleanedOutput,
+			attempt.Suggestion,
+			rejectedSuggestions,
+		)
+		if len(failures) == 0 {
+			attempt.ValidationState = "passed"
+			attempt.ModelError = ""
+			attempts = append(attempts, attempt)
+			resolution.attempts = attempts
+			resolution.validCandidate = attempt.CleanedOutput
+			resolution.validCandidateMS = attempt.LatencyMS
+			resolution.modelError = ""
+			return resolution
+		}
+
+		attempt.ValidationFailures = failures
+		attempt.ModelError = formatValidationFailureSummary(activeModelName, failures)
+		resolution.modelError = attempt.ModelError
+		attempts = append(attempts, attempt)
+		if attempt.Suggestion != "" {
+			rejectedSuggestions[attempt.Suggestion] = struct{}{}
+		}
+	}
+
+	resolution.attempts = attempts
+	return resolution
+}
+
+func buildRetryPrompt(basePrompt string, attempts []modelSuggestionAttempt) string {
+	failedAttempts := make([]modelSuggestionAttempt, 0, len(attempts))
+	for _, attempt := range attempts {
+		if attempt.ValidationState == "failed" {
+			failedAttempts = append(failedAttempts, attempt)
+		}
+	}
+	if len(failedAttempts) == 0 {
+		return basePrompt
+	}
+
+	var builder strings.Builder
+	builder.WriteString(basePrompt)
+	if !strings.HasSuffix(basePrompt, "\n") {
+		builder.WriteString("\n")
+	}
+	builder.WriteString("\nprevious_invalid_suggestions:\n")
+	for _, attempt := range failedAttempts {
+		builder.WriteString("- ")
+		builder.WriteString(strconvQuote(attempt.Suggestion))
+		builder.WriteString(" invalid: ")
+		builder.WriteString(joinValidationFailureMessages(attempt.ValidationFailures))
+		builder.WriteString("\n")
+	}
+	return builder.String()
+}
+
+func validateModelSuggestion(
+	buffer string,
+	raw string,
+	cleaned string,
+	suggestion string,
+	rejectedSuggestions map[string]struct{},
+) []modelValidationFailure {
+	trimmedRaw := strings.TrimSpace(raw)
+	trimmedCleaned := strings.TrimSpace(cleaned)
+	trimmedSuggestion := strings.TrimSpace(suggestion)
+	failures := []modelValidationFailure{}
+
+	if trimmedRaw == "" {
+		return []modelValidationFailure{{
+			Rule:    "empty_response",
+			Message: "returned an empty response",
+		}}
+	}
+
+	if trimmedSuggestion != "" {
+		for _, pattern := range invalidSuggestionStartPatterns {
+			if pattern.MatchString(trimmedSuggestion) {
+				failures = append(failures, modelValidationFailure{
+					Rule:          "invalid_start",
+					Message:       fmt.Sprintf("starts with disallowed formatting matching %s", pattern.String()),
+					RawOutput:     trimmedRaw,
+					CleanedOutput: trimmedCleaned,
+				})
+				break
+			}
+		}
+	}
+
+	if trimmedSuggestion != "" {
+		if _, exists := rejectedSuggestions[trimmedSuggestion]; exists {
+			failures = append(failures, modelValidationFailure{
+				Rule:          "duplicate",
+				Message:       "repeated a previously rejected suggestion in the same retry chain",
+				RawOutput:     trimmedRaw,
+				CleanedOutput: trimmedCleaned,
+			})
+		}
+	}
+
+	if trimmedCleaned == "" {
+		normalizedRaw := normalizeSuggestionCandidate(raw)
+		if normalizedRaw == buffer {
+			failures = append(failures, modelValidationFailure{
+				Rule:          "buffer_extension",
+				Message:       "did not extend the current buffer",
+				RawOutput:     trimmedRaw,
+				CleanedOutput: trimmedCleaned,
+			})
+		} else {
+			failures = append(failures, modelValidationFailure{
+				Rule:          "buffer_prefix",
+				Message:       "did not begin with the current buffer",
+				RawOutput:     trimmedRaw,
+				CleanedOutput: trimmedCleaned,
+			})
+		}
+		return failures
+	}
+
+	if trimmedCleaned == buffer {
+		failures = append(failures, modelValidationFailure{
+			Rule:          "buffer_extension",
+			Message:       "did not extend the current buffer",
+			RawOutput:     trimmedRaw,
+			CleanedOutput: trimmedCleaned,
+		})
+	}
+	if !strings.HasPrefix(trimmedCleaned, buffer) {
+		failures = append(failures, modelValidationFailure{
+			Rule:          "buffer_prefix",
+			Message:       "did not begin with the current buffer",
+			RawOutput:     trimmedRaw,
+			CleanedOutput: trimmedCleaned,
+		})
+	}
+
+	if executableFailure := validateExternalExecutable(trimmedCleaned); executableFailure != nil {
+		executableFailure.RawOutput = trimmedRaw
+		executableFailure.CleanedOutput = trimmedCleaned
+		failures = append(failures, *executableFailure)
+	}
+
+	return failures
+}
+
+func validateExternalExecutable(command string) *modelValidationFailure {
+	commandName, ok := extractSimpleExternalCommand(command)
+	if !ok {
+		return nil
+	}
+	if _, err := exec.LookPath(commandName); err != nil {
+		return &modelValidationFailure{
+			Rule:    "executable_lookup",
+			Message: fmt.Sprintf("first command %q was not found in the daemon PATH", commandName),
+		}
+	}
+	return nil
+}
+
+func extractSimpleExternalCommand(command string) (string, bool) {
+	if strings.TrimSpace(command) == "" || hasComplexShellSyntax(command) {
+		return "", false
+	}
+
+	words := strings.Fields(command)
+	for index := 0; index < len(words); index++ {
+		word := words[index]
+		if simpleEnvAssignment(word) {
+			continue
+		}
+
+		switch word {
+		case "command", "builtin", "exec", "noglob", "nocorrect":
+			continue
+		case "time":
+			for index+1 < len(words) && strings.HasPrefix(words[index+1], "-") {
+				index += 1
+			}
+			continue
+		}
+
+		if strings.ContainsAny(word, `"'`) {
+			return "", false
+		}
+		if strings.HasPrefix(word, "/") || strings.HasPrefix(word, "./") || strings.HasPrefix(word, "../") {
+			return "", false
+		}
+		return word, true
+	}
+
+	return "", false
+}
+
+func simpleEnvAssignment(value string) bool {
+	if value == "" || strings.HasPrefix(value, "=") {
+		return false
+	}
+	name, _, found := strings.Cut(value, "=")
+	if !found || name == "" {
+		return false
+	}
+	for index, r := range name {
+		if index == 0 {
+			if !(unicode.IsLetter(r) || r == '_') {
+				return false
+			}
+			continue
+		}
+		if !(unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_') {
+			return false
+		}
+	}
+	return true
+}
+
+func hasComplexShellSyntax(command string) bool {
+	quote := rune(0)
+	escaped := false
+	for _, r := range command {
+		if escaped {
+			escaped = false
+			continue
+		}
+		if r == '\\' {
+			escaped = true
+			continue
+		}
+		if quote != 0 {
+			if r == quote {
+				quote = 0
+			}
+			continue
+		}
+		if r == '"' || r == '\'' {
+			quote = r
+			continue
+		}
+		if strings.ContainsRune("|&;<>(){}[]$`\n", r) {
+			return true
+		}
+	}
+	return false
+}
+
+func formatValidationFailureSummary(modelName string, failures []modelValidationFailure) string {
+	if len(failures) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%s suggestion failed validation: %s", modelName, joinValidationFailureMessages(failures))
+}
+
+func joinValidationFailureMessages(failures []modelValidationFailure) string {
+	if len(failures) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(failures))
+	for _, failure := range failures {
+		if strings.TrimSpace(failure.Message) == "" {
+			continue
+		}
+		parts = append(parts, failure.Message)
+	}
+	return strings.Join(parts, "; ")
+}
+
+func attemptSuggestionText(cleaned string, raw string) string {
+	if strings.TrimSpace(cleaned) != "" {
+		return strings.TrimSpace(cleaned)
+	}
+	return strings.TrimSpace(raw)
+}
+
+func strconvQuote(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return `""`
+	}
+	return fmt.Sprintf("%q", trimmed)
+}
+
+func newSuggestionRequestID() string {
+	buffer := make([]byte, 8)
+	if _, err := rand.Read(buffer); err != nil {
+		return fmt.Sprintf("req-%d", time.Now().UnixNano())
+	}
+	return "req-" + hex.EncodeToString(buffer)
 }
 
 func (e *Engine) resolveInspectContext(ctx context.Context, request api.InspectRequest) (api.SuggestRequest, []string, db.CommandContext, []db.RecentCommandContext, []db.RecentOutputContext, error) {
@@ -679,33 +1088,86 @@ func intPtr(value int) *int {
 	return &value
 }
 
-func (e *Engine) recordSuggestion(ctx context.Context, inspection inspectResult, candidate rankedCandidate, requestLatencyMS int64) (api.SuggestResponse, error) {
+func (e *Engine) recordModelAttempts(ctx context.Context, inspection inspectResult, requestID string) error {
+	for _, attempt := range inspection.modelAttempts {
+		validationFailuresJSON, err := marshalValidationFailures(attempt.ValidationFailures)
+		if err != nil {
+			return err
+		}
+		_, err = e.store.CreateSuggestion(ctx, db.SuggestionRecord{
+			RequestID:              requestID,
+			AttemptIndex:           attempt.AttemptIndex,
+			ReturnedToShell:        false,
+			ValidationState:        attempt.ValidationState,
+			ValidationFailuresJSON: validationFailuresJSON,
+			SessionID:              inspection.resolvedRequest.SessionID,
+			Buffer:                 inspection.resolvedRequest.Buffer,
+			Suggestion:             attempt.Suggestion,
+			Source:                 "model",
+			CWD:                    inspection.resolvedRequest.CWD,
+			RepoRoot:               inspection.resolvedRequest.RepoRoot,
+			Branch:                 inspection.resolvedRequest.Branch,
+			LastExitCode:           inspection.resolvedRequest.LastExitCode,
+			LatencyMS:              attempt.LatencyMS,
+			RequestLatencyMS:       -1,
+			ModelName:              attempt.ModelName,
+			RequestModelName:       inspection.requestModelName,
+			ModelKeepAlive:         e.modelKeepAlive,
+			ModelStartState:        classifyLiveStartState(inspection.requestModelName, attempt.Metrics),
+			ModelTotalDurationMS:   attempt.Metrics.TotalDurationMS,
+			ModelLoadDurationMS:    attempt.Metrics.LoadDurationMS,
+			ModelPromptEvalMS:      attempt.Metrics.PromptEvalDurationMS,
+			ModelEvalDurationMS:    attempt.Metrics.EvalDurationMS,
+			ModelPromptEvalCount:   attempt.Metrics.PromptEvalCount,
+			ModelEvalCount:         attempt.Metrics.EvalCount,
+			ModelError:             attempt.ModelError,
+			PromptText:             attempt.Prompt,
+			StructuredContextJSON:  marshalSuggestionContext(inspection, e.modelKeepAlive),
+			CreatedAtMS:            time.Now().UnixMilli(),
+		})
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (e *Engine) recordSuggestion(ctx context.Context, inspection inspectResult, candidate rankedCandidate, requestID string, requestLatencyMS int64) (api.SuggestResponse, error) {
 	modelStartState := classifyLiveStartState(inspection.requestModelName, inspection.modelMetrics)
+	validationState := "skipped"
+	if strings.Contains(candidate.Source, "model") {
+		validationState = "passed"
+	}
 	suggestionID, err := e.store.CreateSuggestion(ctx, db.SuggestionRecord{
-		SessionID:             inspection.resolvedRequest.SessionID,
-		Buffer:                inspection.resolvedRequest.Buffer,
-		Suggestion:            candidate.Command,
-		Source:                candidate.Source,
-		CWD:                   inspection.resolvedRequest.CWD,
-		RepoRoot:              inspection.resolvedRequest.RepoRoot,
-		Branch:                inspection.resolvedRequest.Branch,
-		LastExitCode:          inspection.resolvedRequest.LastExitCode,
-		LatencyMS:             candidate.LatencyMS,
-		RequestLatencyMS:      requestLatencyMS,
-		ModelName:             modelNameForSource(inspection.response.ModelName, candidate.Source),
-		RequestModelName:      inspection.requestModelName,
-		ModelKeepAlive:        e.modelKeepAlive,
-		ModelStartState:       modelStartState,
-		ModelTotalDurationMS:  inspection.modelMetrics.TotalDurationMS,
-		ModelLoadDurationMS:   inspection.modelMetrics.LoadDurationMS,
-		ModelPromptEvalMS:     inspection.modelMetrics.PromptEvalDurationMS,
-		ModelEvalDurationMS:   inspection.modelMetrics.EvalDurationMS,
-		ModelPromptEvalCount:  inspection.modelMetrics.PromptEvalCount,
-		ModelEvalCount:        inspection.modelMetrics.EvalCount,
-			ModelError:            inspection.response.ModelError,
-		PromptText:            inspection.response.Prompt,
-		StructuredContextJSON: marshalSuggestionContext(inspection, e.modelKeepAlive),
-		CreatedAtMS:           time.Now().UnixMilli(),
+		RequestID:              requestID,
+		AttemptIndex:           0,
+		ReturnedToShell:        true,
+		ValidationState:        validationState,
+		ValidationFailuresJSON: "",
+		SessionID:              inspection.resolvedRequest.SessionID,
+		Buffer:                 inspection.resolvedRequest.Buffer,
+		Suggestion:             candidate.Command,
+		Source:                 candidate.Source,
+		CWD:                    inspection.resolvedRequest.CWD,
+		RepoRoot:               inspection.resolvedRequest.RepoRoot,
+		Branch:                 inspection.resolvedRequest.Branch,
+		LastExitCode:           inspection.resolvedRequest.LastExitCode,
+		LatencyMS:              candidate.LatencyMS,
+		RequestLatencyMS:       requestLatencyMS,
+		ModelName:              modelNameForSource(inspection.response.ModelName, candidate.Source),
+		RequestModelName:       inspection.requestModelName,
+		ModelKeepAlive:         e.modelKeepAlive,
+		ModelStartState:        modelStartState,
+		ModelTotalDurationMS:   inspection.modelMetrics.TotalDurationMS,
+		ModelLoadDurationMS:    inspection.modelMetrics.LoadDurationMS,
+		ModelPromptEvalMS:      inspection.modelMetrics.PromptEvalDurationMS,
+		ModelEvalDurationMS:    inspection.modelMetrics.EvalDurationMS,
+		ModelPromptEvalCount:   inspection.modelMetrics.PromptEvalCount,
+		ModelEvalCount:         inspection.modelMetrics.EvalCount,
+		ModelError:             inspection.response.ModelError,
+		PromptText:             inspection.response.Prompt,
+		StructuredContextJSON:  marshalSuggestionContext(inspection, e.modelKeepAlive),
+		CreatedAtMS:            time.Now().UnixMilli(),
 	})
 	if err != nil {
 		return api.SuggestResponse{}, err
@@ -739,6 +1201,17 @@ func classifyLiveStartState(requestModelName string, metrics model.SuggestMetric
 		return "hot"
 	}
 	return "cold"
+}
+
+func marshalValidationFailures(failures []modelValidationFailure) (string, error) {
+	if len(failures) == 0 {
+		return "", nil
+	}
+	encoded, err := json.Marshal(failures)
+	if err != nil {
+		return "", fmt.Errorf("marshal validation failures: %w", err)
+	}
+	return string(encoded), nil
 }
 
 func (e *Engine) logSuggestTrace(inspection inspectResult, candidate *rankedCandidate, requestLatencyMS int64, suggestionID int64, stored bool) {
@@ -851,6 +1324,11 @@ func marshalSuggestionContext(inspection inspectResult, modelKeepAlive string) s
 		LastCommandContext  []api.InspectCommandContext      `json:"lastCommandContext"`
 		RecentOutputContext []api.InspectRecentOutputContext `json:"recentOutputContext"`
 		RetrievedContext    api.InspectRetrievedContext      `json:"retrievedContext"`
+		ModelRetry          struct {
+			Enabled     bool                     `json:"enabled"`
+			MaxAttempts int                      `json:"maxAttempts"`
+			Attempts    []modelSuggestionAttempt `json:"attempts"`
+		} `json:"modelRetry"`
 	}{}
 
 	payload.Request.SessionID = inspection.resolvedRequest.SessionID
@@ -878,6 +1356,9 @@ func marshalSuggestionContext(inspection inspectResult, modelKeepAlive string) s
 	payload.LastCommandContext = inspection.response.LastCommandContext
 	payload.RecentOutputContext = inspection.response.RecentOutputContext
 	payload.RetrievedContext = inspection.response.RetrievedContext
+	payload.ModelRetry.Enabled = len(inspection.modelAttempts) > 0
+	payload.ModelRetry.MaxAttempts = maxModelRetryAttempts
+	payload.ModelRetry.Attempts = inspection.modelAttempts
 
 	encoded, err := json.Marshal(payload)
 	if err != nil {
@@ -900,27 +1381,58 @@ func BuildPrompt(
 	if systemPrompt == "" {
 		systemPrompt = config.DefaultSystemPromptStatic
 	}
+	appendPromptSection(&builder, "CORE INSTRUCTIONS")
 	builder.WriteString(systemPrompt)
-	builder.WriteString("\n\n")
+
+	appendPromptSection(&builder, "TERMINAL CONTEXT")
 	builder.WriteString(fmt.Sprintf("cwd: %s\n", request.CWD))
 	builder.WriteString(fmt.Sprintf("repo_root: %s\n", request.RepoRoot))
-	builder.WriteString(fmt.Sprintf("current branch: %s\n", request.Branch))
+	builder.WriteString(fmt.Sprintf("current_branch: %s\n", request.Branch))
 	builder.WriteString(fmt.Sprintf("last_exit_code: %d\n", request.LastExitCode))
 	builder.WriteString(fmt.Sprintf("current_token: %s\n", retrievedContext.CurrentToken))
-	appendRecentContext(&builder, recentCommands, lastContext, lastCommandContext, recentOutputContext)
-	appendPromptList(&builder, "matching_history", retrievedContext.HistoryMatches)
-	appendPromptList(&builder, "path_matches", retrievedContext.PathMatches)
-	appendPromptList(&builder, "git_branch_matches", retrievedContext.GitBranchMatches)
-	appendPromptList(&builder, "project_tasks", retrievedContext.ProjectTasks)
-	appendPromptList(&builder, "project_task_matches", retrievedContext.ProjectTaskMatches)
+	if hasRecentContextData(recentCommands, lastContext, lastCommandContext, recentOutputContext) {
+		appendPromptSection(&builder, "PAST COMMANDS")
+		appendRecentContext(&builder, recentCommands, lastContext, lastCommandContext, recentOutputContext)
+	}
+	if hasRetrievedMatches(retrievedContext) {
+		appendPromptSection(&builder, "RETRIEVED MATCHES")
+		appendPromptList(&builder, "history matches", retrievedContext.HistoryMatches)
+		appendPromptList(&builder, "path matches", retrievedContext.PathMatches)
+		appendPromptList(&builder, "git branch matches", retrievedContext.GitBranchMatches)
+		appendProjectTaskList(&builder, "project command matches", retrievedContext.ProjectTaskMatches)
+	}
+	if len(retrievedContext.ProjectTasks) > 0 {
+		appendPromptSection(&builder, "AVAILABLE PROJECT COMMANDS")
+		appendProjectTaskGroups(&builder, retrievedContext.ProjectTasks)
+	}
+	appendPromptSection(&builder, "CURRENT BUFFER")
 	if strings.TrimSpace(request.Buffer) == "" {
-		builder.WriteString("\nbuffer is empty. Use last_command and recent context to suggest one full command only when there is a clear, high-confidence next step; prefer correcting the last command or the most likely immediate follow-up, otherwise return an empty response.\n")
+		builder.WriteString("buffer is empty. Use last_command and recent context to suggest one full command only when there is a clear, high-confidence next step; prefer correcting the last command or the most likely immediate follow-up, otherwise return an empty response.\n")
 	} else {
-		builder.WriteString("\ncurrent_buffer_begin\n")
+		builder.WriteString("current_buffer_begin\n")
 		builder.WriteString(request.Buffer)
 		builder.WriteString("\ncurrent_buffer_end\n")
 	}
 	return builder.String()
+}
+
+func hasRecentContextData(
+	recentCommands []string,
+	lastContext db.CommandContext,
+	lastCommandContext []api.InspectCommandContext,
+	recentOutputContext []api.InspectRecentOutputContext,
+) bool {
+	if len(recentCommands) > 0 || len(lastCommandContext) > 0 || len(recentOutputContext) > 0 {
+		return true
+	}
+	return strings.TrimSpace(lastContext.Command) != ""
+}
+
+func hasRetrievedMatches(retrievedContext api.InspectRetrievedContext) bool {
+	return len(retrievedContext.HistoryMatches) > 0 ||
+		len(retrievedContext.PathMatches) > 0 ||
+		len(retrievedContext.GitBranchMatches) > 0 ||
+		len(retrievedContext.ProjectTaskMatches) > 0
 }
 
 func shouldAddQuotedCommitPrefixExample(buffer string) bool {
@@ -1640,6 +2152,75 @@ func appendPromptList(builder *strings.Builder, label string, values []string) {
 		builder.WriteString(value)
 		builder.WriteString("\n")
 	}
+}
+
+func appendProjectTaskList(builder *strings.Builder, label string, tasks []api.InspectProjectTask) {
+	if len(tasks) == 0 {
+		return
+	}
+	builder.WriteString(label)
+	builder.WriteString(":\n")
+	for _, task := range tasks {
+		builder.WriteString("- ")
+		builder.WriteString(task.Command)
+		builder.WriteString("\n")
+	}
+}
+
+func appendProjectTaskGroups(builder *strings.Builder, tasks []api.InspectProjectTask) {
+	if len(tasks) == 0 {
+		return
+	}
+	groups := map[string][]api.InspectProjectTask{}
+	order := make([]string, 0, 4)
+	for _, task := range tasks {
+		source := strings.TrimSpace(task.Source)
+		if source == "" {
+			source = "unknown"
+		}
+		if _, exists := groups[source]; !exists {
+			order = append(order, source)
+		}
+		groups[source] = append(groups[source], task)
+	}
+
+	for index, source := range order {
+		if index > 0 {
+			builder.WriteString("\n")
+		}
+		builder.WriteString(projectTaskGroupLabel(source))
+		builder.WriteString(":\n")
+		for _, task := range groups[source] {
+			builder.WriteString("- ")
+			builder.WriteString(task.Command)
+			builder.WriteString("\n")
+		}
+	}
+}
+
+func projectTaskGroupLabel(source string) string {
+	switch source {
+	case projectTaskSourcePackageScript:
+		return "package.json scripts"
+	case projectTaskSourceMakeTarget:
+		return "Makefile targets"
+	case projectTaskSourceJustRecipe:
+		return "justfile recipes"
+	default:
+		if source == "unknown" {
+			return "other project commands"
+		}
+		return source
+	}
+}
+
+func appendPromptSection(builder *strings.Builder, title string) {
+	if builder.Len() > 0 {
+		builder.WriteString("\n\n")
+	}
+	builder.WriteString("----- ")
+	builder.WriteString(title)
+	builder.WriteString(" -----\n")
 }
 
 func addSourceTag(source, tag string) string {

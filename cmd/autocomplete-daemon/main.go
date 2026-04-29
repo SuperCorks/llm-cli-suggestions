@@ -46,7 +46,7 @@ func main() {
 	}()
 
 	modelClient := ollama.New(cfg.ModelBaseURL, cfg.ModelName, cfg.ModelKeepAlive)
-	eng := engine.NewWithSystemPrompt(store, modelClient, cfg.ModelName, cfg.ModelBaseURL, cfg.ModelKeepAlive, cfg.SuggestStrategy, cfg.SystemPromptStatic, cfg.SuggestTimeout)
+	eng := engine.NewWithSystemPrompt(store, modelClient, cfg.ModelName, cfg.ModelBaseURL, cfg.ModelKeepAlive, cfg.ModelRetryEnabled, cfg.SuggestStrategy, cfg.SystemPromptStatic, cfg.SuggestTimeout)
 	srv := server.New(&cfg, eng, store)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

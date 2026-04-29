@@ -79,6 +79,23 @@ function ensureSuggestionColumns(db: Database.Database) {
   if (!columns.has("model_error")) {
     db.exec("ALTER TABLE suggestions ADD COLUMN model_error TEXT NOT NULL DEFAULT ''");
   }
+  if (!columns.has("request_id")) {
+    db.exec("ALTER TABLE suggestions ADD COLUMN request_id TEXT NOT NULL DEFAULT ''");
+  }
+  if (!columns.has("attempt_index")) {
+    db.exec("ALTER TABLE suggestions ADD COLUMN attempt_index INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!columns.has("returned_to_shell")) {
+    db.exec("ALTER TABLE suggestions ADD COLUMN returned_to_shell INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!columns.has("validation_state")) {
+    db.exec("ALTER TABLE suggestions ADD COLUMN validation_state TEXT NOT NULL DEFAULT 'skipped'");
+  }
+  if (!columns.has("validation_failures_json")) {
+    db.exec(
+      "ALTER TABLE suggestions ADD COLUMN validation_failures_json TEXT NOT NULL DEFAULT ''",
+    );
+  }
 }
 
 function ensureConsoleTables(db: Database.Database) {

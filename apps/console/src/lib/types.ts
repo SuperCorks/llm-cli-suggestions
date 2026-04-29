@@ -35,6 +35,7 @@ export interface RuntimeSettings {
   fastModelName: string;
   modelBaseUrl: string;
   modelKeepAlive: string;
+  modelRetryEnabled: boolean;
   suggestStrategy: SuggestStrategy;
   systemPromptStatic: string;
   suggestTimeoutMs: number;
@@ -116,6 +117,12 @@ export interface ActivitySignal {
   message: string;
 }
 
+export interface RetrievedProjectTask {
+  source: string;
+  name: string;
+  command: string;
+}
+
 export interface OverviewData {
   runtime: RuntimeStatus;
   totals: {
@@ -154,6 +161,11 @@ export interface SuggestionRow {
   lastExitCode: number;
   modelName: string;
   requestModelName: string;
+  requestId: string;
+  attemptIndex: number;
+  returnedToShell: boolean;
+  validationState: string;
+  validationFailuresJson: string;
   latencyMs: number;
   createdAtMs: number;
   outcome: Exclude<SuggestionOutcome, "all">;

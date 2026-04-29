@@ -22,6 +22,12 @@ type retrievalCandidate struct {
 
 const maxProjectTasks = 64
 
+const (
+	projectTaskSourcePackageScript = "package.json script"
+	projectTaskSourceMakeTarget    = "Makefile target"
+	projectTaskSourceJustRecipe    = "justfile recipe"
+)
+
 func buildRetrievedContext(ctx context.Context, request api.SuggestRequest, historyCandidates []db.CommandCandidate) (api.InspectRetrievedContext, []retrievalCandidate) {
 	result, candidates := buildStaticRetrievedContext(ctx, request)
 	result.HistoryMatches = historyMatchesForCandidates(request.Buffer, historyCandidates)
@@ -37,7 +43,7 @@ func buildStaticRetrievedContext(ctx context.Context, request api.SuggestRequest
 	var pathCandidates []retrievalCandidate
 	var branchMatches []string
 	var branchCandidates []retrievalCandidate
-	var projectTasks []string
+	var projectTasks []api.InspectProjectTask
 
 	_ = runParallel(
 		func() error {
@@ -204,21 +210,23 @@ func retrieveGitBranchMatches(ctx context.Context, request api.SuggestRequest) (
 	return matches, candidates
 }
 
-func retrieveProjectTaskMatches(buffer string, tasks []string) ([]string, []retrievalCandidate) {
-	_, token, ok := detectProjectTaskContext(buffer)
+func retrieveProjectTaskMatches(buffer string, tasks []api.InspectProjectTask) ([]api.InspectProjectTask, []retrievalCandidate) {
+	commandPrefix, token, ok := detectProjectTaskContext(buffer)
 	if !ok || token == "" || len(tasks) == 0 {
 		return nil, nil
 	}
 
-	matches := make([]string, 0, 10)
+	matches := make([]api.InspectProjectTask, 0, 10)
 	candidates := make([]retrievalCandidate, 0, 10)
 	for _, task := range tasks {
-		if !strings.HasPrefix(strings.ToLower(task), strings.ToLower(token)) {
+		if !strings.HasPrefix(strings.ToLower(task.Name), strings.ToLower(token)) {
 			continue
 		}
-		matches = append(matches, task)
+		matchedTask := task
+		matchedTask.Command = projectTaskCommandForPrefix(task, commandPrefix)
+		matches = append(matches, matchedTask)
 		candidates = append(candidates, retrievalCandidate{
-			Command: replaceCurrentToken(buffer, task),
+			Command: replaceCurrentToken(buffer, task.Name),
 			Source:  "project-task",
 			Score:   28,
 		})
@@ -227,6 +235,25 @@ func retrieveProjectTaskMatches(buffer string, tasks []string) ([]string, []retr
 		}
 	}
 	return matches, candidates
+}
+
+func projectTaskCommandForPrefix(task api.InspectProjectTask, commandPrefix string) string {
+	switch task.Source {
+	case projectTaskSourcePackageScript:
+		switch commandPrefix {
+		case "npm run", "pnpm run", "yarn run":
+			return commandPrefix + " " + task.Name
+		}
+	case projectTaskSourceMakeTarget:
+		if commandPrefix == "make" {
+			return "make " + task.Name
+		}
+	case projectTaskSourceJustRecipe:
+		if commandPrefix == "just" {
+			return "just " + task.Name
+		}
+	}
+	return task.Command
 }
 
 func shouldUsePathRetrieval(buffer string) bool {
@@ -336,18 +363,19 @@ func detectProjectTaskContext(buffer string) (string, string, bool) {
 	}
 }
 
-func loadProjectTasks(cwd, repoRoot string) []string {
-	result := make([]string, 0, maxProjectTasks)
+func loadProjectTasks(cwd, repoRoot string) []api.InspectProjectTask {
+	result := make([]api.InspectProjectTask, 0, maxProjectTasks)
 	seen := map[string]struct{}{}
-	appendUnique := func(values []string) {
+	appendUnique := func(values []api.InspectProjectTask) {
 		for _, value := range values {
-			if value == "" {
+			if strings.TrimSpace(value.Command) == "" {
 				continue
 			}
-			if _, exists := seen[value]; exists {
+			key := value.Source + "\x00" + value.Name + "\x00" + value.Command
+			if _, exists := seen[key]; exists {
 				continue
 			}
-			seen[value] = struct{}{}
+			seen[key] = struct{}{}
 			result = append(result, value)
 			if len(result) >= maxProjectTasks {
 				return
@@ -368,7 +396,7 @@ func loadProjectTasks(cwd, repoRoot string) []string {
 	return result
 }
 
-func loadPackageScripts(cwd, repoRoot string) []string {
+func loadPackageScripts(cwd, repoRoot string) []api.InspectProjectTask {
 	for _, root := range []string{cwd, repoRoot} {
 		if root == "" {
 			continue
@@ -387,36 +415,52 @@ func loadPackageScripts(cwd, repoRoot string) []string {
 		if len(payload.Scripts) == 0 {
 			continue
 		}
-		result := make([]string, 0, len(payload.Scripts))
+		names := make([]string, 0, len(payload.Scripts))
 		for key := range payload.Scripts {
-			result = append(result, key)
+			names = append(names, key)
 		}
-		sort.Strings(result)
-		return result
+		sort.Strings(names)
+		return buildProjectTasks(projectTaskSourcePackageScript, "npm run", names)
 	}
 	return nil
 }
 
-func loadMakeTargets(cwd, repoRoot string) []string {
+func loadMakeTargets(cwd, repoRoot string) []api.InspectProjectTask {
 	for _, root := range []string{cwd, repoRoot} {
 		targets := loadColonTargets(filepath.Join(root, "Makefile"))
 		if len(targets) > 0 {
-			return targets
+			return buildProjectTasks(projectTaskSourceMakeTarget, "make", targets)
 		}
 	}
 	return nil
 }
 
-func loadJustTargets(cwd, repoRoot string) []string {
+func loadJustTargets(cwd, repoRoot string) []api.InspectProjectTask {
 	for _, root := range []string{cwd, repoRoot} {
 		for _, fileName := range []string{"justfile", "Justfile"} {
 			targets := loadColonTargets(filepath.Join(root, fileName))
 			if len(targets) > 0 {
-				return targets
+				return buildProjectTasks(projectTaskSourceJustRecipe, "just", targets)
 			}
 		}
 	}
 	return nil
+}
+
+func buildProjectTasks(source, commandPrefix string, names []string) []api.InspectProjectTask {
+	result := make([]api.InspectProjectTask, 0, len(names))
+	for _, name := range names {
+		trimmed := strings.TrimSpace(name)
+		if trimmed == "" {
+			continue
+		}
+		result = append(result, api.InspectProjectTask{
+			Source:  source,
+			Name:    trimmed,
+			Command: commandPrefix + " " + trimmed,
+		})
+	}
+	return result
 }
 
 func loadColonTargets(path string) []string {

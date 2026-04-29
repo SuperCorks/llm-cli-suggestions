@@ -7,11 +7,15 @@ import { ModelPicker } from "@/components/model-picker";
 import { PathHoverActions } from "@/components/path-hover-actions";
 import { formatDurationMs } from "@/lib/format";
 import {
+  formatRetrievedProjectTasks,
+  normalizeRetrievedProjectTasks,
+} from "@/lib/retrieved-project-tasks";
+import {
   normalizeSuggestStrategy,
   type SuggestStrategy,
 } from "@/lib/suggest-strategy";
 import { SuggestStrategyField } from "@/components/suggest-strategy-field";
-import type { OllamaModelOption } from "@/lib/types";
+import type { OllamaModelOption, RetrievedProjectTask } from "@/lib/types";
 
 type InspectCandidate = {
   command: string;
@@ -67,8 +71,8 @@ type InspectResponse = {
     history_matches: string[];
     path_matches: string[];
     git_branch_matches: string[];
-    project_tasks: string[];
-    project_task_matches: string[];
+    project_tasks: RetrievedProjectTask[];
+    project_task_matches: RetrievedProjectTask[];
   };
   winner: InspectCandidate | null;
   candidates: InspectCandidate[];
@@ -228,14 +232,12 @@ function normalizeInspectResponse(
       )
         ? input.retrieved_context?.git_branch_matches
         : [],
-      project_tasks: Array.isArray(input.retrieved_context?.project_tasks)
-        ? input.retrieved_context?.project_tasks
-        : [],
-      project_task_matches: Array.isArray(
+      project_tasks: normalizeRetrievedProjectTasks(
+        input.retrieved_context?.project_tasks,
+      ),
+      project_task_matches: normalizeRetrievedProjectTasks(
         input.retrieved_context?.project_task_matches,
-      )
-        ? input.retrieved_context?.project_task_matches
-        : [],
+      ),
     },
     winner,
     candidates,
@@ -250,7 +252,7 @@ function describeRejectedModelOutput(
   }
 
   const rejectedPrefixMismatch =
-    response.model_error.includes("did not start with the current buffer") ||
+    response.model_error.includes("did not begin with the current buffer") ||
     (!response.cleaned_model_output && response.raw_model_output.trim().length > 0);
   if (!rejectedPrefixMismatch) {
     return null;
@@ -876,11 +878,11 @@ export function RankingInspector({
                   </dd>
                 </div>
                 <div>
-                  <dt>Project tasks</dt>
+                  <dt>Project commands</dt>
                   <dd>{response.retrieved_context.project_tasks.length}</dd>
                 </div>
                 <div>
-                  <dt>Project task matches</dt>
+                  <dt>Project command matches</dt>
                   <dd>
                     {response.retrieved_context.project_task_matches.length}
                   </dd>
@@ -901,10 +903,10 @@ export function RankingInspector({
                     ? `branches:\n- ${response.retrieved_context.git_branch_matches.join("\n- ")}`
                     : "",
                   response.retrieved_context.project_tasks.length
-                    ? `project tasks:\n- ${response.retrieved_context.project_tasks.join("\n- ")}`
+                    ? `project commands:\n${formatRetrievedProjectTasks(response.retrieved_context.project_tasks)}`
                     : "",
                   response.retrieved_context.project_task_matches.length
-                    ? `project task matches:\n- ${response.retrieved_context.project_task_matches.join("\n- ")}`
+                    ? `project command matches:\n${formatRetrievedProjectTasks(response.retrieved_context.project_task_matches)}`
                     : "",
                 ]
                   .filter(Boolean)

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { listCommands } from "@/lib/server/queries";
+import { deleteCommandsByExactText, listCommands } from "@/lib/server/queries";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -17,4 +17,22 @@ export async function GET(request: NextRequest) {
       query: searchParams.get("query") || undefined,
     }),
   );
+}
+
+export async function DELETE(request: NextRequest) {
+  let payload: { commandText?: string };
+
+  try {
+    payload = (await request.json()) as { commandText?: string };
+  } catch {
+    return NextResponse.json({ error: "invalid request body" }, { status: 400 });
+  }
+
+  const commandText = String(payload.commandText || "");
+  if (!commandText.trim()) {
+    return NextResponse.json({ error: "commandText is required" }, { status: 400 });
+  }
+
+  const deletedCount = deleteCommandsByExactText(commandText);
+  return NextResponse.json({ status: "ok", deletedCount });
 }

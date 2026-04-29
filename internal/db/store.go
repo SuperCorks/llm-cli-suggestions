@@ -25,30 +25,35 @@ type CommandCandidate struct {
 }
 
 type SuggestionRecord struct {
-	SessionID             string
-	Buffer                string
-	Suggestion            string
-	Source                string
-	CWD                   string
-	RepoRoot              string
-	Branch                string
-	LastExitCode          int
-	LatencyMS             int64
-	RequestLatencyMS      int64
-	ModelName             string
-	RequestModelName      string
-	ModelKeepAlive        string
-	ModelStartState       string
-	ModelTotalDurationMS  int64
-	ModelLoadDurationMS   int64
-	ModelPromptEvalMS     int64
-	ModelEvalDurationMS   int64
-	ModelPromptEvalCount  int64
-	ModelEvalCount        int64
-	ModelError            string
-	PromptText            string
-	StructuredContextJSON string
-	CreatedAtMS           int64
+	RequestID              string
+	AttemptIndex           int
+	ReturnedToShell        bool
+	ValidationState        string
+	ValidationFailuresJSON string
+	SessionID              string
+	Buffer                 string
+	Suggestion             string
+	Source                 string
+	CWD                    string
+	RepoRoot               string
+	Branch                 string
+	LastExitCode           int
+	LatencyMS              int64
+	RequestLatencyMS       int64
+	ModelName              string
+	RequestModelName       string
+	ModelKeepAlive         string
+	ModelStartState        string
+	ModelTotalDurationMS   int64
+	ModelLoadDurationMS    int64
+	ModelPromptEvalMS      int64
+	ModelEvalDurationMS    int64
+	ModelPromptEvalCount   int64
+	ModelEvalCount         int64
+	ModelError             string
+	PromptText             string
+	StructuredContextJSON  string
+	CreatedAtMS            int64
 }
 
 type FeedbackRecord struct {
@@ -137,6 +142,11 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_commands_session_finished ON commands(session_id, finished_at_ms DESC);`,
 		`CREATE TABLE IF NOT EXISTS suggestions (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			request_id TEXT NOT NULL DEFAULT '',
+			attempt_index INTEGER NOT NULL DEFAULT 0,
+			returned_to_shell INTEGER NOT NULL DEFAULT 0,
+			validation_state TEXT NOT NULL DEFAULT 'skipped',
+			validation_failures_json TEXT NOT NULL DEFAULT '',
 			session_id TEXT NOT NULL,
 			buffer TEXT NOT NULL,
 			suggestion_text TEXT NOT NULL,
@@ -218,6 +228,21 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 	if err := s.ensureColumn(ctx, "suggestions", "model_error", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "suggestions", "request_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "suggestions", "attempt_index", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "suggestions", "returned_to_shell", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "suggestions", "validation_state", "TEXT NOT NULL DEFAULT 'skipped'"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "suggestions", "validation_failures_json", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	if err := s.ensureBenchmarkTables(ctx); err != nil {
@@ -580,13 +605,19 @@ func (s *Store) CreateSuggestion(ctx context.Context, record SuggestionRecord) (
 	result, err := s.db.ExecContext(
 		ctx,
 		`INSERT INTO suggestions(
+			request_id, attempt_index, returned_to_shell, validation_state, validation_failures_json,
 			session_id, buffer, suggestion_text, source, cwd, repo_root, branch,
 			last_exit_code, latency_ms, request_latency_ms, model_name, request_model_name,
 			model_keep_alive, model_start_state,
 			model_total_duration_ms, model_load_duration_ms, model_prompt_eval_duration_ms,
 			model_eval_duration_ms, model_prompt_eval_count, model_eval_count, model_error,
 			prompt_text, structured_context_json, created_at_ms
-		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		record.RequestID,
+		record.AttemptIndex,
+		boolToInt(record.ReturnedToShell),
+		record.ValidationState,
+		record.ValidationFailuresJSON,
 		record.SessionID,
 		record.Buffer,
 		record.Suggestion,
@@ -671,4 +702,11 @@ func (s *Store) RecordCommand(ctx context.Context, record CommandRecord) error {
 
 func nowMS() int64 {
 	return time.Now().UnixMilli()
+}
+
+func boolToInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }

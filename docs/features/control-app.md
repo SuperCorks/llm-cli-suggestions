@@ -57,11 +57,12 @@ Shows paginated suggestion history with filters for:
 - cwd
 - feedback outcome
 - quality label
-- a hidden-by-default toggle for rows where model output was rejected because it did not start with the current buffer
+- a hidden-by-default toggle for rows where model output was rejected because it did not begin with the current buffer
 - server-side sort modes for recency, latency, buffer ordering, model ordering, and labeled-first review
 - page-size controls with top and bottom pagination affordances
 - session ids directly in the history table for quicker cross-referencing with commands and feedback
 - inline good/bad labeling that persists to SQLite for future evaluation and fine-tuning work
+- history-sourced rows with a small source popover that can delete every exact-match command from runtime history without wiping the saved suggestion log
 - empty recorded buffers rendered as a muted visual placeholder in the table and detail drawer without inserting fallback text into the hydrated DOM
 - structured context previews on hover with persisted prompt snapshots, retrieved context, feedback outcome details, and replay links into the inspector
 - copy-ready prompt and structured-context payloads from the hover card for debugging or dataset export prep
@@ -135,7 +136,7 @@ Supports:
 - a dedicated Ollama inventory page for downloaded and library models
 - pagination for the larger `Available From Ollama` catalog so library browsing stays usable without overwhelming the page
 - supplemental family-page loading for important Ollama model families whose local tags do not reliably appear on the top-level library landing page, so models like `qwen3-coder` still show up in the console catalog
-- capability chips on downloadable library models so vision, tools, and thinking support are visible at a glance
+- compact capability icon chips on downloadable library models so vision, tools, audio, and thinking support stay visible without crowding each row
 - parameter-size chips on installed and library entries, using Ollama parameter-size metadata for local models and catalog size labels for library entries when available
 - context-window chips on installed and supported library entries, using Ollama local model metadata when a model is already downloaded and family-page catalog details when the public library exposes them
 - model pickers that prioritize parameter size, context window, and capability chips over a generic available-state badge, while still marking installed and remote rows when that distinction matters
@@ -164,6 +165,7 @@ Supports:
 - the same installed-only model picker used in the lab
 - a persisted suggestion-strategy selector shared with the daemon and shell runtime
 - an Ollama keep-alive setting persisted to `runtime.env` and applied on daemon inference requests so loaded models can stay warm longer between suggestions
+- a daemon-side model-retry toggle, enabled by default, that controls whether invalid model outputs are re-prompted up to three times before the stage falls back to ranked non-model candidates
 - latency-oriented Ollama request shaping for live suggestions, with known thinking-capable models asked to skip reasoning when supported and `gpt-oss` constrained to the lowest documented reasoning level
 - a multiline editor for the system prompt used by the daemon, prefilled with the built-in autosuggestion instructions and resettable back to that default
 - a shell accept-key selector that persists whether `Tab` or Right Arrow accepts a visible suggestion in new shells, while leaving the non-selected key on its normal shell behavior
@@ -176,6 +178,7 @@ Supports:
 - daemon process-memory rows that show the daemon RSS plus loaded-model memory, VRAM, and a tracked total, with dual-model strategies rendering separate slow and fast model rows so both configured footprints remain visible
 - daemon status and memory rows that refresh while the page is open, without clobbering unsaved runtime form edits
 - unloaded model-memory rows keep the last seen footprint for each configured model in a muted style, so the page preserves recent usage context without implying those models are still resident
+- suggestion-history rows and detail drawers that can expose retry metadata such as request id, attempt index, returned-to-shell state, and validation failures for stored model attempts
 - daemon log viewing through a live-updating stream with reconnect status in the panel header
 - destructive maintenance actions with typed confirmation, placed after the log section so runtime inspection stays primary
 

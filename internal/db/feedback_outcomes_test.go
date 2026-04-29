@@ -216,6 +216,122 @@ func TestListReplayBenchmarkCandidatesPrefersRequestModelName(t *testing.T) {
 	}
 }
 
+func TestInspectSummaryIgnoresNonReturnedSuggestions(t *testing.T) {
+	t.Parallel()
+
+	store := newOutcomeTestStore(t)
+	ctx := context.Background()
+	if err := store.EnsureSession(ctx, "session-1"); err != nil {
+		t.Fatalf("EnsureSession: %v", err)
+	}
+
+	if _, err := store.CreateSuggestion(ctx, SuggestionRecord{
+		RequestID:       "req-1",
+		AttemptIndex:    1,
+		ReturnedToShell: false,
+		ValidationState: "failed",
+		SessionID:       "session-1",
+		Buffer:          "git st",
+		Suggestion:      "1. git push origin",
+		Source:          "model",
+		CWD:             "/tmp/repo",
+		RepoRoot:        "/tmp/repo",
+		Branch:          "main",
+		LatencyMS:       90,
+		CreatedAtMS:     100,
+	}); err != nil {
+		t.Fatalf("CreateSuggestion(non-returned): %v", err)
+	}
+	if _, err := store.CreateSuggestion(ctx, SuggestionRecord{
+		RequestID:        "req-1",
+		AttemptIndex:     0,
+		ReturnedToShell:  true,
+		ValidationState:  "passed",
+		SessionID:        "session-1",
+		Buffer:           "git st",
+		Suggestion:       "git status",
+		Source:           "model",
+		CWD:              "/tmp/repo",
+		RepoRoot:         "/tmp/repo",
+		Branch:           "main",
+		LatencyMS:        30,
+		RequestLatencyMS: 120,
+		CreatedAtMS:      200,
+	}); err != nil {
+		t.Fatalf("CreateSuggestion(returned): %v", err)
+	}
+
+	summary, err := store.InspectSummary(ctx)
+	if err != nil {
+		t.Fatalf("InspectSummary: %v", err)
+	}
+
+	if summary.SuggestionCount != 1 {
+		t.Fatalf("expected only returned suggestions to count, got %d", summary.SuggestionCount)
+	}
+	if summary.AverageModelLatency != 120 {
+		t.Fatalf("expected average latency from returned suggestion, got %v", summary.AverageModelLatency)
+	}
+}
+
+func TestCreateSuggestionPersistsRetryMetadata(t *testing.T) {
+	t.Parallel()
+
+	store := newOutcomeTestStore(t)
+	ctx := context.Background()
+	if err := store.EnsureSession(ctx, "session-1"); err != nil {
+		t.Fatalf("EnsureSession: %v", err)
+	}
+
+	suggestionID, err := store.CreateSuggestion(ctx, SuggestionRecord{
+		RequestID:              "req-42",
+		AttemptIndex:           2,
+		ReturnedToShell:        false,
+		ValidationState:        "failed",
+		ValidationFailuresJSON: `[{"rule":"buffer_prefix","message":"did not begin with the current buffer"}]`,
+		SessionID:              "session-1",
+		Buffer:                 "git st",
+		Suggestion:             "status --short",
+		Source:                 "model",
+		CWD:                    "/tmp/repo",
+		RepoRoot:               "/tmp/repo",
+		Branch:                 "main",
+		CreatedAtMS:            100,
+	})
+	if err != nil {
+		t.Fatalf("CreateSuggestion: %v", err)
+	}
+
+	var requestID string
+	var attemptIndex int
+	var returnedToShell int
+	var validationState string
+	var validationFailuresJSON string
+	err = store.db.QueryRowContext(
+		ctx,
+		`SELECT request_id, attempt_index, returned_to_shell, validation_state, validation_failures_json
+		 FROM suggestions
+		 WHERE id = ?`,
+		suggestionID,
+	).Scan(&requestID, &attemptIndex, &returnedToShell, &validationState, &validationFailuresJSON)
+	if err != nil {
+		t.Fatalf("query suggestion retry metadata: %v", err)
+	}
+
+	if requestID != "req-42" || attemptIndex != 2 || returnedToShell != 0 || validationState != "failed" {
+		t.Fatalf(
+			"unexpected retry metadata request_id=%q attempt_index=%d returned_to_shell=%d validation_state=%q",
+			requestID,
+			attemptIndex,
+			returnedToShell,
+			validationState,
+		)
+	}
+	if validationFailuresJSON == "" {
+		t.Fatalf("expected validation failures json to persist")
+	}
+}
+
 func newOutcomeTestStore(t *testing.T) *Store {
 	t.Helper()
 	store, err := NewStore(filepath.Join(t.TempDir(), "test.db"))

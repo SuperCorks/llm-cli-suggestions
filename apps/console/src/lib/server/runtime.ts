@@ -304,6 +304,8 @@ export async function saveRuntimeSettings(input: Partial<Record<PersistedKey, st
     LAC_FAST_MODEL_NAME: input.LAC_FAST_MODEL_NAME ?? current.fastModelName,
     LAC_MODEL_BASE_URL: input.LAC_MODEL_BASE_URL || current.modelBaseUrl,
     LAC_MODEL_KEEP_ALIVE: input.LAC_MODEL_KEEP_ALIVE || current.modelKeepAlive,
+    LAC_MODEL_RETRY_ENABLED:
+      input.LAC_MODEL_RETRY_ENABLED ?? String(current.modelRetryEnabled),
     LAC_SUGGEST_STRATEGY: input.LAC_SUGGEST_STRATEGY || current.suggestStrategy,
     LAC_SYSTEM_PROMPT_STATIC:
       input.LAC_SYSTEM_PROMPT_STATIC ?? current.systemPromptStatic,

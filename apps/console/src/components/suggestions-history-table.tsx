@@ -2,6 +2,7 @@
 
 import { useMemo } from "react";
 
+import { HistorySourceAction } from "@/components/history-source-action";
 import { SuggestionContextCell } from "@/components/suggestion-context-cell";
 import { buildSuggestionContextSnapshot } from "@/components/suggestion-context";
 import { SuggestionQualityControl } from "@/components/suggestion-quality-control";
@@ -79,8 +80,17 @@ export function SuggestionsHistoryTable({ rows, selectedId, onSelect }: Suggesti
               </td>
               <td>
                 <code>{row.suggestionText}</code>
+                <div className="helper-text">
+                  {row.returnedToShell
+                    ? "Returned to shell"
+                    : row.attemptIndex > 0
+                      ? `Attempt ${row.attemptIndex} · ${row.validationState}`
+                      : row.validationState}
+                </div>
               </td>
-              <td>{row.source}</td>
+                <td>
+                  <HistorySourceAction source={row.source} suggestionText={row.suggestionText} />
+                </td>
               <td>{row.requestModelName || row.modelName || "n/a"}</td>
               <td>{formatDurationMs(row.latencyMs)}</td>
               <td>

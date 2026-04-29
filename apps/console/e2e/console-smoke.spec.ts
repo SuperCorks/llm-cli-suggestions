@@ -57,6 +57,41 @@ function insertSuggestionFixture({
   ]);
 }
 
+function insertCommandFixture(commandText: string) {
+  const escapeSql = (value: string) => value.replaceAll("'", "''");
+  const finishedAtMs = Date.now();
+
+  execFileSync("sqlite3", [
+    E2E_DB_PATH,
+    `INSERT INTO commands(
+      session_id, command_text, cwd, repo_root, branch, exit_code, duration_ms,
+      started_at_ms, finished_at_ms, stdout_excerpt, stderr_excerpt
+    ) VALUES (
+      'session-alpha',
+      '${escapeSql(commandText)}',
+      '/Users/simon/projects/gleamery/apps/console',
+      '/Users/simon/projects/gleamery',
+      'main',
+      0,
+      57,
+      ${finishedAtMs - 57},
+      ${finishedAtMs},
+      'fixture stdout',
+      ''
+    );`,
+  ]);
+}
+
+function countCommandsByText(commandText: string) {
+  const escapeSql = (value: string) => value.replaceAll("'", "''");
+  const result = execFileSync(
+    "sqlite3",
+    [E2E_DB_PATH, `SELECT COUNT(*) FROM commands WHERE command_text = '${escapeSql(commandText)}';`],
+    { encoding: "utf8" },
+  );
+  return Number.parseInt(result.trim(), 10) || 0;
+}
+
 async function mockEventSource(
   page: Page,
   streams: Array<{ match: string; messages: unknown[] }>,
@@ -318,6 +353,30 @@ test("suggestions page shows request model names for progressive rows", async ({
   await page.getByRole("textbox", { name: "Model", exact: true }).fill("mistral-small:latest");
   await page.getByRole("button", { name: "Apply Filters" }).click();
   await expect(row.getByText("mistral-small:latest")).toBeVisible();
+});
+
+test("history-sourced suggestions can delete exact-match commands from history", async ({ page }) => {
+  const commandText = "history delete fixture --seeded-entry";
+  insertCommandFixture(commandText);
+  insertCommandFixture(commandText);
+  insertSuggestionFixture({
+    buffer: "history delete fixture",
+    suggestionText: commandText,
+    source: "history",
+    modelName: "",
+    requestModelName: "granite3.1-moe:1b",
+  });
+
+  expect(countCommandsByText(commandText)).toBe(2);
+
+  await page.goto(`/suggestions?query=${encodeURIComponent(commandText)}`);
+
+  const row = page.locator("tbody tr").filter({ has: page.getByText(commandText) });
+  await row.getByRole("button", { name: `History source actions for ${commandText}` }).click();
+  await expect(page.getByText("History-backed suggestion")).toBeVisible();
+  await page.getByRole("button", { name: "Delete from history" }).click();
+  await expect(page.getByText("Removed 2 exact matches from command history.")).toBeVisible();
+  expect(countCommandsByText(commandText)).toBe(0);
 });
 
 test("ranking inspector shows a mocked winner", async ({ page }) => {
@@ -2518,6 +2577,7 @@ test("daemon runtime settings and downloads work with local fixtures", async ({ 
   let savedModelName = "qwen2.5-coder:7b";
   let savedSystemPromptStatic = "";
   let savedModelKeepAlive = "5m";
+  let savedModelRetryEnabled = true;
   let savedAcceptKey = "tab";
   let savedPtyCaptureMode = "allowlist";
   let savedPtyCaptureAllowlist = "";
@@ -2529,6 +2589,7 @@ test("daemon runtime settings and downloads work with local fixtures", async ({ 
       LAC_MODEL_NAME?: string;
       LAC_SUGGEST_STRATEGY?: string;
       LAC_MODEL_KEEP_ALIVE?: string;
+      LAC_MODEL_RETRY_ENABLED?: string;
       LAC_SYSTEM_PROMPT_STATIC?: string;
       LAC_ACCEPT_KEY?: string;
       LAC_PTY_CAPTURE_MODE?: string;
@@ -2538,6 +2599,9 @@ test("daemon runtime settings and downloads work with local fixtures", async ({ 
     savedModelName = payload.LAC_MODEL_NAME || savedModelName;
     savedSuggestStrategy = payload.LAC_SUGGEST_STRATEGY || savedSuggestStrategy;
     savedModelKeepAlive = payload.LAC_MODEL_KEEP_ALIVE || savedModelKeepAlive;
+    if (payload.LAC_MODEL_RETRY_ENABLED !== undefined) {
+      savedModelRetryEnabled = payload.LAC_MODEL_RETRY_ENABLED === "true";
+    }
     savedSystemPromptStatic = payload.LAC_SYSTEM_PROMPT_STATIC || savedSystemPromptStatic;
     savedAcceptKey = payload.LAC_ACCEPT_KEY || savedAcceptKey;
     savedPtyCaptureMode = payload.LAC_PTY_CAPTURE_MODE || savedPtyCaptureMode;
@@ -2555,6 +2619,7 @@ test("daemon runtime settings and downloads work with local fixtures", async ({ 
         modelName: savedModelName,
         modelBaseUrl: "http://127.0.0.1:11434",
         modelKeepAlive: savedModelKeepAlive,
+        modelRetryEnabled: savedModelRetryEnabled,
         suggestStrategy: savedSuggestStrategy,
         systemPromptStatic: savedSystemPromptStatic,
         suggestTimeoutMs: 1200,
@@ -2584,6 +2649,7 @@ test("daemon runtime settings and downloads work with local fixtures", async ({ 
           modelName: savedModelName,
           modelBaseUrl: "http://127.0.0.1:11434",
           modelKeepAlive: savedModelKeepAlive,
+          modelRetryEnabled: savedModelRetryEnabled,
           suggestStrategy: savedSuggestStrategy,
           systemPromptStatic: savedSystemPromptStatic,
           suggestTimeoutMs: 1200,
@@ -2624,6 +2690,7 @@ test("daemon runtime settings and downloads work with local fixtures", async ({ 
           modelName: savedModelName,
           modelBaseUrl: "http://127.0.0.1:11434",
           modelKeepAlive: savedModelKeepAlive,
+          modelRetryEnabled: savedModelRetryEnabled,
           suggestStrategy: savedSuggestStrategy,
           systemPromptStatic: savedSystemPromptStatic,
           suggestTimeoutMs: 1200,
@@ -2743,7 +2810,7 @@ test("daemon runtime settings and downloads work with local fixtures", async ({ 
   await expect(page.getByText("Model warmed up in 146ms")).toBeVisible();
   const runtimeSettingsPanel = getDetailBlock(page, "Runtime Settings");
   const runtimeDetailsPanel = getDetailBlock(page, "Runtime Details");
-  await expect(runtimeSettingsPanel.getByLabel("Model Name")).toHaveValue("qwen2.5-coder:7b");
+  await expect(runtimeSettingsPanel.getByRole("textbox", { name: "Model Name" })).toHaveValue("qwen2.5-coder:7b");
   await expect(runtimeSettingsPanel.locator(".chip-list")).toHaveCount(0);
   await expect(runtimeSettingsPanel.getByLabel("Model Base URL")).toHaveCount(0);
   await expect(runtimeSettingsPanel.getByLabel("Socket Path")).toHaveCount(0);
@@ -2753,6 +2820,11 @@ test("daemon runtime settings and downloads work with local fixtures", async ({ 
   await expect(runtimeDetailsPanel.getByText("Socket Path")).toBeVisible();
   await expect(runtimeDetailsPanel.getByText("Database Path")).toBeVisible();
   await expect(runtimeSettingsPanel.getByLabel("Suggestion Strategy")).toHaveValue("history+model");
+  await expect(
+    runtimeSettingsPanel.getByRole("checkbox", {
+      name: "Retry invalid model suggestions up to 3 times",
+    }),
+  ).toBeChecked();
   await expect(runtimeSettingsPanel.getByLabel("Accept Suggestion Key")).toHaveValue("tab");
   await expect(runtimeSettingsPanel.getByLabel("PTY Capture Allow List")).toHaveAttribute(
     "placeholder",
@@ -2760,6 +2832,9 @@ test("daemon runtime settings and downloads work with local fixtures", async ({ 
   );
   await runtimeSettingsPanel.getByLabel("System Prompt").fill("Always prefer concise safe commands.");
   await runtimeSettingsPanel.getByLabel("Suggestion Strategy").selectOption("history-only");
+  await runtimeSettingsPanel
+    .getByRole("checkbox", { name: "Retry invalid model suggestions up to 3 times" })
+    .uncheck();
   await runtimeSettingsPanel.getByLabel("Accept Suggestion Key").selectOption("right-arrow");
   await expect(
     runtimeSettingsPanel.getByText(
@@ -2769,13 +2844,7 @@ test("daemon runtime settings and downloads work with local fixtures", async ({ 
   ).toBeVisible();
   await expect(
     runtimeSettingsPanel.getByText(
-      "Enter one command name or /regex/ per line. Plain lines match the executable name, while regex lines match the full command text.",
-      { exact: false },
-    ),
-  ).toBeVisible();
-  await expect(
-    runtimeSettingsPanel.getByText(
-      "complex interactive CLI tools can get confused by it",
+      "Wrap only the commands listed here. Use one command name or /regex/ per line.",
       { exact: false },
     ),
   ).toBeVisible();
@@ -2795,7 +2864,7 @@ test("daemon runtime settings and downloads work with local fixtures", async ({ 
   );
   await expect(
     runtimeSettingsPanel.getByText(
-      "Use the block list when the lightweight PTY shell can mess up complex interactive CLI tools.",
+      "Wrap most external commands and exclude only the fragile ones. Use one command name or /regex/ per line.",
       { exact: false },
     ),
   ).toBeVisible();
@@ -2806,16 +2875,22 @@ test("daemon runtime settings and downloads work with local fixtures", async ({ 
       { exact: false },
     ),
   ).toBeVisible();
-  await runtimeSettingsPanel.getByLabel("Model Name").fill("phi4");
+  await runtimeSettingsPanel.getByRole("textbox", { name: "Model Name" }).fill("phi4");
   await runtimeSettingsPanel.getByRole("button", { name: "Save Settings" }).click();
   await expect(page.getByText("Download phi4?")).toBeVisible();
   await page.getByRole("button", { name: "Download Model" }).click();
   await expect(page.getByText("phi4 ready")).toBeVisible();
   await expect(page.getByText("phi4 downloaded. Runtime settings saved and applied.")).toBeVisible();
   expect(savedAcceptKey).toBe("right-arrow");
+  expect(savedModelRetryEnabled).toBe(false);
   expect(savedPtyCaptureMode).toBe("blocklist");
   expect(savedPtyCaptureBlocklist).toBe("vim\n/^codex$/");
   await expect(runtimeSettingsPanel.getByLabel("Suggestion Strategy")).toHaveValue("history-only");
+  await expect(
+    runtimeSettingsPanel.getByRole("checkbox", {
+      name: "Retry invalid model suggestions up to 3 times",
+    }),
+  ).not.toBeChecked();
   await expect(runtimeSettingsPanel.getByLabel("Accept Suggestion Key")).toHaveValue("right-arrow");
   await expect(runtimeSettingsPanel.getByLabel("System Prompt")).toHaveValue(
     "Always prefer concise safe commands.",
@@ -2823,8 +2898,13 @@ test("daemon runtime settings and downloads work with local fixtures", async ({ 
   await expect(page.getByText("Model warmed up in 146ms")).toBeVisible();
 
   await page.reload();
-  await expect(runtimeSettingsPanel.getByLabel("Model Name")).toHaveValue("phi4");
+  await expect(runtimeSettingsPanel.getByRole("textbox", { name: "Model Name" })).toHaveValue("phi4");
   await expect(runtimeSettingsPanel.getByLabel("Suggestion Strategy")).toHaveValue("history-only");
+  await expect(
+    runtimeSettingsPanel.getByRole("checkbox", {
+      name: "Retry invalid model suggestions up to 3 times",
+    }),
+  ).not.toBeChecked();
   await expect(runtimeSettingsPanel.getByLabel("Accept Suggestion Key")).toHaveValue("right-arrow");
   await expect(runtimeSettingsPanel.getByLabel("System Prompt")).toHaveValue(
     "Always prefer concise safe commands.",
@@ -3304,8 +3384,8 @@ test("models page manages installed and downloadable Ollama models", async ({ pa
   await expect(page.getByText("Page 2 of 2")).toBeVisible();
   await expect(page.getByText("catalog-model-25")).toBeVisible();
   await page.getByRole("textbox", { name: "Search" }).fill("gemma");
-  await expect(page.getByText("vision")).toBeVisible();
-  await expect(page.getByText("tools")).toBeVisible();
+  await expect(page.locator('.model-capability-chip[data-capability="vision"]').first()).toBeVisible();
+  await expect(page.locator('.model-capability-chip[data-capability="tools"]').first()).toBeVisible();
   await page.getByRole("button", { name: "Size" }).click();
   await page
     .getByRole("menu", { name: "Size filters" })
@@ -3328,10 +3408,10 @@ test("models page manages installed and downloadable Ollama models", async ({ pa
     gemmaOption.locator(".model-meta-chip").filter({ hasText: /^128K ctx$/ }),
   ).toBeVisible();
   await expect(
-    gemmaOption.locator(".model-capability-chip").filter({ hasText: /^vision$/ }),
+    gemmaOption.locator('.model-capability-chip[data-capability="vision"]'),
   ).toBeVisible();
   await expect(
-    gemmaOption.locator(".model-capability-chip").filter({ hasText: /^tools$/ }),
+    gemmaOption.locator('.model-capability-chip[data-capability="tools"]'),
   ).toBeVisible();
   await gemmaOption.click();
   await downloadBlock.getByRole("button", { name: "Download", exact: true }).click();

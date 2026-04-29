@@ -49,6 +49,7 @@ The Playwright suite currently covers a seeded local happy path for:
 - shared shell navigation collapse and expand behavior
 - suggestions explorer filtering
 - suggestions explorer sorting, pagination, persisted good/bad grading, structured context hover previews, effective request-model attribution for progressive rows, matching model filtering for those rows, empty-buffer placeholder rendering without hydrated text rewrites, and 2-second in-place auto-refresh for newly logged rows
+- suggestions explorer history-source popovers that can delete exact-match command-history entries without clearing the saved suggestion row
 - commands and feedback rendering
 - inspector interaction with a mocked ranking response
 - inspector rendering of retrieved local context alongside candidate scores
@@ -57,15 +58,16 @@ The Playwright suite currently covers a seeded local happy path for:
 - inspector strategy override coverage for `history-only`, `history+model`, `history-then-model`, `history-then-fast-then-model`, `fast-then-model`, and `model-only`
 - inspector dual-model form defaults for fast and slow model inputs in progressive mode
 - inspector staged progressive rendering for distinct history, fast-model, and slow-model suggestion cards
-- inspector `model-only` states for successful raw model output, rejected-output explanations when the model does not match the current buffer, empty-output fallback rendering, and surfaced model timeout diagnostics
+- inspector `model-only` states for successful raw model output, rejected-output explanations when the model does not match the current buffer, duplicate-retry and executable-lookup validation failures, empty-output fallback rendering, and surfaced model timeout diagnostics
 - model lab guardrails, default state, and reset flows
 - model lab sync against live runtime defaults for current model and saved suggestion strategy
 - model lab benchmark queueing, compact saved-run table rendering, hover/click run-info popovers, first-load saved-run refresh, replay actions from saved runs, per-run deletion for completed or failed runs, running-progress indicators, refreshed run lists, fail-fast failed-run handling with partial results, closable detail views, and stricter picker validation
 - model lab ad-hoc multi-model test results, strategy overrides, session-or-cwd context wiring, picker interactions, and clear-results flow
-- models page concurrent download, stable operation ordering during multi-download progress, in-place operation polling for multi-download progress, active-model quick switching for installed rows, tracked removal, refresh-safe operation hydration, automatic completed-job cleanup, stalled-job cancellation, dismissed cancelled jobs, page-header outdated-Ollama detection with a top-right update action, outdated-Ollama recovery from failed download jobs, available-catalog pagination, metadata-chip rendering for parameter size, context window, and capabilities, and dropdown multi-select size-filtering flows for local Ollama inventory management
+- models page concurrent download, stable operation ordering during multi-download progress, in-place operation polling for multi-download progress, active-model quick switching for installed rows, tracked removal, refresh-safe operation hydration, automatic completed-job cleanup, stalled-job cancellation, dismissed cancelled jobs, page-header outdated-Ollama detection with a top-right update action, outdated-Ollama recovery from failed download jobs, available-catalog pagination, metadata-chip rendering for parameter size, context window, and compact capability icons, and dropdown multi-select size-filtering flows for local Ollama inventory management
 - overview live activity stream updates through the browser EventSource client
 - daemon page settings save flow, shared model-picker interactions, live log rendering, and danger-zone ordering below the log section
 - daemon runtime strategy persistence through the shared settings form
+- daemon runtime model-retry toggle hydration and save flow through the shared settings form
 - daemon-side model download prompt and progress handling for Ollama-backed runtime settings
 - daemon control readiness and restart-failure handling
 - daemon path hover actions for Finder and Terminal open helpers
@@ -104,6 +106,7 @@ This now verifies both package integrity and a first slice of focused engine beh
 - filesystem retrieval for path-oriented buffers like `git add s`
 - git branch retrieval for branch-oriented buffers like `git switch fea`
 - retrieved history matches surfacing in inspect context and prompts
+- source-aware project-command retrieval that keeps `package.json`, `Makefile`, and `justfile` entries distinguishable and renders runnable command forms in the prompt
 - cwd fallback for recent commands and recent output context when a session is new or has no recorded commands yet
 - inspect responses exposing the last three command contexts, including their output excerpts
 - recent-output selection that prefers relevant failure and branch context over unrelated session noise
@@ -273,6 +276,7 @@ These checks matter because terminal UX issues often do not show up in pure unit
 
 - broader unit tests for ranking behavior beyond the new retrieval-focused cases
 - unit tests for prompt construction and suggestion cleanup
+- retry-loop unit tests for invalid model output retries, duplicate-attempt rejection, builtin-versus-external executable validation, history fallback after retry exhaustion, and persisted retry-attempt metadata
 - dedicated database migration tests
 - failure-mode integration tests for missing daemon or missing Ollama
 - race-heavy shell behavior under rapid typing beyond the seeded prefix matrix

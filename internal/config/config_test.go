@@ -69,3 +69,42 @@ func TestNormalizeSuggestStrategyRecognizesProgressiveModes(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadDefaultsModelRetryEnabled(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("LAC_STATE_DIR", filepath.Join(dir, "state"))
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if !cfg.ModelRetryEnabled {
+		t.Fatalf("expected model retry to default on")
+	}
+}
+
+func TestLoadRuntimeEnvParsesModelRetryEnabled(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := filepath.Join(dir, "state")
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatalf("mkdir state: %v", err)
+	}
+	runtimeEnvPath := filepath.Join(stateDir, "runtime.env")
+	if err := os.WriteFile(runtimeEnvPath, []byte("LAC_MODEL_RETRY_ENABLED='false'\n"), 0o644); err != nil {
+		t.Fatalf("write runtime env: %v", err)
+	}
+
+	t.Setenv("HOME", dir)
+	t.Setenv("LAC_STATE_DIR", stateDir)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if cfg.ModelRetryEnabled {
+		t.Fatalf("expected model retry to load false from runtime env")
+	}
+}

@@ -353,7 +353,7 @@ func (s *Store) InspectSummary(ctx context.Context) (Summary, error) {
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM commands`).Scan(&summary.CommandCount); err != nil {
 		return Summary{}, fmt.Errorf("count commands: %w", err)
 	}
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM suggestions`).Scan(&summary.SuggestionCount); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM suggestions WHERE returned_to_shell = 1`).Scan(&summary.SuggestionCount); err != nil {
 		return Summary{}, fmt.Errorf("count suggestions: %w", err)
 	}
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM feedback_events WHERE event_type IN ('accepted', 'executed_unchanged')`).Scan(&summary.AcceptedCount); err != nil {
@@ -378,7 +378,8 @@ func (s *Store) InspectSummary(ctx context.Context) (Summary, error) {
 				END
 			),
 			0
-		) FROM suggestions`,
+		) FROM suggestions
+		WHERE returned_to_shell = 1`,
 	).Scan(&summary.AverageModelLatency); err != nil {
 		return Summary{}, fmt.Errorf("avg latency: %w", err)
 	}

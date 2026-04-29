@@ -9,6 +9,7 @@ import { Panel } from "@/components/panel";
 import { PathHoverActions } from "@/components/path-hover-actions";
 import { buildSuggestionContextSnapshot } from "@/components/suggestion-context";
 import { SuggestionsHistoryTable } from "@/components/suggestions-history-table";
+import { formatRetrievedProjectTasks } from "@/lib/retrieved-project-tasks";
 import type {
   SuggestionOutcome,
   SuggestionQualityFilter,
@@ -504,8 +505,20 @@ export function SuggestionsPageShell({
                   <dd>{selectedEntry.row.sessionId}</dd>
                 </div>
                 <div>
+                  <dt>Request ID</dt>
+                  <dd>{selectedEntry.row.requestId || "n/a"}</dd>
+                </div>
+                <div>
                   <dt>Buffer</dt>
                   <dd><code>{selectedEntry.row.buffer}</code></dd>
+                </div>
+                <div>
+                  <dt>Attempt</dt>
+                  <dd>{selectedEntry.row.attemptIndex > 0 ? selectedEntry.row.attemptIndex : "final"}</dd>
+                </div>
+                <div>
+                  <dt>Returned To Shell</dt>
+                  <dd>{selectedEntry.row.returnedToShell ? "yes" : "no"}</dd>
                 </div>
                 <div>
                   <dt>Outcome</dt>
@@ -537,6 +550,10 @@ export function SuggestionsPageShell({
                   <dd>{selectedEntry.snapshot.structuredContext.request.strategy || "n/a"}</dd>
                 </div>
                 <div>
+                  <dt>Validation State</dt>
+                  <dd>{selectedEntry.row.validationState || "n/a"}</dd>
+                </div>
+                <div>
                   <dt>Branch</dt>
                   <dd>{selectedEntry.snapshot.structuredContext.request.branch || "n/a"}</dd>
                 </div>
@@ -556,6 +573,13 @@ export function SuggestionsPageShell({
                   </dd>
                 </div>
               </dl>
+            </div>
+
+            <div className="detail-block">
+              <h3>Validation</h3>
+              <pre className="code-block suggestion-sidebar-pre">
+                {selectedEntry.row.validationFailuresJson || "No validation failures recorded."}
+              </pre>
             </div>
 
             <div className="detail-block">
@@ -631,11 +655,11 @@ export function SuggestionsPageShell({
                   <dd>{selectedEntry.snapshot.structuredContext.retrievedContext.gitBranchMatches.length}</dd>
                 </div>
                 <div>
-                  <dt>Project Tasks</dt>
+                  <dt>Project Commands</dt>
                   <dd>{selectedEntry.snapshot.structuredContext.retrievedContext.projectTasks.length}</dd>
                 </div>
                 <div>
-                  <dt>Task Matches</dt>
+                  <dt>Command Matches</dt>
                   <dd>{selectedEntry.snapshot.structuredContext.retrievedContext.projectTaskMatches.length}</dd>
                 </div>
               </dl>
@@ -654,10 +678,10 @@ export function SuggestionsPageShell({
                     ? `branch matches:\n- ${selectedEntry.snapshot.structuredContext.retrievedContext.gitBranchMatches.join("\n- ")}`
                     : "",
                   selectedEntry.snapshot.structuredContext.retrievedContext.projectTasks.length
-                    ? `project tasks:\n- ${selectedEntry.snapshot.structuredContext.retrievedContext.projectTasks.join("\n- ")}`
+                    ? `project commands:\n${formatRetrievedProjectTasks(selectedEntry.snapshot.structuredContext.retrievedContext.projectTasks)}`
                     : "",
                   selectedEntry.snapshot.structuredContext.retrievedContext.projectTaskMatches.length
-                    ? `task matches:\n- ${selectedEntry.snapshot.structuredContext.retrievedContext.projectTaskMatches.join("\n- ")}`
+                    ? `command matches:\n${formatRetrievedProjectTasks(selectedEntry.snapshot.structuredContext.retrievedContext.projectTaskMatches)}`
                     : "",
                 ].filter(Boolean).join("\n\n") || "No retrieved values recorded."}
               </pre>

@@ -24,6 +24,7 @@ const DEFAULTS = {
   LAC_FAST_MODEL_NAME: "",
   LAC_MODEL_BASE_URL: "http://127.0.0.1:11434",
   LAC_MODEL_KEEP_ALIVE: "5m",
+  LAC_MODEL_RETRY_ENABLED: "true",
   LAC_SUGGEST_STRATEGY: "history+model",
   LAC_SYSTEM_PROMPT_STATIC: DEFAULT_SYSTEM_PROMPT_STATIC,
   LAC_SUGGEST_TIMEOUT_MS: "1200",
@@ -52,6 +53,17 @@ export function normalizePtyCaptureMode(value: string | undefined): PtyCaptureMo
 
 export function normalizeAcceptSuggestionKey(value: string | undefined): AcceptSuggestionKey {
   return value?.trim().toLowerCase() === "right-arrow" ? "right-arrow" : "tab";
+}
+
+export function normalizeBooleanSetting(value: string | undefined, fallback = false) {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on") {
+    return true;
+  }
+  if (normalized === "0" || normalized === "false" || normalized === "no" || normalized === "off") {
+    return false;
+  }
+  return fallback;
 }
 
 export function normalizePtyCaptureCommandList(value: string | undefined) {
@@ -147,6 +159,10 @@ export function getResolvedRuntimeSettings(options?: RuntimeSettingsResolveOptio
     modelBaseUrl: runtimeValue("LAC_MODEL_BASE_URL") || DEFAULTS.LAC_MODEL_BASE_URL,
     modelKeepAlive:
       runtimeValue("LAC_MODEL_KEEP_ALIVE") || DEFAULTS.LAC_MODEL_KEEP_ALIVE,
+    modelRetryEnabled: normalizeBooleanSetting(
+      runtimeValue("LAC_MODEL_RETRY_ENABLED") || DEFAULTS.LAC_MODEL_RETRY_ENABLED,
+      true,
+    ),
     suggestStrategy: normalizeSuggestStrategy(
       runtimeValue("LAC_SUGGEST_STRATEGY") || DEFAULTS.LAC_SUGGEST_STRATEGY,
     ),
@@ -178,6 +194,7 @@ const SAVED_KEYS = [
   "LAC_FAST_MODEL_NAME",
   "LAC_MODEL_BASE_URL",
   "LAC_MODEL_KEEP_ALIVE",
+  "LAC_MODEL_RETRY_ENABLED",
   "LAC_SUGGEST_STRATEGY",
   "LAC_SYSTEM_PROMPT_STATIC",
   "LAC_SOCKET_PATH",

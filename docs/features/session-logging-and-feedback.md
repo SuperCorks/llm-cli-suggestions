@@ -32,9 +32,12 @@ Each generated suggestion records:
 - source
 - latency
 - model name
+- request id, attempt index, returned-to-shell flag, validation state, and validation-failure JSON for model retry analysis
 - context metadata
 - the exact prompt snapshot used for the decision
-- structured context JSON including request fields, recent commands, last-command context, selected recent output snippets, and retrieved values such as local project tasks
+- structured context JSON including request fields, recent commands, last-command context, selected recent output snippets, retrieved values such as local project tasks, and the retry-attempt chain when the daemon had to re-prompt the model
+
+When model retries are enabled, the daemon stores every model attempt as its own suggestion row before storing the final visible winner. Failed retry attempts stay available for later training or manual review, while overview-style runtime metrics count only rows marked as returned to the shell so retry noise does not distort acceptance reporting.
 
 ### Feedback Events
 

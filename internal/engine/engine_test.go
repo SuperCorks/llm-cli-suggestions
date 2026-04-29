@@ -85,6 +85,7 @@ func TestSuggestAllowsEmptyBufferWithLastCommandContext(t *testing.T) {
 		"qwen3-coder:latest",
 		"http://127.0.0.1:11434",
 		"5m",
+		true,
 		config.SuggestStrategyModelOnly,
 		"",
 		2*time.Second,
@@ -140,8 +141,8 @@ func TestSuggestAllowsEmptyBufferWithLastCommandContext(t *testing.T) {
 	if strings.Contains(observedPrompt, "git_branch_matches:") {
 		t.Fatalf("did not expect branch matches for empty buffer, got %q", observedPrompt)
 	}
-	if strings.Contains(observedPrompt, "project_tasks:") {
-		t.Fatalf("did not expect project task list for empty buffer, got %q", observedPrompt)
+	if strings.Contains(observedPrompt, "package.json scripts:") {
+		t.Fatalf("did not expect project command list for empty buffer, got %q", observedPrompt)
 	}
 	if strings.Contains(observedPrompt, "current_token:") && !strings.Contains(observedPrompt, "current_token: \n") {
 		t.Fatalf("expected empty current_token, got %q", observedPrompt)
@@ -161,13 +162,13 @@ func TestSuggestAllowsEmptyBufferWithLastCommandContext(t *testing.T) {
 	if !strings.HasSuffix(observedPrompt, emptyBufferGuidance+"\n") {
 		t.Fatalf("expected empty-buffer guidance at end of prompt, got %q", observedPrompt)
 	}
-	if strings.Contains(observedPrompt, "The returned command must begin exactly with the current buffer.") == false {
+	if strings.Contains(observedPrompt, "Begin the returned command with the current buffer exactly as given.") == false {
 		t.Fatalf("expected base system prompt in prompt, got %q", observedPrompt)
 	}
 	if strings.Contains(observedPrompt, "cwd: /tmp/project") == false {
 		t.Fatalf("expected cwd in prompt, got %q", observedPrompt)
 	}
-	if strings.Contains(observedPrompt, "current branch: main") == false {
+	if strings.Contains(observedPrompt, "current_branch: main") == false {
 		t.Fatalf("expected branch in prompt, got %q", observedPrompt)
 	}
 	if strings.Contains(observedPrompt, "repo_root: /tmp/project") == false {
@@ -212,7 +213,7 @@ func TestInspectIncludesPathRetrievedContext(t *testing.T) {
 	if !containsString(response.RetrievedContext.PathMatches, "src/") {
 		t.Fatalf("expected src/ in path matches, got %#v", response.RetrievedContext.PathMatches)
 	}
-	if !strings.Contains(response.Prompt, "path_matches:") {
+	if !strings.Contains(response.Prompt, "path matches:") {
 		t.Fatalf("expected prompt to include path matches, got %q", response.Prompt)
 	}
 }
@@ -268,11 +269,14 @@ func TestInspectIncludesProjectTasksInPromptWithoutTaskSpecificBuffer(t *testing
 		t.Fatalf("inspect: %v", err)
 	}
 
-	if !containsString(response.RetrievedContext.ProjectTasks, "dev") {
+	if !containsProjectTaskName(response.RetrievedContext.ProjectTasks, "dev") {
 		t.Fatalf("expected dev in project tasks, got %#v", response.RetrievedContext.ProjectTasks)
 	}
-	if !strings.Contains(response.Prompt, "project_tasks:") {
+	if !strings.Contains(response.Prompt, "----- AVAILABLE PROJECT COMMANDS -----") {
 		t.Fatalf("expected prompt to include project tasks, got %q", response.Prompt)
+	}
+	if !strings.Contains(response.Prompt, "package.json scripts:\n- npm run build\n- npm run dev") {
+		t.Fatalf("expected prompt to include runnable package scripts, got %q", response.Prompt)
 	}
 }
 
@@ -303,10 +307,30 @@ func TestLoadProjectTasksIncludesExpandedPackageScriptList(t *testing.T) {
 	if len(projectTasks) != len(scripts) {
 		t.Fatalf("expected %d project tasks, got %d (%#v)", len(scripts), len(projectTasks), projectTasks)
 	}
-	for _, want := range []string{"build", "dev", "lint", "start", "test", "task-39"} {
-		if !containsString(projectTasks, want) {
+	for _, want := range []string{"npm run build", "npm run dev", "npm run lint", "npm run start", "npm run test", "npm run task-39"} {
+		if !containsProjectTaskCommand(projectTasks, want) {
 			t.Fatalf("expected project tasks to include %q, got %#v", want, projectTasks)
 		}
+	}
+}
+
+func TestLoadProjectTasksPreservesSourceAcrossTaskProviders(t *testing.T) {
+	t.Parallel()
+
+	cwd := t.TempDir()
+	writeFile(t, filepath.Join(cwd, "package.json"), `{"scripts":{"dev":"next dev"}}`)
+	writeFile(t, filepath.Join(cwd, "Makefile"), "build:\n\t@echo build\n")
+	writeFile(t, filepath.Join(cwd, "justfile"), "test:\n  echo test\n")
+
+	projectTasks := loadProjectTasks(cwd, cwd)
+	if !containsProjectTask(projectTasks, projectTaskSourcePackageScript, "dev", "npm run dev") {
+		t.Fatalf("expected package script task, got %#v", projectTasks)
+	}
+	if !containsProjectTask(projectTasks, projectTaskSourceMakeTarget, "build", "make build") {
+		t.Fatalf("expected make target task, got %#v", projectTasks)
+	}
+	if !containsProjectTask(projectTasks, projectTaskSourceJustRecipe, "test", "just test") {
+		t.Fatalf("expected just recipe task, got %#v", projectTasks)
 	}
 }
 
@@ -351,7 +375,7 @@ func TestInspectIncludesHistoryMatchesInRetrievedContext(t *testing.T) {
 	if !containsString(response.RetrievedContext.HistoryMatches, "git checkout feature/demo") {
 		t.Fatalf("expected history matches to include feature/demo, got %#v", response.RetrievedContext.HistoryMatches)
 	}
-	if !strings.Contains(response.Prompt, "matching_history:") {
+	if !strings.Contains(response.Prompt, "history matches:") {
 		t.Fatalf("expected prompt to include matching history, got %q", response.Prompt)
 	}
 }
@@ -562,7 +586,7 @@ func TestBuildPromptIncludesRecentOutputContext(t *testing.T) {
 		api.InspectRetrievedContext{CurrentToken: "fea"},
 	)
 
-	if !strings.Contains(prompt, "recent_context:") {
+	if !strings.Contains(prompt, "----- PAST COMMANDS -----\nrecent_context:") {
 		t.Fatalf("expected recent_context block, got %q", prompt)
 	}
 	if !strings.Contains(prompt, "feature/demo") {
@@ -589,7 +613,7 @@ func TestBuildPromptPrependsStaticSystemPrompt(t *testing.T) {
 		api.InspectRetrievedContext{},
 	)
 
-	if !strings.HasPrefix(prompt, "Always prefer conservative completions.\n\ncwd: ") {
+	if !strings.HasPrefix(prompt, "----- CORE INSTRUCTIONS -----\nAlways prefer conservative completions.\n\n----- TERMINAL CONTEXT -----\ncwd: ") {
 		t.Fatalf("expected custom system prompt prefix, got %q", prompt)
 	}
 }
@@ -614,7 +638,7 @@ func TestBuildPromptDelimitsCurrentBuffer(t *testing.T) {
 		api.InspectRetrievedContext{},
 	)
 
-	expectedBlock := "\ncurrent_buffer_begin\n" + buffer + "\ncurrent_buffer_end\n"
+	expectedBlock := "----- CURRENT BUFFER -----\ncurrent_buffer_begin\n" + buffer + "\ncurrent_buffer_end\n"
 	if !strings.Contains(prompt, expectedBlock) {
 		t.Fatalf("expected prompt to delimit current buffer, got %q", prompt)
 	}
@@ -648,7 +672,7 @@ func TestBuildPromptUsesDefaultSystemPromptWhenUnset(t *testing.T) {
 		api.InspectRetrievedContext{},
 	)
 
-	if !strings.HasPrefix(prompt, config.DefaultSystemPromptStatic+"\n\ncwd: ") {
+	if !strings.HasPrefix(prompt, "----- CORE INSTRUCTIONS -----\n"+config.DefaultSystemPromptStatic+"\n\n----- TERMINAL CONTEXT -----\ncwd: ") {
 		t.Fatalf("expected default system prompt prefix, got %q", prompt)
 	}
 }
@@ -845,6 +869,7 @@ func TestInspectUsesEngineDefaultStrategyWhenRequestStrategyEmpty(t *testing.T) 
 		"qwen2.5-coder:7b",
 		"http://127.0.0.1:11434",
 		"5m",
+		true,
 		config.SuggestStrategyModelOnly,
 		"",
 		0,
@@ -919,6 +944,7 @@ func TestInspectProgressiveStrategiesInvokeModelEvenWhenHistoryTrusted(t *testin
 				"qwen3-coder:latest",
 				"http://127.0.0.1:11434",
 				"5m",
+				true,
 				tc.strategy,
 				"",
 				2*time.Second,
@@ -980,6 +1006,7 @@ func TestInspectSurfacesModelTimeoutError(t *testing.T) {
 		"qwen3-coder:latest",
 		"http://127.0.0.1:11434",
 		"5m",
+		true,
 		config.SuggestStrategyModelOnly,
 		"",
 		2*time.Second,
@@ -1027,6 +1054,7 @@ func TestInspectSurfacesRejectedModelOutput(t *testing.T) {
 		"qwen3-coder:latest",
 		"http://127.0.0.1:11434",
 		"5m",
+		true,
 		config.SuggestStrategyModelOnly,
 		"",
 		2*time.Second,
@@ -1050,11 +1078,354 @@ func TestInspectSurfacesRejectedModelOutput(t *testing.T) {
 	if response.CleanedModelOutput != "" {
 		t.Fatalf("expected cleaned model output to be empty, got %q", response.CleanedModelOutput)
 	}
-	if !strings.Contains(response.ModelError, "did not start with the current buffer") {
+	if !strings.Contains(response.ModelError, "did not begin with the current buffer") {
 		t.Fatalf("expected cleaned-output model error, got %q", response.ModelError)
 	}
 	if strings.Contains(response.ModelError, `git commit -a -m "feat(console)"`) {
 		t.Fatalf("expected model error to avoid repeating the raw buffer inline, got %q", response.ModelError)
+	}
+}
+
+func TestInspectRetriesInvalidModelOutputUntilValid(t *testing.T) {
+	t.Parallel()
+
+	store, err := db.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	callCount := 0
+	var prompts []string
+	engine := NewWithSystemPrompt(
+		store,
+		stubModelClient{suggest: func(ctx context.Context, prompt string) (model.SuggestResult, error) {
+			callCount++
+			prompts = append(prompts, prompt)
+			if callCount == 1 {
+				return model.SuggestResult{Response: "1. git push origin"}, nil
+			}
+			return model.SuggestResult{Response: "git status"}, nil
+		}},
+		"qwen3-coder:latest",
+		"http://127.0.0.1:11434",
+		"5m",
+		true,
+		config.SuggestStrategyModelOnly,
+		"",
+		2*time.Second,
+	)
+
+	response, err := engine.Inspect(context.Background(), api.InspectRequest{
+		SessionID: "test-session",
+		Buffer:    "git st",
+		Strategy:  config.SuggestStrategyModelOnly,
+	})
+	if err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+
+	if callCount != 2 {
+		t.Fatalf("expected 2 model attempts, got %d", callCount)
+	}
+	if response.Winner == nil || response.Winner.Command != "git status" {
+		t.Fatalf("expected git status winner, got %#v", response.Winner)
+	}
+	if len(prompts) < 2 || !strings.Contains(prompts[1], "previous_invalid_suggestions:") {
+		t.Fatalf("expected retry prompt to include invalid suggestion summary, got %#v", prompts)
+	}
+	if !strings.Contains(prompts[1], `"1. git push origin" invalid:`) {
+		t.Fatalf("expected retry prompt to include prior invalid output, got %q", prompts[1])
+	}
+}
+
+func TestInspectStopsAfterThreeInvalidModelAttempts(t *testing.T) {
+	t.Parallel()
+
+	store, err := db.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	callCount := 0
+	engine := NewWithSystemPrompt(
+		store,
+		stubModelClient{suggest: func(ctx context.Context, prompt string) (model.SuggestResult, error) {
+			callCount++
+			return model.SuggestResult{Response: "status --short"}, nil
+		}},
+		"qwen3-coder:latest",
+		"http://127.0.0.1:11434",
+		"5m",
+		true,
+		config.SuggestStrategyModelOnly,
+		"",
+		2*time.Second,
+	)
+
+	response, err := engine.Inspect(context.Background(), api.InspectRequest{
+		SessionID: "test-session",
+		Buffer:    "git st",
+		Strategy:  config.SuggestStrategyModelOnly,
+	})
+	if err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+
+	if callCount != 3 {
+		t.Fatalf("expected 3 model attempts, got %d", callCount)
+	}
+	if response.Winner != nil {
+		t.Fatalf("expected no winner, got %#v", response.Winner)
+	}
+	if !strings.Contains(response.ModelError, "repeated a previously rejected suggestion") {
+		t.Fatalf("expected duplicate retry failure, got %q", response.ModelError)
+	}
+}
+
+func TestInspectRejectsMissingExecutableForSimpleCommands(t *testing.T) {
+	t.Parallel()
+
+	store, err := db.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	engine := NewWithSystemPrompt(
+		store,
+		stubModelClient{suggest: func(ctx context.Context, prompt string) (model.SuggestResult, error) {
+			return model.SuggestResult{Response: "zzmissingcmd --help"}, nil
+		}},
+		"qwen3-coder:latest",
+		"http://127.0.0.1:11434",
+		"5m",
+		false,
+		config.SuggestStrategyModelOnly,
+		"",
+		2*time.Second,
+	)
+
+	response, err := engine.Inspect(context.Background(), api.InspectRequest{
+		SessionID: "test-session",
+		Buffer:    "zzm",
+		Strategy:  config.SuggestStrategyModelOnly,
+	})
+	if err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+
+	if response.Winner != nil {
+		t.Fatalf("expected no winner, got %#v", response.Winner)
+	}
+	if !strings.Contains(response.ModelError, "daemon PATH") {
+		t.Fatalf("expected executable lookup failure, got %q", response.ModelError)
+	}
+}
+
+func TestInspectAllowsBuiltinSuggestionsWithoutExecutableLookup(t *testing.T) {
+	t.Parallel()
+
+	store, err := db.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	engine := NewWithSystemPrompt(
+		store,
+		stubModelClient{suggest: func(ctx context.Context, prompt string) (model.SuggestResult, error) {
+			return model.SuggestResult{Response: "cd apps/console"}, nil
+		}},
+		"qwen3-coder:latest",
+		"http://127.0.0.1:11434",
+		"5m",
+		false,
+		config.SuggestStrategyModelOnly,
+		"",
+		2*time.Second,
+	)
+
+	response, err := engine.Inspect(context.Background(), api.InspectRequest{
+		SessionID: "test-session",
+		Buffer:    "cd ",
+		Strategy:  config.SuggestStrategyModelOnly,
+	})
+	if err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+
+	if response.Winner == nil || response.Winner.Command != "cd apps/console" {
+		t.Fatalf("expected builtin winner, got %#v", response.Winner)
+	}
+}
+
+func TestSuggestFallsBackToHistoryWhenModelRetriesExhaust(t *testing.T) {
+	t.Parallel()
+
+	store, err := db.NewStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	recordTestCommand(t, store, db.CommandRecord{
+		SessionID:    "test-session",
+		Command:      "git status",
+		CWD:          "/tmp/project",
+		RepoRoot:     "/tmp/project",
+		Branch:       "main",
+		ExitCode:     0,
+		DurationMS:   50,
+		StartedAtMS:  1000,
+		FinishedAtMS: 1050,
+	})
+
+	engine := NewWithSystemPrompt(
+		store,
+		stubModelClient{suggest: func(ctx context.Context, prompt string) (model.SuggestResult, error) {
+			return model.SuggestResult{Response: "status --short"}, nil
+		}},
+		"qwen3-coder:latest",
+		"http://127.0.0.1:11434",
+		"5m",
+		true,
+		config.SuggestStrategyHistoryThenModel,
+		"",
+		2*time.Second,
+	)
+
+	response, err := engine.Suggest(context.Background(), api.SuggestRequest{
+		SessionID:    "test-session",
+		Buffer:       "git st",
+		CWD:          "/tmp/project",
+		RepoRoot:     "/tmp/project",
+		Branch:       "main",
+		LastExitCode: 0,
+		Strategy:     config.SuggestStrategyHistoryThenModel,
+	})
+	if err != nil {
+		t.Fatalf("suggest: %v", err)
+	}
+
+	if response.Suggestion != "git status" {
+		t.Fatalf("expected history fallback winner, got %#v", response)
+	}
+	if response.Source != "history" {
+		t.Fatalf("expected history source, got %#v", response)
+	}
+}
+
+func TestSuggestPersistsModelRetryAttempts(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	store, err := db.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	callCount := 0
+	engine := NewWithSystemPrompt(
+		store,
+		stubModelClient{suggest: func(ctx context.Context, prompt string) (model.SuggestResult, error) {
+			callCount++
+			if callCount == 1 {
+				return model.SuggestResult{Response: "1. git push origin"}, nil
+			}
+			return model.SuggestResult{Response: "git status"}, nil
+		}},
+		"qwen3-coder:latest",
+		"http://127.0.0.1:11434",
+		"5m",
+		true,
+		config.SuggestStrategyModelOnly,
+		"",
+		2*time.Second,
+	)
+
+	response, err := engine.Suggest(context.Background(), api.SuggestRequest{
+		SessionID:    "test-session",
+		Buffer:       "git st",
+		CWD:          "/tmp/project",
+		RepoRoot:     "/tmp/project",
+		Branch:       "main",
+		LastExitCode: 0,
+		Strategy:     config.SuggestStrategyModelOnly,
+	})
+	if err != nil {
+		t.Fatalf("suggest: %v", err)
+	}
+	if response.Suggestion != "git status" {
+		t.Fatalf("expected final suggestion git status, got %#v", response)
+	}
+
+	rawDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open raw sqlite: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = rawDB.Close()
+	})
+
+	rows, err := rawDB.QueryContext(
+		context.Background(),
+		`SELECT request_id, attempt_index, returned_to_shell, validation_state, suggestion_text
+		 FROM suggestions
+		 ORDER BY id ASC`,
+	)
+	if err != nil {
+		t.Fatalf("query suggestions: %v", err)
+	}
+	defer rows.Close()
+
+	type persistedRow struct {
+		requestID       string
+		attemptIndex    int
+		returnedToShell int
+		validationState string
+		suggestionText  string
+	}
+	var persisted []persistedRow
+	for rows.Next() {
+		var row persistedRow
+		if err := rows.Scan(&row.requestID, &row.attemptIndex, &row.returnedToShell, &row.validationState, &row.suggestionText); err != nil {
+			t.Fatalf("scan suggestion row: %v", err)
+		}
+		persisted = append(persisted, row)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate suggestion rows: %v", err)
+	}
+
+	if len(persisted) != 3 {
+		t.Fatalf("expected 3 persisted rows, got %#v", persisted)
+	}
+	if persisted[0].attemptIndex != 1 || persisted[0].validationState != "failed" {
+		t.Fatalf("expected first failed attempt row, got %#v", persisted[0])
+	}
+	if persisted[1].attemptIndex != 2 || persisted[1].validationState != "passed" {
+		t.Fatalf("expected second passed attempt row, got %#v", persisted[1])
+	}
+	if persisted[2].attemptIndex != 0 || persisted[2].returnedToShell != 1 || persisted[2].validationState != "passed" {
+		t.Fatalf("expected final returned row, got %#v", persisted[2])
+	}
+	if persisted[0].requestID == "" || persisted[0].requestID != persisted[1].requestID || persisted[1].requestID != persisted[2].requestID {
+		t.Fatalf("expected all rows to share request id, got %#v", persisted)
 	}
 }
 
@@ -1090,6 +1461,7 @@ func TestInspectFallsBackToRecentQuotedGitCommitContext(t *testing.T) {
 		"qwen3-coder:latest",
 		"http://127.0.0.1:11434",
 		"5m",
+		true,
 		config.SuggestStrategyModelOnly,
 		"",
 		2*time.Second,
@@ -1150,6 +1522,7 @@ func TestInspectUsesLongerTimeoutThanLiveSuggestions(t *testing.T) {
 		"qwen3-coder:latest",
 		"http://127.0.0.1:11434",
 		"5m",
+		true,
 		config.SuggestStrategyModelOnly,
 		"",
 		2*time.Second,
@@ -1190,6 +1563,7 @@ func TestInspectDoesNotCreateSession(t *testing.T) {
 		"qwen3-coder:latest",
 		"http://127.0.0.1:11434",
 		"5m",
+		true,
 		"history+model",
 		"",
 		5*time.Second,
@@ -1236,7 +1610,7 @@ func newTestEngine(t testing.TB) *Engine {
 		_ = store.Close()
 	})
 
-	return NewWithSystemPrompt(store, nil, "qwen2.5-coder:7b", "http://127.0.0.1:11434", "5m", "history+model", "", 0)
+	return NewWithSystemPrompt(store, nil, "qwen2.5-coder:7b", "http://127.0.0.1:11434", "5m", true, "history+model", "", 0)
 }
 
 func initGitRepo(t testing.TB, root string) {
@@ -1279,6 +1653,33 @@ func mustMkdir(t testing.TB, path string) {
 func containsString(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func containsProjectTask(tasks []api.InspectProjectTask, source, name, command string) bool {
+	for _, task := range tasks {
+		if task.Source == source && task.Name == name && task.Command == command {
+			return true
+		}
+	}
+	return false
+}
+
+func containsProjectTaskCommand(tasks []api.InspectProjectTask, want string) bool {
+	for _, task := range tasks {
+		if task.Command == want {
+			return true
+		}
+	}
+	return false
+}
+
+func containsProjectTaskName(tasks []api.InspectProjectTask, want string) bool {
+	for _, task := range tasks {
+		if task.Name == want {
 			return true
 		}
 	}

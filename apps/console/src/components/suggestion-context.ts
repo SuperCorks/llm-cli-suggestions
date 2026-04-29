@@ -1,4 +1,5 @@
-import type { SuggestionRow } from "@/lib/types";
+import { normalizeRetrievedProjectTasks } from "@/lib/retrieved-project-tasks";
+import type { RetrievedProjectTask, SuggestionRow } from "@/lib/types";
 
 export type PersistedSuggestionContext = {
   request: {
@@ -45,8 +46,8 @@ export type PersistedSuggestionContext = {
     historyMatches: string[];
     pathMatches: string[];
     gitBranchMatches: string[];
-    projectTasks: string[];
-    projectTaskMatches: string[];
+    projectTasks: RetrievedProjectTask[];
+    projectTaskMatches: RetrievedProjectTask[];
   };
 };
 
@@ -225,8 +226,8 @@ export function buildSuggestionContextSnapshot(row: SuggestionRow): SuggestionCo
           historyMatches: normalizeStringArray(pickValue(retrievedContext, "historyMatches", "history_matches")),
           pathMatches: normalizeStringArray(pickValue(retrievedContext, "pathMatches", "path_matches")),
           gitBranchMatches: normalizeStringArray(pickValue(retrievedContext, "gitBranchMatches", "git_branch_matches")),
-          projectTasks: normalizeStringArray(pickValue(retrievedContext, "projectTasks", "project_tasks")),
-          projectTaskMatches: normalizeStringArray(pickValue(retrievedContext, "projectTaskMatches", "project_task_matches")),
+          projectTasks: normalizeRetrievedProjectTasks(pickValue(retrievedContext, "projectTasks", "project_tasks")),
+          projectTaskMatches: normalizeRetrievedProjectTasks(pickValue(retrievedContext, "projectTaskMatches", "project_task_matches")),
         },
       };
     } catch {
@@ -286,7 +287,7 @@ export function buildSuggestionContextSnapshot(row: SuggestionRow): SuggestionCo
       ? `${structuredContext.recentCommands.length} recent`
       : "",
     structuredContext.retrievedContext.projectTasks.length > 0
-      ? `${structuredContext.retrievedContext.projectTasks.length} tasks`
+      ? `${structuredContext.retrievedContext.projectTasks.length} commands`
       : "",
     structuredContext.retrievedContext.historyMatches.length > 0
       ? `${structuredContext.retrievedContext.historyMatches.length} history`

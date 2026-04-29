@@ -85,13 +85,19 @@ type InspectCandidate struct {
 	Breakdown     InspectCandidateBreakdown `json:"breakdown"`
 }
 
+type InspectProjectTask struct {
+	Source  string `json:"source"`
+	Name    string `json:"name"`
+	Command string `json:"command"`
+}
+
 type InspectRetrievedContext struct {
-	CurrentToken       string   `json:"current_token"`
-	HistoryMatches     []string `json:"history_matches"`
-	PathMatches        []string `json:"path_matches"`
-	GitBranchMatches   []string `json:"git_branch_matches"`
-	ProjectTasks       []string `json:"project_tasks"`
-	ProjectTaskMatches []string `json:"project_task_matches"`
+	CurrentToken       string               `json:"current_token"`
+	HistoryMatches     []string             `json:"history_matches"`
+	PathMatches        []string             `json:"path_matches"`
+	GitBranchMatches   []string             `json:"git_branch_matches"`
+	ProjectTasks       []InspectProjectTask `json:"project_tasks"`
+	ProjectTaskMatches []InspectProjectTask `json:"project_task_matches"`
 }
 
 type InspectRecentOutputContext struct {

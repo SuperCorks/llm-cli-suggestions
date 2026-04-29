@@ -352,6 +352,7 @@ func runEndToEndAttempt(
 		modelName,
 		cfg.ModelBaseURL,
 		keepAliveForPhase(cfg, phase),
+		true,
 		cfg.Strategy,
 		cfg.SystemPrompt,
 		cfg.Timeout,

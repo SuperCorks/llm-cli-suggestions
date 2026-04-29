@@ -18,6 +18,7 @@ type Config struct {
 	ModelName          string
 	FastModelName      string
 	ModelKeepAlive     string
+	ModelRetryEnabled  bool
 	SuggestStrategy    string
 	SystemPromptStatic string
 	SuggestTimeout     time.Duration
@@ -31,14 +32,17 @@ const (
 	SuggestStrategyHistoryThenFastThenModel = "history-then-fast-then-model"
 	SuggestStrategyFastThenModel            = "fast-then-model"
 	SuggestStrategyModelOnly                = "model-only"
-	DefaultSystemPromptStatic               = `You are a shell autosuggestion engine.
-Complete the current shell command with the single most likely next command.
-Return exactly one shell command on one line.
-Do not include markdown, backticks, bullets, labels, colons, explanations, comments, cwd annotations, or placeholders.
-Never invent explanatory suffixes like paths, notes, or metadata.
-The returned command must begin exactly with the current buffer.
+	DefaultSystemPromptStatic               = `You are a shell autosuggestion engine for an interactive terminal.
+Complete the user's current shell command with the single most likely next command.
 
-examples:
+Output contract:
+- Return exactly one shell command on one line.
+- Begin the returned command with the current buffer exactly as given.
+- Use the surrounding terminal context only as hints.
+- If there is no high-confidence completion, return an empty response.
+- Do not return markdown, bullets, labels, explanations, comments, placeholders, or metadata.
+
+Examples:
 buffer: git st
 command: git status
 buffer: npm run d
@@ -66,6 +70,11 @@ func Load() (Config, error) {
 	modelName := firstNonEmpty(os.Getenv("LAC_MODEL_NAME"), runtimeValues["LAC_MODEL_NAME"], "qwen2.5-coder:7b")
 	fastModelName := firstNonEmpty(os.Getenv("LAC_FAST_MODEL_NAME"), runtimeValues["LAC_FAST_MODEL_NAME"])
 	modelKeepAlive := firstNonEmpty(os.Getenv("LAC_MODEL_KEEP_ALIVE"), runtimeValues["LAC_MODEL_KEEP_ALIVE"], "5m")
+	modelRetryEnabled := firstNonEmptyBool(
+		os.Getenv("LAC_MODEL_RETRY_ENABLED"),
+		runtimeValues["LAC_MODEL_RETRY_ENABLED"],
+		true,
+	)
 	suggestStrategy := NormalizeSuggestStrategy(firstNonEmpty(
 		os.Getenv("LAC_SUGGEST_STRATEGY"),
 		runtimeValues["LAC_SUGGEST_STRATEGY"],
@@ -87,6 +96,7 @@ func Load() (Config, error) {
 		ModelName:          modelName,
 		FastModelName:      fastModelName,
 		ModelKeepAlive:     modelKeepAlive,
+		ModelRetryEnabled:  modelRetryEnabled,
 		SuggestStrategy:    suggestStrategy,
 		SystemPromptStatic: systemPromptStatic,
 		SuggestTimeout:     time.Duration(suggestTimeoutMS) * time.Millisecond,
@@ -138,6 +148,19 @@ func firstNonEmptyInt(primary, secondary string, fallback int) int {
 		parsed, err := strconv.Atoi(value)
 		if err == nil {
 			return parsed
+		}
+	}
+	return fallback
+}
+
+func firstNonEmptyBool(primary, secondary string, fallback bool) bool {
+	for _, value := range []string{primary, secondary} {
+		normalized := strings.TrimSpace(strings.ToLower(value))
+		switch normalized {
+		case "1", "true", "yes", "on", "enabled":
+			return true
+		case "0", "false", "no", "off", "disabled":
+			return false
 		}
 	}
 	return fallback

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 import {
   normalizeAcceptSuggestionKey,
+  normalizeBooleanSetting,
   normalizePtyCaptureCommandList,
   normalizePtyCaptureMode,
 } from "@/lib/server/config";
@@ -13,6 +14,9 @@ export const dynamic = "force-dynamic";
 export async function POST(request: NextRequest) {
   const payload = (await request.json()) as Record<string, string>;
   const normalizedAcceptKey = normalizeAcceptSuggestionKey(payload.LAC_ACCEPT_KEY);
+  const normalizedModelRetryEnabled = String(
+    normalizeBooleanSetting(payload.LAC_MODEL_RETRY_ENABLED, true),
+  );
   const normalizedMode = normalizePtyCaptureMode(payload.LAC_PTY_CAPTURE_MODE);
   const normalizedAllowlist = normalizePtyCaptureCommandList(payload.LAC_PTY_CAPTURE_ALLOWLIST);
   const normalizedBlocklist = normalizePtyCaptureCommandList(payload.LAC_PTY_CAPTURE_BLOCKLIST);
@@ -21,6 +25,7 @@ export async function POST(request: NextRequest) {
     LAC_FAST_MODEL_NAME: payload.LAC_FAST_MODEL_NAME,
     LAC_MODEL_BASE_URL: payload.LAC_MODEL_BASE_URL,
     LAC_MODEL_KEEP_ALIVE: payload.LAC_MODEL_KEEP_ALIVE,
+    LAC_MODEL_RETRY_ENABLED: normalizedModelRetryEnabled,
     LAC_SUGGEST_STRATEGY: payload.LAC_SUGGEST_STRATEGY,
     LAC_SYSTEM_PROMPT_STATIC: payload.LAC_SYSTEM_PROMPT_STATIC,
     LAC_SOCKET_PATH: payload.LAC_SOCKET_PATH,

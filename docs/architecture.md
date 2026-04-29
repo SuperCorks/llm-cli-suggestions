@@ -17,8 +17,8 @@ The current implementation is built from six main pieces:
 2. The plugin watches buffer changes and schedules a debounced helper process.
 3. The helper process calls `autocomplete-client suggest` once for classic modes, or multiple staged suggest requests for progressive modes, with the dual-model flow starting the fast-stage model before the slow-stage model to reduce backend contention.
 4. The client sends an HTTP request over a local Unix socket to the daemon.
-5. The daemon builds a suggestion using local history, feedback, context, and optional model output.
-6. The daemon stores the suggestion in SQLite.
+5. The daemon builds a suggestion using local history, feedback, context, and optional model output, with model-backed stages able to retry invalid model responses up to three times before ranking continues.
+6. The daemon stores the final visible suggestion in SQLite and, when retries are enabled, stores each model attempt with request-level retry metadata for later inspection and training.
 7. The plugin receives one or more stage results asynchronously, renders the current suffix as ghost text, and allows the configured accept key to accept it.
 8. When the command is executed, the plugin logs the command and execution-aware feedback events back through the client and daemon into SQLite.
 9. The control app reads the same SQLite database directly for analytics and uses local server routes for daemon control and experiments.
@@ -121,7 +121,7 @@ The suggestion engine combines multiple local signals:
 - historical command prefix matches
 - targeted filesystem matches for the current token
 - local and remote git branch matches when the buffer looks branch-oriented
-- project task and script matches from files like `package.json`, `Makefile`, and `justfile`
+- source-aware project command matches from files like `package.json`, `Makefile`, and `justfile`, preserving both the provider and runnable command form
 - cwd, repo root, and branch affinity
 - acceptance and rejection feedback
 - previous command context
@@ -133,14 +133,17 @@ The current ranking shape is:
 
 1. resolve session- or cwd-scoped context, recent commands, and recent output context
 2. gather prefix-matching history candidates
-3. gather targeted local retrieval candidates for paths, branches, and project tasks while also loading broader local project task context for the prompt when available
+3. gather targeted local retrieval candidates for paths, branches, and source-aware project commands while also loading broader local project-command context for the prompt when available
 4. run the independent history and local retrieval work in parallel when possible
 5. trust history immediately when one candidate is clearly dominant in classic hybrid mode
 6. otherwise ask the local model for one candidate, or always ask the model when the request is part of a progressive rerank stage
-7. blend history, retrieval, model, recent usage, feedback, and last-command context
-8. store and return the top-ranked result for that stage request
+7. if model retries are enabled, validate each model response before ranking and re-prompt the model with a short invalid-attempt summary when the response fails the current buffer, formatting, duplicate-attempt, or best-effort executable gates
+8. blend history, retrieval, model, recent usage, feedback, and last-command context
+9. store and return the top-ranked result for that stage request
 
 This keeps the system fast when local context is strong and still allows the model to help in more ambiguous cases.
+
+The prompt snapshot generated for the model now uses explicit section dividers and groups available project commands by source. For example, `package.json` scripts are rendered as runnable commands like `npm run dev`, while `Makefile` and `justfile` entries are rendered as `make <target>` and `just <recipe>`.
 
 For control-app inspection and ad-hoc model tests, the ranking entrypoint can also hydrate prompt context from the recorded command database before step 1, using session- or cwd-scoped history when possible.
 
@@ -168,6 +171,13 @@ The feedback lifecycle is now execution-aware rather than only buffer-aware:
 That split gives the ranking and eval pipeline a clearer distinction between strong positives, medium-confidence edited positives, and true negatives.
 
 Suggestion rows now also persist the exact prompt text and a structured context snapshot used at decision time, so the control app can inspect and replay historical suggestions more faithfully.
+
+When model retries are enabled, suggestion rows also carry retry metadata:
+
+- a request id shared across all rows from one `/suggest` request
+- an attempt index for each stored model attempt
+- a returned-to-shell flag so analytics can separate visible suggestions from internal retry attempts
+- a validation state plus validation-failure JSON for rejected or passed model attempts
 
 They now also persist request-level timing fields alongside the older winner-candidate latency:
 
@@ -215,6 +225,7 @@ Persisted values are written as shell-sourceable single-line escaped assignments
 - model name
 - optional fast-stage model name for progressive shell refinement
 - model base URL
+- model retry enabled flag
 - suggestion strategy
 - a configurable system prompt, seeded with the built-in autosuggestion instructions by default
 - socket path

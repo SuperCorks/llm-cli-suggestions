@@ -72,7 +72,7 @@ function formatStreamStatus(status: LiveStreamStatus) {
 }
 
 function runtimeUsesDualModelMode(status: RuntimeStatus) {
-  const fastModelName = status.settings.fastModelName.trim();
+  const fastModelName = (status.settings.fastModelName || "").trim();
   return (
     fastModelName !== "" &&
     (status.settings.suggestStrategy === "history-then-fast-then-model" ||
@@ -93,8 +93,9 @@ export function DaemonConsole({
   const [availableModels, setAvailableModels] = useState(initialAvailableModels);
   const [settings, setSettings] = useState({
     LAC_MODEL_NAME: initialStatus.settings.modelName,
-    LAC_FAST_MODEL_NAME: initialStatus.settings.fastModelName,
+    LAC_FAST_MODEL_NAME: initialStatus.settings.fastModelName || "",
     LAC_MODEL_KEEP_ALIVE: initialModelKeepAlive,
+    LAC_MODEL_RETRY_ENABLED: String(initialStatus.settings.modelRetryEnabled ?? true),
     LAC_SUGGEST_STRATEGY: initialStatus.settings.suggestStrategy,
     LAC_SYSTEM_PROMPT_STATIC: initialStatus.settings.systemPromptStatic,
     LAC_SUGGEST_TIMEOUT_MS: String(initialStatus.settings.suggestTimeoutMs),
@@ -146,27 +147,29 @@ export function DaemonConsole({
     },
   );
   const dualModelMode = runtimeUsesDualModelMode(status);
+  const runtimeModels = status.memory.models || [];
   const runtimeModelByKey = new Map(
-    status.memory.models.map((model) => [normalizeModelMemoryKey(model.modelName), model] as const),
+    runtimeModels.map((model) => [normalizeModelMemoryKey(model.modelName), model] as const),
   );
   const configuredModels = (dualModelMode
     ? [
         {
           label: "Slow Model",
           modelName:
-            status.memory.models.find((model) => model.role === "primary")?.modelName || status.settings.modelName,
+            runtimeModels.find((model) => model.role === "primary")?.modelName || status.settings.modelName,
         },
         {
           label: "Fast Model",
           modelName:
-            status.memory.models.find((model) => model.role === "fast")?.modelName || status.settings.fastModelName.trim(),
+            runtimeModels.find((model) => model.role === "fast")?.modelName ||
+            (status.settings.fastModelName || "").trim(),
         },
       ]
     : [
         {
           label: "Model",
           modelName:
-            status.memory.models[0]?.modelName ||
+            runtimeModels[0]?.modelName ||
             status.memory.modelName ||
             status.health.modelName ||
             status.settings.modelName,
@@ -319,8 +322,9 @@ export function DaemonConsole({
     if (syncSettings) {
       setSettings({
         LAC_MODEL_NAME: data.settings.modelName,
-        LAC_FAST_MODEL_NAME: data.settings.fastModelName,
+        LAC_FAST_MODEL_NAME: data.settings.fastModelName || "",
         LAC_MODEL_KEEP_ALIVE: data.settings.modelKeepAlive || DEFAULT_MODEL_KEEP_ALIVE,
+        LAC_MODEL_RETRY_ENABLED: String(data.settings.modelRetryEnabled ?? true),
         LAC_SUGGEST_STRATEGY: data.settings.suggestStrategy,
         LAC_SYSTEM_PROMPT_STATIC: data.settings.systemPromptStatic,
         LAC_SUGGEST_TIMEOUT_MS: String(data.settings.suggestTimeoutMs),
@@ -386,7 +390,7 @@ export function DaemonConsole({
   }, [refreshAvailableModels, refreshRuntime]);
 
   useEffect(() => {
-    const loadedModels = status.memory.models.filter((model) => model.modelLoadedBytes !== null);
+    const loadedModels = runtimeModels.filter((model) => model.modelLoadedBytes !== null);
     if (loadedModels.length === 0) {
       return;
     }
@@ -767,8 +771,25 @@ export function DaemonConsole({
                     LAC_SUGGEST_TIMEOUT_MS: event.target.value,
                   }))
                 }
-              />
+                />
             </label>
+            <label className="checkbox-field">
+              <input
+                type="checkbox"
+                checked={settings.LAC_MODEL_RETRY_ENABLED === "true"}
+                onChange={(event) =>
+                  setSettings((current) => ({
+                    ...current,
+                    LAC_MODEL_RETRY_ENABLED: String(event.target.checked),
+                  }))
+                }
+              />
+              <span>Retry invalid model suggestions up to 3 times</span>
+            </label>
+            <p className="helper-text">
+              When enabled, model-backed stages retry responses that fail buffer-prefix, formatting, duplicate,
+              or best-effort executable checks before ranking a winner.
+            </p>
             <label>
               Accept Suggestion Key
               <select

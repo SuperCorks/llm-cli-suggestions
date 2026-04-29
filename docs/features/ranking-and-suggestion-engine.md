@@ -18,6 +18,7 @@ The engine uses these inputs when choosing a suggestion:
 - last exit code
 - an optional static system-prompt prefix configured through runtime settings
 - optional local model output
+- an optional daemon setting that enables model-output validation retries, on by default
 
 ## Current Strategy
 
@@ -31,8 +32,10 @@ The engine uses these inputs when choosing a suggestion:
 7. If the buffer is empty, only allow the model path when there is a recorded last command to ground the suggestion.
 8. In classic `history+model`, trust history immediately when one candidate is clearly dominant.
 9. In `history-then-model`, `history-then-fast-then-model`, `fast-then-model`, and the internal rerank stage used by those modes, still ask the model even when history is trusted or intentionally skipped so later stages can replace the visible ghost text with a better-ranked result.
-10. Score all candidates using history, feedback, recency, last-command context, and selected recent output context.
-11. Persist the winning suggestion for each completed stage request.
+10. When the model path is used and retries are enabled, validate each model response before it can enter ranking. Failed attempts append a compact `previous_invalid_suggestions` block to the next prompt and retry up to 3 total model attempts for that stage request.
+11. Validation currently checks that the model output is non-empty, extends the current buffer, begins with the current buffer, avoids obvious formatting prefixes like numbered lists or quoted wrappers, does not repeat a previously rejected attempt in the same retry chain, and passes a best-effort executable lookup for simple external commands.
+12. Score all candidates using history, feedback, recency, last-command context, and selected recent output context.
+13. Persist every model retry attempt plus the final visible suggestion for each completed stage request.
 
 ## Empty Buffer Behavior
 
@@ -40,11 +43,13 @@ When the current buffer is empty, the engine does not open history-prefix matchi
 
 ## Prompt Shape
 
-For live suggestions, the prompt now collapses `last_command`, recent command lists, recent command context, and recent output context into one deduplicated `recent_context` block. That keeps the most useful recent command and output details while reducing repeated command names in the prompt snapshot.
+For live suggestions, the prompt now uses explicit divider sections for core instructions, terminal context, past commands, retrieved matches, available project commands, and the current buffer. It still collapses `last_command`, recent command lists, recent command context, and recent output context into one deduplicated `recent_context` block inside the past-commands section so the prompt keeps useful recent output while reducing repeated command names.
 
-Model output cleaning stays intentionally conservative. Before the engine accepts a model-backed command, it now strips a small set of formatting wrappers that show up in local-model responses, including case-insensitive `command:` or `buffer:` labels, surrounding single backticks, and single-command fenced code blocks. The acceptance gate does not change: the cleaned candidate still has to start with the current buffer and be longer than the current buffer, so off-prefix substitutions are still rejected.
+Project command retrieval is now source-aware end to end. Instead of flattening everything into bare task names, the engine preserves whether a candidate came from `package.json`, `Makefile`, or `justfile`, renders runnable commands like `npm run build`, `make test`, or `just dev`, and groups the broader project-command context by source in the prompt.
 
-When the live daemon rejects a non-empty model response, the structured `suggest_trace` log now includes a bounded raw-output snippet so wrapper-pattern misses can be inspected from live usage without changing the SQLite suggestion schema.
+Model output cleaning stays intentionally conservative. Before the engine accepts a model-backed command, it strips a small set of formatting wrappers that show up in local-model responses, including case-insensitive `command:` or `buffer:` labels, surrounding single backticks, and single-command fenced code blocks.
+
+After cleaning, the retry gate can still reject a model candidate if it fails the current buffer, duplicate-attempt, invalid-start, or best-effort executable checks. Failed attempts are carried forward in the next prompt as a short invalid-suggestion summary so the model can self-correct without changing the shell contract.
 
 ## Candidate Sources
 
